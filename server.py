@@ -112,11 +112,12 @@ class Handler(BaseHTTPRequestHandler):
     server_version = ('HermesWebUI/' + _ver_suffix) if _ver_suffix != 'unknown' else 'HermesWebUI'
     def log_message(self, fmt, *args): pass  # suppress default Apache-style log
 
+    _audit_module = None
+
     def log_request(self, code: str='-', size: str='-') -> None:
-        """Structured JSON logs for each request."""
-        import json as _json
+        """Structured JSON logs for each request + optional audit entry."""
         duration_ms = round((time.time() - getattr(self, '_req_t0', time.time())) * 1000, 1)
-        record = _json.dumps({
+        record = json.dumps({
             'ts': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
             'method': self.command or '-',
             'path': self.path or '-',
@@ -124,6 +125,27 @@ class Handler(BaseHTTPRequestHandler):
             'ms': duration_ms,
         })
         print(f'[webui] {record}', flush=True)
+
+        # Write audit entry if audit is enabled and directory is configured.
+        if AUDIT_DIR:
+            try:
+                if Handler._audit_module is None:
+                    from api import audit as _mod
+                    Handler._audit_module = _mod
+                Handler._audit_module.write(
+                    category="http",
+                    action=f"{self.command} {urlparse(self.path).path}",
+                    outcome="success" if (isinstance(code, int) and 200 <= code < 400) else "failure",
+                    client_ip=getattr(self, '_client_ip', '-'),
+                    metadata={
+                        'method': self.command or '-',
+                        'path': self.path or '-',
+                        'status': int(code) if str(code).isdigit() else code,
+                        'ms': duration_ms,
+                    },
+                )
+            except Exception:
+                pass  # audit.write() is fire-and-forget
 
     def do_GET(self) -> None:
         self._req_t0 = time.time()
