@@ -3,7 +3,6 @@ Hermes Web UI -- Main server entry point.
 Thin routing shell: imports Handler, delegates to api/routes.py, runs server.
 All business logic lives in api/*.
 """
-import json
 import logging
 import socket
 import sys
@@ -20,17 +19,12 @@ from urllib.parse import urlparse
 logger = logging.getLogger(__name__)
 
 from api.auth import check_auth
-from api.config import AUDIT_DIR, HOST, PORT, STATE_DIR, SESSION_DIR, DEFAULT_WORKSPACE
+from api.config import HOST, PORT, STATE_DIR, SESSION_DIR, DEFAULT_WORKSPACE
 from api.helpers import j, get_profile_cookie
 from api.profiles import set_request_profile, clear_request_profile
 from api.routes import handle_delete, handle_get, handle_patch, handle_post
 from api.startup import auto_install_agent_deps, fix_credential_permissions
 from api.updates import WEBUI_VERSION
-
-# Lazy import to avoid circular dependency at module load time.
-# audit.write() is called inside log_request() which is invoked after the
-# response is fully written, so the audit module is fully initialised by then.
-_audit_module = None
 
 
 class QuietHTTPServer(ThreadingHTTPServer):
@@ -127,9 +121,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         self._req_t0 = time.time()
-        # Capture real client IP (honour X-Forwarded-For like routes.py does)
-        _xff = self.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-        self._client_ip = _xff if _xff else (self.client_address[0] if self.client_address else "-")
+        # Per-request profile context from cookie (issue #798)
         cookie_profile = get_profile_cookie(self)
         if cookie_profile:
             set_request_profile(cookie_profile)
@@ -147,8 +139,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_write(self, route_func) -> None:
         self._req_t0 = time.time()
-        _xff = self.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-        self._client_ip = _xff if _xff else (self.client_address[0] if self.client_address else "-")
+        # Per-request profile context from cookie (issue #798)
         cookie_profile = get_profile_cookie(self)
         if cookie_profile:
             set_request_profile(cookie_profile)
@@ -201,40 +192,6 @@ def _raise_fd_soft_limit(target: int = 4096) -> dict:
     except Exception as exc:
         return {"status": "error", "soft": soft, "hard": hard, "error": str(exc)}
     return {"status": "raised", "soft": desired, "hard": hard, "previous_soft": soft}
-
-    def log_request(self, code: str = '-', size: str = '-') -> None:
-        """Structured JSON logs for each request + optional audit entry."""
-        global _audit_module
-        duration_ms = round((time.time() - getattr(self, '_req_t0', time.time())) * 1000, 1)
-        record = json.dumps({
-            'ts': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-            'method': self.command or '-',
-            'path': self.path or '-',
-            'status': int(code) if str(code).isdigit() else code,
-            'ms': duration_ms,
-        })
-        print(f'[webui] {record}', flush=True)
-
-        # Write audit entry if audit is enabled and directory is configured.
-        if AUDIT_DIR:
-            try:
-                if _audit_module is None:
-                    from api import audit as _mod
-                    _audit_module = _mod
-                _audit_module.write(
-                    category="http",
-                    action=f"{self.command} {urlparse(self.path).path}",
-                    outcome="success" if (isinstance(code, int) and 200 <= code < 400) else "failure",
-                    client_ip=getattr(self, '_client_ip', '-'),
-                    metadata={
-                        'method': self.command or '-',
-                        'path': self.path or '-',
-                        'status': int(code) if str(code).isdigit() else code,
-                        'ms': duration_ms,
-                    },
-                )
-            except Exception:
-                pass  # fire-and-forget: audit errors never affect the response
 
 
 def main() -> None:
@@ -345,12 +302,6 @@ def main() -> None:
     try:
         httpd.serve_forever()
     finally:
-        # Flush buffered audit entries before exit.
-        try:
-            from api import audit as _audit_mod
-            _audit_mod.flush()
-        except Exception:
-            pass
         # Stop the gateway watcher on shutdown
         try:
             from api.gateway_watcher import stop_watcher

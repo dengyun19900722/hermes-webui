@@ -1,0 +1,91 @@
+# =============================================================================
+# Hermes WebUI — 多阶段优化构建
+#   Stage 1 (base):     安装系统依赖、uv、locale
+#   Stage 2 (builder):  复制源码，安装 Python 依赖（用于生成 _version.py）
+#   Stage 3 (runtime):  干净运行时镜像，复制必要文件
+#
+# 使用方式:
+#   docker build -f Dockerfile.optimized -t hermes-webui:opt .
+#   docker build -f Dockerfile.optimized -t hermes-webui:opt --build-arg HERMES_VERSION=$(git describe --tags) .
+# =============================================================================
+
+# ── Stage 1: Base ─────────────────────────────────────────────────────────────
+FROM python:3.12-slim AS base
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=en_US.utf8 \
+    LC_ALL=C \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONIOENCODING=utf-8
+
+# Install system packages in one layer
+RUN apt-get update -y --fix-missing \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates curl wget gnupg rsync openssh-client tzdata \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# UTF-8 locale (one layer)
+RUN localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8
+
+# Pre-install uv system-wide (avoids runtime download)
+RUN curl -LsSf https://astral.sh/uv/install.sh \
+    | env UV_INSTALL_DIR=/usr/local/bin sh
+
+WORKDIR /apptoo
+
+# ── Stage 2: Builder ──────────────────────────────────────────────────────────
+FROM base AS builder
+
+# Copy only dependency files first (for better layer caching)
+COPY pyproject.toml uv.lock . 2>/dev/null || true
+RUN if [ -f pyproject.toml ]; then \
+        uv pip install --system --no-cache-dir -r pyproject.toml; \
+    fi
+
+# Copy full source
+COPY . .
+
+# ── Stage 3: Runtime ──────────────────────────────────────────────────────────
+FROM base AS runtime
+
+# Create non-root user matching host UIDs (UID 1024/1025 from upstream image)
+RUN groupadd -g 1024 hermeswebui \
+    && groupadd -g 1025 hermeswebuitoo \
+    && useradd -u 1024 -d /home/hermeswebui -g hermeswebui -s /bin/bash -m hermeswebui \
+    && useradd -u 1025 -d /home/hermeswebuitoo -g hermeswebuitoo -s /bin/bash -m hermeswebuitoo \
+    && adduser hermeswebui sudo \
+    && echo '%sudo ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
+
+# Copy application from builder (no dev dependencies)
+COPY --from=builder --chown=hermeswebuitoo:hermeswebuitoo /apptoo /apptoo
+COPY --chmod=555 docker_init.bash /hermeswebui_init.bash 2>/dev/null || true
+
+# Audit log directory (persistent volume mount target)
+RUN mkdir -p /data/audit-logs && chown hermeswebuitoo:hermeswebuitoo /data/audit-logs
+
+USER hermeswebuitoo
+
+# Build-time arg baked into api/_version.py (works even without .git)
+ARG HERMES_VERSION=unknown
+RUN echo "__version__ = '${HERMES_VERSION}'" > /apptoo/api/_version.py
+
+# Environment
+ENV HERMES_WEBUI_HOST=0.0.0.0 \
+    HERMES_WEBUI_PORT=8787 \
+    HERMES_WEBUI_AUDIT_DIR=/data/audit-logs \
+    HERMES_WEBUI_AUDIT_ENABLED=1
+
+EXPOSE 8787
+
+# Health check: curl the health endpoint, fail if non-200 or slow
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -sf http://localhost:8787/api/health >/dev/null 2>&1 \
+    || exit 1
+
+# Signal handling: pass SIGTERM to Python for graceful shutdown
+# (ThreadingHTTPServer already handles this via shutdown_request)
+STOPSIGNAL SIGTERM
+
+CMD ["/hermeswebui_init.bash"]

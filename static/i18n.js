@@ -2020,6 +2020,20 @@ const LOCALES = {
     checkpoint_diff_title: 'チェックポイントの変更内容',
     checkpoint_diff_no_changes: 'このチェックポイントと現在のワークスペースの間に差分はありません。',
     checkpoint_diff_files_changed: (n) => `${n} 件のファイルが変更されました`,
+    // Security Audit Log
+    audit_section_title: 'Security Audit Log',
+    audit_section_desc: 'Browse and export HTTP request and chat audit entries.',
+    audit_category_all: 'All categories',
+    audit_search_btn: 'Search',
+    audit_export_btn: 'Export CSV',
+    audit_loading: 'Loading...',
+    audit_no_entries: 'No entries found.',
+    audit_entries: 'entries',
+    audit_detail_btn: 'Detail',
+    audit_detail_title: 'Audit Log Detail',
+    audit_detail_close: 'Close',
+    audit_prev: 'Prev',
+    audit_next: 'Next',
   },
 
   ru: {
@@ -6716,6 +6730,24 @@ const LOCALES = {
     settings_desc_tts_voice: '選擇語音合成聲音',
     settings_label_tts_rate: '語速',
     settings_label_tts_pitch: '音調',
+    // Security Audit Log
+    audit_section_title: '安全审计日志',
+    audit_section_desc: '浏览并导出 HTTP 请求和对话审计记录。',
+    audit_category_all: '全部类别',
+    audit_category_chat: '对话',
+    audit_category_http: 'HTTP',
+    audit_category_auth: '认证',
+    audit_category_admin: '管理',
+    audit_search_btn: '查询',
+    audit_export_btn: '导出 CSV',
+    audit_loading: '加载中...',
+    audit_no_entries: '未找到记录。',
+    audit_entries: '条记录',
+    audit_detail_btn: '详情',
+    audit_detail_title: '审计日志详情',
+    audit_detail_close: '关闭',
+    audit_prev: '上一页',
+    audit_next: '下一页',
 
     checkpoint_date: 'Date',  // TODO: translate
     checkpoint_diff_files_changed: (n) => `${n} file${n === 1 ? '' : 's'} changed`,  // TODO: translate
@@ -8602,8 +8634,12 @@ const LOCALES = {
   },
 };
 
+// Expose for applyLocaleToDOM() and console debugging.
+window.LOCALES = LOCALES;
+
 // Active locale — defaults to English; overridden by loadLocale() at boot.
 let _locale = LOCALES.en;
+window._locale = _locale;
 
 /**
  * Resolve an incoming locale tag to a known LOCALES key.
@@ -8679,8 +8715,15 @@ function t(key, ...args) {
 function setLocale(lang) {
   const resolved = resolveLocale(lang) || 'en';
   _locale = LOCALES[resolved];
+  window._locale = _locale;
   localStorage.setItem('hermes-lang', resolved);
   document.documentElement.lang = _locale._speech || resolved;
+  // DOM might not exist yet if called from <head defer> — queue it for DOMContentLoaded
+  if (document.body) {
+    applyLocaleToDOM();
+  } else {
+    document.addEventListener('DOMContentLoaded', applyLocaleToDOM, { once: true });
+  }
 }
 
 /**
@@ -8711,6 +8754,12 @@ function applyLocaleToDOM() {
     const key = el.getAttribute('data-i18n-placeholder');
     const val = t(key);
     if (val && val !== key) el.placeholder = val;
+  });
+  // Handle <option data-i18n="key"> (translate option display text)
+  document.querySelectorAll('option[data-i18n]').forEach(el => {
+    const key = el.getAttribute('data-i18n');
+    const val = t(key);
+    if (val && val !== key) el.textContent = val;
   });
   if (typeof syncAppTitlebar === 'function') syncAppTitlebar();
 }

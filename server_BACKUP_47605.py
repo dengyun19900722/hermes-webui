@@ -164,6 +164,7 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             clear_request_profile()
 
+<<<<<<< HEAD
     def do_POST(self) -> None:
         self._handle_write(handle_post)
 
@@ -201,7 +202,7 @@ def _raise_fd_soft_limit(target: int = 4096) -> dict:
     except Exception as exc:
         return {"status": "error", "soft": soft, "hard": hard, "error": str(exc)}
     return {"status": "raised", "soft": desired, "hard": hard, "previous_soft": soft}
-
+=======
     def log_request(self, code: str = '-', size: str = '-') -> None:
         """Structured JSON logs for each request + optional audit entry."""
         global _audit_module
@@ -235,6 +236,7 @@ def _raise_fd_soft_limit(target: int = 4096) -> dict:
                 )
             except Exception:
                 pass  # fire-and-forget: audit errors never affect the response
+>>>>>>> 95eebc5 (feat(audit): REG-07 安全审计模块第2批 — ZKREQ-094/095/096)
 
 
 def main() -> None:

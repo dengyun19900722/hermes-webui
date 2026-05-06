@@ -6262,3 +6262,144 @@ async function uploadPendingFiles(){
   if(extracted.length)showToast(t('archive_extracted',extracted.reduce((s,n)=>s+n.extracted,0),extracted.length));
   return names;
 }
+
+// ── Security Audit Log ────────────────────────────────────────────────────────
+
+// ── Audit log (ZKREQ-094 pagination + ZKREQ-095 detail) ───────────────────
+let _auditPage = 1;
+let _auditTotalPages = 1;
+let _auditCurrentEntries = [];
+
+async function loadAuditLog(page = 1) {
+  const since = document.getElementById('auditSince').value;
+  const until = document.getElementById('auditUntil').value;
+  const category = document.getElementById('auditCategory').value;
+  const resultsEl = document.getElementById('auditResults');
+  const statusEl = document.getElementById('auditStatus');
+  const limit = 20;
+  _auditPage = page;
+
+  let url = 'api/audit/search?limit=' + limit + '&page=' + page + '&';
+  if (since) url += 'since=' + encodeURIComponent(since) + '&';
+  if (until) url += 'until=' + encodeURIComponent(until) + '&';
+  if (category) url += 'category=' + encodeURIComponent(category) + '&';
+
+  statusEl.textContent = (window.t || t)('audit_loading') || 'Loading...';
+  resultsEl.style.display = 'none';
+
+  try {
+    const res = await fetch(url, { credentials: 'include' });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    const entries = data.entries || [];
+    _auditCurrentEntries = entries;
+    _auditTotalPages = data.total_pages || 1;
+
+    const total = data.total || 0;
+    const totalPages = data.total_pages || 1;
+    const pagesLabel = totalPages > 1 ? ` (${page}/${totalPages}, ${total} ${(window.t || t)('audit_entries') || 'entries'})` : ` (${total} ${(window.t || t)('audit_entries') || 'entries'})`;
+    statusEl.textContent = pagesLabel;
+
+    if (!entries.length) {
+      resultsEl.innerHTML = '<span style="color:var(--muted)">' + (window.t || t)('audit_no_entries') + '</span>';
+    } else {
+      const rows = entries.map(e => {
+        const ts = e.ts ? new Date(e.ts).toLocaleString('zh-CN', {hour12:false}) : '';
+        const action = escHtml(e.action || '');
+        const outcome = escHtml(e.outcome || '');
+        const ip = escHtml(e.client_ip || '');
+        const cat = escHtml(e.category || '');
+        const color = outcome === 'success' ? '#4caf50' : outcome === 'failure' ? '#e94f4f' : 'var(--text)';
+        const detailBtn = `<button onclick="showAuditDetail('${e.id}')" style="margin-left:6px;padding:1px 6px;font-size:10px;background:var(--code-bg);color:var(--accent);border:1px solid var(--border2);border-radius:4px;cursor:pointer">${(window.t || t)('audit_detail_btn') || '详情'}</button>`;
+        return `<div style="margin-bottom:6px;padding-bottom:6px;border-bottom:1px solid var(--border2);display:flex;align-items:flex-start;gap:6px">` +
+          `<div style="flex:1;min-width:0">` +
+          `<span style="color:${color};font-weight:600">${outcome}</span> ` +
+          `<span style="color:var(--accent)">[${cat}]</span> ` +
+          `${action} ` +
+          `<span style="color:var(--muted);font-size:10px;white-space:nowrap">${ip} ${ts}</span>` +
+          (e.question ? `<div style="color:var(--text);margin:2px 0 2px 16px;font-size:11px;word-break:break-all"><strong>Q:</strong> ${escHtml(e.question.substring(0,80))}${e.question.length > 80 ? '…' : ''}</div>` : '') +
+          `</div>${detailBtn}</div>`;
+      }).join('');
+
+      // Pagination controls
+      let pager = '';
+      if (totalPages > 1) {
+        pager = `<div style="display:flex;justify-content:center;align-items:center;gap:8px;margin-top:8px;font-size:11px">` +
+          `<button onclick="loadAuditLog(${page-1})" ${page<=1?'disabled':''} style="padding:3px 10px;background:var(--code-bg);color:var(--text);border:1px solid var(--border2);border-radius:4px;cursor:${page>1?'pointer':'not-allowed'};opacity:${page>1?1:0.4}">← ${(window.t || t)('audit_prev') || '上一页'}</button>` +
+          `<span style="color:var(--muted)">${page} / ${totalPages}</span>` +
+          `<button onclick="loadAuditLog(${page+1})" ${page>=totalPages?'disabled':''} style="padding:3px 10px;background:var(--code-bg);color:var(--text);border:1px solid var(--border2);border-radius:4px;cursor:${page<totalPages?'pointer':'not-allowed'};opacity:${page<totalPages?1:0.4}">${(window.t || t)('audit_next') || '下一页'} →</button>` +
+          `</div>`;
+      }
+      resultsEl.innerHTML = rows + pager;
+    }
+    resultsEl.style.display = 'block';
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+  }
+}
+
+async function showAuditDetail(id) {
+  const overlay = document.getElementById('auditDetailOverlay');
+  const dialog = document.getElementById('auditDetailDialog');
+  const body = document.getElementById('auditDetailBody');
+  if (!overlay || !dialog || !body) return;
+  body.textContent = (window.t || t)('audit_loading') || 'Loading...';
+  overlay.style.display = 'flex';
+  overlay.setAttribute('aria-hidden', 'false');
+  try {
+    const res = await fetch('api/audit/get?id=' + encodeURIComponent(id), { credentials: 'include' });
+    if (!res.ok) throw new Error(await res.text());
+    const e = await res.json();
+    const ts = e.ts ? new Date(e.ts).toLocaleString('zh-CN', {hour12:false}) : '';
+    const lines = [
+      '── 基本信息 ──',
+      `  ID:    ${e.id || '-'}`,
+      `  时间:  ${ts}`,
+      `  类别:  ${e.category || '-'}`,
+      `  操作:  ${e.action || '-'}`,
+      `  结果:  ${e.outcome || '-'}`,
+      `  IP:    ${e.client_ip || '-'}`,
+      `  会话:  ${e.session_id || '-'}`,
+    ];
+    if (e.question) { lines.push(''); lines.push('── 用户提问 ──'); lines.push(e.question); }
+    if (e.answer) { lines.push(''); lines.push('── 助手回答 ──'); lines.push(e.answer); }
+    if (e.metadata) {
+      lines.push('');
+      lines.push('── 详情 ──');
+      lines.push(JSON.stringify(e.metadata, null, 2));
+    }
+    body.textContent = lines.join('\n');
+  } catch (err) {
+    body.textContent = 'Error: ' + err.message;
+  }
+}
+
+function hideAuditDetail() {
+  const overlay = document.getElementById('auditDetailOverlay');
+  if (overlay) { overlay.style.display = 'none'; overlay.setAttribute('aria-hidden', 'true'); }
+}
+
+async function exportAuditCSV() {
+  const since = document.getElementById('auditSince').value;
+  const until = document.getElementById('auditUntil').value;
+  const category = document.getElementById('auditCategory').value;
+
+  let url = 'api/audit/export_csv?';
+  if (since) url += 'since=' + encodeURIComponent(since) + '&';
+  if (until) url += 'until=' + encodeURIComponent(until) + '&';
+  if (category) url += 'category=' + encodeURIComponent(category) + '&';
+
+  const res = await fetch(url, { credentials: 'include' });
+  if (!res.ok) { showToast('Export failed: ' + await res.text()); return; }
+  const blob = await res.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'audit_log_' + new Date().toISOString().slice(0, 10) + '.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  showToast('Audit log exported.');
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}

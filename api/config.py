@@ -30,7 +30,7 @@ REPO_ROOT = Path(__file__).parent.parent.resolve()
 
 # ── Network config (env-overridable) ─────────────────────────────────────────
 HOST = os.getenv("HERMES_WEBUI_HOST", "127.0.0.1")
-PORT = int(os.getenv("HERMES_WEBUI_PORT", "8787"))
+PORT = int(os.getenv("HERMES_WEBUI_PORT", "18787"))
 
 # ── TLS/HTTPS config (optional, env-overridable) ────────────────────────────
 TLS_CERT = os.getenv("HERMES_WEBUI_TLS_CERT", "").strip() or None
@@ -45,8 +45,14 @@ STATE_DIR = (
 )
 
 SESSION_DIR = STATE_DIR / "sessions"
-WORKSPACES_FILE = STATE_DIR / "workspaces.json"
+
+# ── Audit logging ─────────────────────────────────────────────────────────────
+_AUDIT_DIR_ENV = os.getenv("HERMES_WEBUI_AUDIT_DIR", "")
+AUDIT_DIR = Path(_AUDIT_DIR_ENV) if _AUDIT_DIR_ENV else STATE_DIR / "audit-logs"
+AUDIT_IP_ANONYMIZE = False            # ← True: IPv4 末段清零（192.168.1.99 → 192.168.1.0）
+AUDIT_RETENTION_DAYS = 90             # ← 自动清理阈值（0=禁用）
 SESSION_INDEX_FILE = SESSION_DIR / "_index.json"
+WORKSPACES_FILE = STATE_DIR / "workspaces.json"
 SETTINGS_FILE = STATE_DIR / "settings.json"
 LAST_WORKSPACE_FILE = STATE_DIR / "last_workspace.txt"
 PROJECTS_FILE = STATE_DIR / "projects.json"

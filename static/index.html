@@ -1105,6 +1105,42 @@
               <div id="mcpToolList"></div>
               <div class="mcp-restart-hint" data-i18n="mcp_tools_runtime_note">Tool inventory only uses already-known active MCP runtime data; the WebUI does not start or probe servers.</div>
             </div>
+            <!-- Security Audit Detail Dialog (ZKREQ-095) -->
+            <div class="app-dialog-overlay" id="auditDetailOverlay" style="display:none;z-index:1000" aria-hidden="true">
+              <div id="auditDetailDialog" role="dialog" aria-modal="true" aria-labelledby="auditDetailTitle" style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:0;min-width:520px;max-width:80vw;max-height:85vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,0.5)">
+                <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+                  <h3 id="auditDetailTitle" style="margin:0;font-size:15px;font-weight:600;color:var(--text)" data-i18n="audit_detail_title">审计日志详情</h3>
+                  <button onclick="hideAuditDetail()" style="background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer;padding:4px;line-height:1" aria-label="Close">×</button>
+                </div>
+                <pre id="auditDetailBody" style="flex:1;overflow:auto;padding:16px 20px;margin:0;font-size:12px;font-family:monospace;color:var(--text);white-space:pre-wrap;word-break:break-all;background:var(--bg)"></pre>
+                <div style="padding:12px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px">
+                  <button onclick="hideAuditDetail()" class="sm-btn" style="padding:6px 16px" data-i18n="audit_detail_close">关闭</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Security Audit Section -->
+            <div style="margin-top:18px;padding-top:16px;border-top:1px solid var(--border)">
+              <label data-i18n="audit_section_title">Security Audit Log</label>
+              <div style="font-size:11px;color:var(--muted);margin-bottom:8px" data-i18n="audit_section_desc">Browse and export HTTP request and chat audit entries.</div>
+              <div id="auditStatus" style="font-size:11px;color:var(--muted);margin-bottom:6px"></div>
+              <div style="display:flex;gap:6px;margin-bottom:8px">
+                <input type="date" id="auditSince" style="flex:1;padding:6px;background:var(--code-bg);color:var(--text);border:1px solid var(--border2);border-radius:6px;font-size:12px">
+                <input type="date" id="auditUntil" style="flex:1;padding:6px;background:var(--code-bg);color:var(--text);border:1px solid var(--border2);border-radius:6px;font-size:12px">
+              </div>
+              <div style="display:flex;gap:6px;margin-bottom:8px">
+                <select id="auditCategory" style="flex:1;padding:6px;background:var(--code-bg);color:var(--text);border:1px solid var(--border2);border-radius:6px;font-size:12px">
+                  <option value="" data-i18n="audit_category_all">All categories</option>
+                  <option value="chat" data-i18n="audit_category_chat">Chat</option>
+                  <option value="http" data-i18n="audit_category_http">HTTP</option>
+                  <option value="auth" data-i18n="audit_category_auth">Auth</option>
+                  <option value="admin" data-i18n="audit_category_admin">Admin</option>
+                </select>
+                <button class="sm-btn" onclick="loadAuditLog()" style="flex:1;padding:6px;font-size:12px" data-i18n="audit_search_btn">Search</button>
+                <button class="sm-btn" onclick="exportAuditCSV()" style="flex:1;padding:6px;font-size:12px" data-i18n="audit_export_btn">Export CSV</button>
+              </div>
+              <div id="auditResults" style="max-height:220px;overflow-y:auto;font-size:11px;font-family:monospace;background:var(--code-bg);border:1px solid var(--border2);border-radius:6px;padding:6px;display:none"></div>
+            </div>
             <button class="sm-btn" onclick="saveSettings()" style="margin-top:12px;width:100%;padding:8px;font-weight:600" data-i18n="settings_save_btn">Save Settings</button>
           </div>
       </div>
