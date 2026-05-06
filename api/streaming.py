@@ -2591,38 +2591,10 @@ def _run_agent_streaming(
                         _err_label = 'No response received'
                         _err_type = 'no_response'
                         _err_hint = 'Verify your API key is valid and the selected model is available for your account.'
-<<<<<<< HEAD
                     # Skip error emission if credential self-heal succeeded
                     # (#1401) — _assistant_added is set True on successful retry.
                     if _assistant_added:
-                        # Self-heal succeeded: messages are already merged into s,
-                        # fall through to normal post-result persistence below.
-=======
-                    put('apperror', {
-                        'message': _err_str or f'{_err_label}.',
-                        'type': _err_type,
-                        'hint': _err_hint,
-                    })
-                    # Clear stream/pending state so the session does not appear
-                    # "agent_running" on reload after a silent failure.
-                    # Persist the error so it survives page reload.
-                    # _error=True ensures _sanitize_messages_for_api excludes it from
-                    # subsequent API calls so the LLM never sees its own error as prior context.
-                    s.active_stream_id = None
-                    s.pending_user_message = None
-                    s.pending_attachments = []
-                    s.pending_started_at = None
-                    s.pending_client_ip = None
-                    s.messages.append({
-                        'role': 'assistant',
-                        'content': f'**{_err_label}:** {_err_str or _err_label}\n\n*{_err_hint}*',
-                        'timestamp': int(time.time()),
-                        '_error': True,
-                    })
-                    try:
-                        s.save()
-                    except Exception:
->>>>>>> 95eebc5 (feat(audit): REG-07 安全审计模块第2批 — ZKREQ-094/095/096)
+                        # Self-heal succeeded: fall through
                         pass
                     else:
                         put('apperror', {
@@ -2639,6 +2611,7 @@ def _run_agent_streaming(
                         s.pending_user_message = None
                         s.pending_attachments = []
                         s.pending_started_at = None
+                        s.pending_client_ip = None
                         s.messages.append({
                             'role': 'assistant',
                             'content': f'**{_err_label}:** {_err_str or _err_label}\n\n*{_err_hint}*',

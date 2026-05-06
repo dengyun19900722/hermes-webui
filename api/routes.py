@@ -1679,9 +1679,6 @@ button:hover{background:rgba(124,185,255,.25)}
 <script src="static/login.js?v={{WEBUI_VERSION}}"></script>
 </body></html>"""
 
-<<<<<<< HEAD
-
-# ── Logs endpoint ─────────────────────────────────────────────────────────────
 _LOG_FILE_WHITELIST = {
     "agent": "agent.log",
     "errors": "errors.log",
@@ -2140,8 +2137,6 @@ def _handle_insights(handler, parsed) -> bool:
     })
 
 
-# ── GET routes ────────────────────────────────────────────────────────────────
-=======
 # ── Audit routes ───────────────────────────────────────────────────────────────
 
 
@@ -2265,7 +2260,6 @@ def _handle_audit_export(handler, parsed):
 
 
 # ── GET routes ─────────────────────────────────────────────────────────────---
->>>>>>> 95eebc5 (feat(audit): REG-07 安全审计模块第2批 — ZKREQ-094/095/096)
 
 
 def _accept_loop_health(handler) -> dict:
@@ -3323,7 +3317,18 @@ def handle_get(handler, parsed) -> bool:
     if parsed.path == "/api/mcp/servers":
         return _handle_mcp_servers_list(handler)
 
-<<<<<<< HEAD
+    # ── Audit log routes ─────────────────────────────────────────────────────
+    if parsed.path.startswith("/api/audit/search"):
+        return _handle_audit_search(handler, parsed)
+    if parsed.path.startswith("/api/audit/rotate"):
+        return _handle_audit_rotate(handler, parsed)
+    if parsed.path.startswith("/api/audit/cleanup"):
+        return _handle_audit_cleanup(handler, parsed)
+    if parsed.path.startswith("/api/audit/export_csv"):
+        return _handle_audit_export(handler, parsed)
+    if parsed.path.startswith("/api/audit/get"):
+        return _handle_audit_get(handler, parsed)
+
     # ── MCP Tools (GET) ──
     if parsed.path == "/api/mcp/tools":
         return _handle_mcp_tools_list(handler)
@@ -3357,19 +3362,6 @@ def handle_get(handler, parsed) -> bool:
         except Exception as e:
             logger.exception("rollback/diff failed")
             return bad(handler, str(e), status=500)
-=======
-    # ── Audit log routes ─────────────────────────────────────────────────────
-    if parsed.path.startswith("/api/audit/search"):
-        return _handle_audit_search(handler, parsed)
-    if parsed.path.startswith("/api/audit/rotate"):
-        return _handle_audit_rotate(handler, parsed)
-    if parsed.path.startswith("/api/audit/cleanup"):
-        return _handle_audit_cleanup(handler, parsed)
-    if parsed.path.startswith("/api/audit/export_csv"):
-        return _handle_audit_export(handler, parsed)
-    if parsed.path.startswith("/api/audit/get"):
-        return _handle_audit_get(handler, parsed)
->>>>>>> 95eebc5 (feat(audit): REG-07 安全审计模块第2批 — ZKREQ-094/095/096)
 
     return False  # 404
 
@@ -6115,22 +6107,8 @@ def _handle_chat_start(handler, body):
                 status=409,
             )
         # Stale stream id from a previous run; clear and continue.
-<<<<<<< HEAD
-        _clear_stale_stream_state(s)
-    stream_id = uuid.uuid4().hex
-    with _get_session_agent_lock(s.session_id):
-        _prepare_chat_start_session_for_stream(
-            s,
-            msg=msg,
-            attachments=attachments,
-            workspace=workspace,
-            model=model,
-            model_provider=model_provider,
-            stream_id=stream_id,
-        )
-=======
         s.active_stream_id = None
-    client_ip = getattr(handler, '_client_ip', None) or '-'
+    client_ip = getattr(handler, "_client_ip", None) or "-"
     stream_id = uuid.uuid4().hex
     with _get_session_agent_lock(s.session_id):
         s.workspace = workspace
@@ -6142,7 +6120,6 @@ def _handle_chat_start(handler, body):
         # Persist client_ip so the streaming thread can use it for audit logs
         s.pending_client_ip = client_ip
         s.save()
->>>>>>> 95eebc5 (feat(audit): REG-07 安全审计模块第2批 — ZKREQ-094/095/096)
     set_last_workspace(workspace)
     stream = create_stream_channel()
     with STREAMS_LOCK:
