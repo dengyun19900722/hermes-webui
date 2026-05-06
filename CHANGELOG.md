@@ -1,5 +1,47 @@
 # Hermes Web UI -- Changelog
 
+## [v0.51.8] — 2026-05-06 — 7-PR full-sweep batch
+
+### Added
+
+- **PR #1727** by @Michaelyklam — Link Claude Code OAuth in onboarding (closes #1362). Host-credential linking flow rather than a browser-exposed Anthropic token flow — credential discovery and linkage live entirely on the host (`~/.claude.json` / `~/.claude/.credentials.json`); the public payloads stay token-free. New `_clear_anthropic_env_values()` clears `ANTHROPIC_TOKEN`/`ANTHROPIC_API_KEY` from the active profile's `.env` and live `os.environ`, so the agent's existing `resolve_anthropic_token()` falls through to step 3 (Claude Code credentials) per its priority list. UI surfaces a Claude Code credential-link card during onboarding when host credentials are detected. 16 regression tests pin the credential-pool marker shape, the env-clearing path, the onboarding flow, and the cross-repo agent contract.
+
+### Fixed
+
+- **PR #1725** by @Michaelyklam — Simplify compact Activity row summary. The Compact Activity row's collapsed header repeated thinking state, listed individual tool names, and showed a redundant trailing count badge — all noise that defeated the purpose of the disclosure. Drop the `.tool-call-group-list` and `.tool-call-group-count` spans from the `ensureActivityGroup` template. The summary line is now intentionally terse: `Activity: N tools` plus duration. `_syncToolCallGroupSummary` simplification removes the `thinkingCount` query, the `uniqueNames` extraction, the `parts` join, and the total-count update. DESIGN.md updated to encode the new invariant.
+- **PR #1726** by @Michaelyklam — Delegate generic provider catalogs to Hermes CLI (slice of #1240 source-of-truth umbrella). The WebUI picker should not freeze ordinary providers to its static `_PROVIDER_MODELS` snapshot when Hermes CLI can return a fresher live catalog. New four-tier resolution order in `_build_available_models_uncached`: (1) explicit user `models:` allowlist (still wins — local source-of-truth), (2) `hermes_cli.models.provider_model_ids(pid)` live catalog, (3) static `_PROVIDER_MODELS` fallback, (4) auto-detected models. The prefix routing (`@<provider>:` for non-active providers) is preserved unchanged, so cross-provider routing tests continue to pin. 12 regression tests cover the four-tier ordering and the CLI-failure fallback path.
+- **PR #1728** by @starship-s — Preserve profile context when starting chats. Two distinct fixes for the same symptom (profile-switch context loss on first turn) at different layers: (a) path/mtime-aware `get_config()` reload in `api/config.py` — watches both the config path and the file's mtime, reloads when either changes, gated by `_cfg_has_in_memory_overrides()` so test-time monkeypatches and runtime in-memory mutations are preserved; (b) `api/routes.py` chat-start placeholder retag so the streaming agent always sees the active profile's resolved model string. Regression tests pin both layers + the four-tier interaction with `cfg.providers` overrides.
+- **PR #1729** by @Michaelyklam — Persist compact Activity disclosure state. UI-only persistence — `localStorage['hermes-activity-disclosure:<sid>:<turn_key>']` keyed by session id and either `assistant:<index>` (settled) or `live:<stream_id>` (in-flight). New helpers `_writeActivityDisclosureState` / `_readActivityDisclosureState` / `_copyActivityDisclosureState` for the live-to-settled handoff when a turn finishes. Switching away from a chat and coming back preserves the mode the user left it in. Sibling-collision with #1725 on the `ensureActivityGroup` template resolved in stage by keeping #1725's terse DOM (no list/count spans) AND #1729's `_toggleActivityGroup(this)` onclick wiring + `data-activity-disclosure-key` attribute.
+- **PR #1730** by @Michaelyklam — Prevent sticky sidebar hover drag state. On mouse, `pointermove` fires for plain hover as well as press-and-drag, so without a press flag a row could enter `.dragging` without ever having a `pointerdown`. Adds `_pointerActive` gate set on pointerdown / cleared on pointerup / pointercancel / pointerleave. The 50ms tail timer for tap-vs-drag detection is preserved. Defensive `el.classList.remove('dragging')` and `_clearDragTimer` clear on pointerdown handle the rare case where stale drag state survives a focus loss.
+- **PR #1732** by @Sanjays2402 (FIRST PR — welcome!) — Unpin scroll on small upward motion during streaming (closes #1731). The original hysteresis was symmetric: an upward scroll that landed inside the 250px near-bottom zone still reported `nearBottom = true`, so the counter kept incrementing and `_scrollPinned` stayed true. The next streaming token snapped users back to the bottom, which is exactly what the reporter described. Direction-aware fix: track `_lastScrollTop`, treat any explicit upward movement (decrease >2px between samples) as immediate unpin + counter reset, while downward / stationary movement falls through the original hysteresis path. The macOS WKWebView momentum protection from #1360 is preserved on the re-pin path. 9 regression tests pin direction tracking, the unpin threshold, and that #1360 hysteresis is intact.
+
+### In-stage absorbed fixes
+
+**Test-isolation bugfix (mandatory):** PR #1728's path/mtime-aware `get_config()` reload broke the common test idiom `monkeypatch.setattr(config, "cfg", {...})`. The `cfg = _cfg_cache` alias bound at import time means rebinding only changes the module attribute; `_cfg_cache` stays unchanged, so `_cfg_has_in_memory_overrides()` returned False and the path-aware reload silently overwrote any test's override. `test_issue1426_openrouter_*` and `test_issue1680_codex_spark` failed in the full suite while passing standalone — exact polluter signature. Fix: `_cfg_has_in_memory_overrides()` now ALSO returns True when `cfg is not _cfg_cache`, and `get_config()` returns `cfg` (the override) when it differs from `_cfg_cache`. 4 new regression tests in `tests/test_stage302_config_override_regression.py` pin both prongs.
+
+**Defense-in-depth (prong 2 of test-isolation-flake-recipe):** `tests/test_sprint3.py::test_skills_list` and `test_skills_list_has_required_fields` now skip on empty list rather than asserting `> 0` / `IndexError` — same pattern already in place for `test_skills_content_known`. Future profile-switch / SKILLS_DIR repointing pollutions don't break the build.
+
+**Pre-existing wall-clock flake fix (absorb-in-release):** `tests/test_issue1144_session_time_sync.py::test_relative_time_uses_server_clock` now pins `Date.now()` to a fixed instant. Without pinning, when CI ran near 08:00 UTC the projected server time crossed midnight and "5 minutes ago" silently became "1d". Same time-of-day-pin pattern as the sibling `test_session_bucket_uses_server_clock` already used.
+
+**Opus-applied fixes (absorbed in-release):**
+
+- **#1732 follow-up — `_lastScrollTop` reset on session switch.** Opus advisor flagged that `_lastScrollTop` is module-global and persists across chat switches. When the user switches sessions, the new chat's first user scroll could compare against the previous chat's scrollTop and false-trigger an unpin. New `_resetScrollDirectionTracker()` exposed on `window` from `static/ui.js`; called from `static/sessions.js` `loadSession()` after `S.session` is reassigned.
+
+### Tests
+
+4537 → **4584 passing** (+47 regression tests across the 7 PRs + in-stage fixes). 0 regressions. Full suite ~128s.
+
+### Pre-release verification
+
+- Stage-302: 7 PRs merged with one mechanical sibling-collision resolution (#1725 + #1729 on the `ensureActivityGroup` template). Resolved by keeping #1725's terse DOM AND #1729's persistence wiring.
+- All JS files syntax-clean (`node -c static/{messages,onboarding,sessions,ui}.js`).
+- All Python files syntax-clean.
+- pytest: 4584 passed, 0 failed across multiple runs (verified stably green).
+- `scripts/run-browser-tests.sh`: all 11 endpoints PASS on isolated port 8789 with stage-302 binary; 20 QA tests via webui_qa_agent.sh all PASS.
+- Opus advisor: SHIP, 5/5 verification clean, 0 MUST-FIX, 1 SHOULD-FIX absorbed (`_lastScrollTop` session-switch reset), 1 SHOULD-FIX deferred (`_clear_anthropic_env_values` env-var race window — filed as #1736 follow-up; low-impact, onboarding-time-only race).
+
+Closes #1362, #1731.
+
 ## [v0.51.7] — 2026-05-05 — single-PR docs+dx (#1695)
 
 ### Changed

@@ -190,6 +190,45 @@ else:
 _cfg_cache = {}
 _cfg_lock = threading.Lock()
 _cfg_mtime: float = 0.0  # last known mtime of config.yaml; 0 = never loaded
+_cfg_path: Path | None = None  # active config.yaml path for the disk-loaded cache
+_cfg_fingerprint: str | None = None  # serialized snapshot from the last disk load
+
+
+def _fingerprint_config(data: dict) -> str:
+    """Return a stable fingerprint for config dictionaries.
+
+    A few tests and legacy call sites still mutate ``cfg`` directly for
+    in-memory overrides.  Path-aware reloads should not immediately discard
+    those overrides just because the active profile path differs from the last
+    disk load, but an unchanged disk-loaded cache must still reload on profile
+    switches.
+    """
+    try:
+        return json.dumps(data, sort_keys=True, separators=(",", ":"), default=str)
+    except Exception:
+        return repr(data)
+
+
+def _cfg_has_in_memory_overrides() -> bool:
+    """True when cfg was changed after the last successful reload_config().
+
+    Detects two override shapes:
+      1. ``_cfg_cache`` was mutated in place (fingerprint differs).
+      2. ``cfg`` (the module attribute) was rebound to a different dict —
+         e.g. ``monkeypatch.setattr(config, "cfg", {...})`` in tests. The
+         alias-with-the-cache pattern at module load means this is a common
+         test-isolation override, and silently reloading from disk over it
+         (the v0.51.7 path-aware reload regression) breaks any test that
+         relies on the override.
+    """
+    if _cfg_fingerprint is not None and _fingerprint_config(_cfg_cache) != _cfg_fingerprint:
+        return True
+    # Module attribute rebound away from _cfg_cache by a test or runtime caller.
+    try:
+        return cfg is not _cfg_cache
+    except NameError:
+        # cfg not yet defined (during initial reload_config() at import time).
+        return False
 
 
 def _get_config_path() -> Path:
@@ -211,8 +250,24 @@ _DEFAULT_WEBUI_SESSION_SAVE_MODE = "deferred"
 
 def get_config() -> dict:
     """Return the cached config dict, loading from disk if needed."""
-    if not _cfg_cache:
+    config_path = _get_config_path()
+    try:
+        current_mtime = config_path.stat().st_mtime
+    except OSError:
+        current_mtime = 0.0
+    cache_stale = current_mtime != _cfg_mtime or _cfg_path != config_path
+    if not _cfg_cache or (cache_stale and not _cfg_has_in_memory_overrides()):
         reload_config()
+    # When a test (or runtime caller) has rebound ``cfg`` to a different dict
+    # via monkeypatch.setattr(config, "cfg", ...), return that override rather
+    # than the underlying _cfg_cache. Without this branch, get_config() would
+    # silently bypass the override even though _cfg_has_in_memory_overrides()
+    # correctly suppressed the reload.
+    try:
+        if cfg is not _cfg_cache:
+            return cfg
+    except NameError:
+        pass
     return _cfg_cache
 
 
@@ -240,13 +295,15 @@ def get_webui_session_save_mode(config_data: dict | None = None) -> str:
 
 def reload_config() -> None:
     """Reload config.yaml from the active profile's directory."""
-    global _cfg_mtime
+    global _cfg_mtime, _cfg_path, _cfg_fingerprint
     with _cfg_lock:
         _cfg_cache.clear()
         config_path = _get_config_path()
         # Remember the old mtime so we can tell whether config actually changed
         # vs. first-ever load (mtime == 0.0, e.g. server start or profile switch).
         _old_cfg_mtime = _cfg_mtime
+        _cfg_path = config_path
+        _cfg_mtime = 0.0
         try:
             import yaml as _yaml
 
@@ -260,6 +317,7 @@ def reload_config() -> None:
                         _cfg_mtime = 0.0
         except Exception:
             logger.debug("Failed to load yaml config from %s", config_path)
+        _cfg_fingerprint = _fingerprint_config(_cfg_cache)
         # Bust the models cache so the next request sees fresh config values.
         # Only delete the disk cache when config has actually changed -- not on
         # first-ever load (when _old_cfg_mtime == 0.0, i.e. server start or
@@ -1969,6 +2027,65 @@ def _get_label_for_model(model_id: str, existing_groups: list) -> str:
     )
 
 
+def _read_live_provider_model_ids(provider_id: str) -> list[str]:
+    """Return live model IDs from Hermes CLI for a provider, or [] on failure.
+
+    WebUI's static ``_PROVIDER_MODELS`` table is only a fallback.  The agent CLI
+    owns the provider registry and catalog-discovery logic, so ordinary picker
+    groups should ask ``hermes_cli.models.provider_model_ids()`` first (#1240).
+    Provider aliases are tried as a secondary lookup because WebUI keeps a few
+    display-facing IDs (for example ``google`` / ``x-ai``) that Hermes CLI may
+    normalize internally.
+    """
+    pid = str(provider_id or "").strip()
+    if not pid:
+        return []
+    try:
+        from hermes_cli.models import provider_model_ids as _provider_model_ids
+    except Exception:
+        return []
+
+    candidates = [pid]
+    try:
+        alias = _resolve_provider_alias(pid)
+    except Exception:
+        alias = ""
+    if alias and alias not in candidates:
+        candidates.append(alias)
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            live_ids = _provider_model_ids(candidate) or []
+        except Exception:
+            logger.debug("Failed to load %s models from hermes_cli", candidate)
+            continue
+        result: list[str] = []
+        for mid in live_ids:
+            mid_s = str(mid or "").strip()
+            if mid_s and mid_s not in seen:
+                seen.add(mid_s)
+                result.append(mid_s)
+        if result:
+            return result
+    return []
+
+
+def _models_from_live_provider_ids(provider_id: str, live_ids: list[str]) -> list[dict]:
+    """Convert Hermes CLI model ids into WebUI picker model entries."""
+    formatter = _format_ollama_label if provider_id in ("ollama", "ollama-cloud") else None
+    models: list[dict] = []
+    seen: set[str] = set()
+    for mid in live_ids:
+        mid_s = str(mid or "").strip()
+        if not mid_s or mid_s in seen:
+            continue
+        seen.add(mid_s)
+        label = formatter(mid_s) if formatter else _get_label_for_model(mid_s, [])
+        models.append({"id": mid_s, "label": label})
+    return models
+
+
 def _read_visible_codex_cache_model_ids() -> list[str]:
     """Return visible model slugs from Codex's local models_cache.json.
 
@@ -2030,10 +2147,15 @@ def get_available_models() -> dict:
     # Config mtime check — must come before any config reads.
     # (Test #585 verifies _current_mtime appears before active_provider = None)
     try:
-        _current_mtime = Path(_get_config_path()).stat().st_mtime
+        _current_path = _get_config_path()
+        _current_mtime = _current_path.stat().st_mtime
     except OSError:
+        _current_path = _get_config_path()
         _current_mtime = 0.0
-    if _current_mtime != _cfg_mtime:
+    if (
+        (_current_mtime != _cfg_mtime or _current_path != _cfg_path)
+        and not _cfg_has_in_memory_overrides()
+    ):
         reload_config()
     # ── COLD PATH helper ─────────────────────────────────────────────────────
     # Extracted so it runs inside _available_models_cache_lock (RLock) to
@@ -2918,18 +3040,33 @@ def get_available_models() -> dict:
                             group_entry["extra_models"] = extras
                         groups.append(group_entry)
                 elif pid in _PROVIDER_MODELS or pid in cfg.get("providers", {}):
-                    raw_models = copy.deepcopy(_PROVIDER_MODELS.get(pid, []))
-                    detected_models = auto_detected_models_by_provider.get(pid, [])
-                    if detected_models and not raw_models:
-                        raw_models = copy.deepcopy(detected_models)
-
                     provider_cfg = cfg.get("providers", {}).get(pid, {})
+                    raw_models = []
+
+                    # User-configured model allowlists are explicit local
+                    # source-of-truth and should still beat auto-discovery.
+                    # Otherwise, ask Hermes CLI first so WebUI tracks the same
+                    # live catalog as the agent/CLI picker; WebUI's static
+                    # _PROVIDER_MODELS table is now a fallback only (#1240).
                     if isinstance(provider_cfg, dict) and "models" in provider_cfg:
                         cfg_models = provider_cfg["models"]
                         if isinstance(cfg_models, dict):
                             raw_models = [{"id": k, "label": k} for k in cfg_models.keys()]
                         elif isinstance(cfg_models, list):
                             raw_models = [{"id": k, "label": k} for k in cfg_models]
+
+                    if not raw_models:
+                        raw_models = _models_from_live_provider_ids(
+                            pid,
+                            _read_live_provider_model_ids(pid),
+                        )
+
+                    if not raw_models:
+                        raw_models = copy.deepcopy(_PROVIDER_MODELS.get(pid, []))
+
+                    detected_models = auto_detected_models_by_provider.get(pid, [])
+                    if detected_models and not raw_models:
+                        raw_models = copy.deepcopy(detected_models)
                     models = _apply_provider_prefix(raw_models, pid, active_provider)
                     groups.append(
                         {

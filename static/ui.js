@@ -1377,17 +1377,35 @@ window.addEventListener('resize',function(){
 // Uses a guard flag to avoid the race where programmatic scrolls (from
 // scrollIfPinned / scrollToBottom) re-set _scrollPinned=true, overriding
 // the user's explicit scroll-up.  Fixes #1469 / #1360.
+// Direction-aware unpin (issue #1731): the hysteresis below is correct
+// for re-pinning (entering the near-bottom zone), but applying it to
+// unpinning stranded users who scrolled up by a small amount inside the
+// 250px zone — every upward sample still landed in the near-bottom
+// region, so the counter kept incrementing and _scrollPinned stayed
+// true. The next streaming token snapped them back. We now track
+// scrollTop direction: an explicit upward movement (scrollTop decreased
+// by more than 2px between samples) unpins immediately and resets the
+// counter, while downward / stationary movement falls through the
+// original hysteresis path so the macOS momentum re-pin protection from
+// #1360 is preserved.
 // rAF-debounced scroll listener (issue #1360): on macOS WKWebView, trackpad
 // momentum scrolling fires scroll events that interleave with the
 // _programmaticScroll setTimeout(0) guard. A mid-momentum scroll event can
 // either get swallowed (_programmaticScroll still true) or falsely report
-// nearBottom (momentum hasn't settled). rAF defers the nearBottom check to
-// the next paint frame when the browser's scroll position has settled.
-// A hysteresis counter requires two consecutive near-bottom samples before
-// re-pinning, preventing accidental re-pin during initial deceleration.
+// the user is at the bottom (momentum hasn't settled). rAF defers the
+// distance check to the next paint frame when the browser's scroll
+// position has settled. A hysteresis counter requires two consecutive
+// near-bottom samples before re-pinning, preventing accidental re-pin
+// during initial deceleration.
 let _scrollPinned=true;
 let _programmaticScroll=false;
 let _nearBottomCount=0;
+let _lastScrollTop=null;
+// Reset hook for session-switch — called from sessions.js loadSession() to
+// prevent the new chat's first scroll comparing against the previous chat's
+// scrollTop (Opus stage-302 SHOULD-FIX, #1731 follow-up).
+function _resetScrollDirectionTracker(){ _lastScrollTop=null; }
+if (typeof window !== 'undefined') window._resetScrollDirectionTracker = _resetScrollDirectionTracker;
 (function(){
   const el=document.getElementById('messages');
   if(!el) return;
@@ -1396,9 +1414,12 @@ let _nearBottomCount=0;
     if(_programmaticScroll) return; // ignore scrolls we triggered ourselves
     cancelAnimationFrame(_scrollRaf);
     _scrollRaf=requestAnimationFrame(()=>{
-      const nearBottom=el.scrollHeight-el.scrollTop-el.clientHeight<250;
-      _nearBottomCount=nearBottom?_nearBottomCount+1:0;
-      _scrollPinned=_nearBottomCount>=2;
+      const top=el.scrollTop;
+      const nearBottom=el.scrollHeight-top-el.clientHeight<250;
+      const movedUp=_lastScrollTop!==null && top<_lastScrollTop-2;
+      _lastScrollTop=top;
+      if(movedUp){ _nearBottomCount=0; _scrollPinned=false; } // #1731
+      else { _nearBottomCount=nearBottom?_nearBottomCount+1:0; _scrollPinned=_nearBottomCount>=2; } // #1360
       const btn=$('scrollToBottomBtn');
       if(btn) btn.style.display=_scrollPinned?'none':'flex';
       // Load older messages when scrolled near the top
@@ -3763,11 +3784,44 @@ function _thinkingActivityNode(text){
 // finalized into a settled assistant turn (the live attribute is removed in
 // _convertLiveActivityGroupToSettled / when liveAssistantTurn loses its id).
 let _liveActivityUserExpanded;
+const _activityDisclosureStoragePrefix='hermes-activity-disclosure:';
+function _activityDisclosureStorageKey(activityKey){
+  if(!activityKey||!S.session||!S.session.session_id) return null;
+  return _activityDisclosureStoragePrefix+S.session.session_id+':'+activityKey;
+}
+function _readActivityDisclosureState(activityKey){
+  const key=_activityDisclosureStorageKey(activityKey);
+  if(!key) return null;
+  try{
+    const saved=localStorage.getItem(key);
+    return saved==='open'||saved==='closed'?saved:null;
+  }catch(_){return null;}
+}
+function _writeActivityDisclosureState(activityKey, open){
+  const key=_activityDisclosureStorageKey(activityKey);
+  if(!key) return;
+  try{localStorage.setItem(key, open?'open':'closed');}catch(_){}
+}
+function _copyActivityDisclosureState(fromActivityKey, toActivityKey){
+  const state=_readActivityDisclosureState(fromActivityKey);
+  if(state) _writeActivityDisclosureState(toActivityKey, state==='open');
+}
+function _activityKeyForLiveTurn(){
+  return S.activeStreamId?'live:'+S.activeStreamId:null;
+}
 function _onLiveActivityToggle(group){
   if(!group) return;
   // Only track explicit user clicks on the live group, not programmatic toggles.
   if(group.getAttribute('data-live-tool-call-group')!=='1') return;
   _liveActivityUserExpanded = !group.classList.contains('tool-call-group-collapsed');
+}
+function _toggleActivityGroup(summary){
+  const group=summary&&summary.closest?summary.closest('.tool-call-group'):null;
+  if(!group) return;
+  const collapsed=group.classList.toggle('tool-call-group-collapsed');
+  summary.setAttribute('aria-expanded',String(!collapsed));
+  _writeActivityDisclosureState(group.getAttribute('data-activity-disclosure-key'), !collapsed);
+  if(typeof _onLiveActivityToggle==='function') _onLiveActivityToggle(group);
 }
 function _clearLiveActivityUserIntent(){
   _liveActivityUserExpanded = undefined;
@@ -3776,23 +3830,31 @@ function ensureActivityGroup(inner, opts){
   opts=opts||{};
   if(!inner) return null;
   const live=!!opts.live;
+  const activityKey=opts.activityKey||(live?_activityKeyForLiveTurn():null);
   const selector=live?'.tool-call-group[data-live-tool-call-group="1"]':'.tool-call-group[data-agent-activity-group="1"]';
   let group=inner.querySelector(selector);
   if(!group){
     group=document.createElement('div');
     let collapsed=opts.collapsed!==false;
+    const savedState=_readActivityDisclosureState(activityKey);
     // Restore the user's explicit expand intent when recreating the live
-    // activity group within the same turn (#1298).
+    // activity group within the same turn (#1298), then let persisted chat/turn
+    // state win across session switches and reloads.
     if(live && _liveActivityUserExpanded === true) collapsed=false;
     else if(live && _liveActivityUserExpanded === false) collapsed=true;
+    if(savedState==='open') collapsed=false;
+    else if(savedState==='closed') collapsed=true;
     group.className='tool-call-group agent-activity-group'+(collapsed?' tool-call-group-collapsed':'');
     group.setAttribute('data-tool-call-group','1');
     group.setAttribute('data-agent-activity-group','1');
+    if(activityKey) group.setAttribute('data-activity-disclosure-key',activityKey);
     if(live) group.setAttribute('data-live-tool-call-group','1');
-    group.innerHTML=`<button type="button" class="tool-call-group-summary" aria-expanded="${collapsed?'false':'true'}" onclick="const g=this.closest('.tool-call-group');const c=g.classList.toggle('tool-call-group-collapsed');this.setAttribute('aria-expanded',String(!c));if(typeof _onLiveActivityToggle==='function')_onLiveActivityToggle(g);"><span class="tool-call-group-chevron">${li('chevron-right',12)}</span><span class="tool-call-group-label">Activity</span><span class="tool-call-group-list">tools / thinking</span><span class="tool-call-group-duration"></span><span class="tool-call-group-count">0</span></button><div class="tool-call-group-body"></div>`;
+    group.innerHTML=`<button type="button" class="tool-call-group-summary" aria-expanded="${collapsed?'false':'true'}" onclick="_toggleActivityGroup(this)"><span class="tool-call-group-chevron">${li('chevron-right',12)}</span><span class="tool-call-group-label">Activity</span><span class="tool-call-group-duration"></span></button><div class="tool-call-group-body"></div>`;
     const anchor=opts.anchor||null;
     if(anchor&&anchor.parentElement===inner) anchor.insertAdjacentElement('afterend', group);
     else inner.appendChild(group);
+  }else if(activityKey&&!group.getAttribute('data-activity-disclosure-key')){
+    group.setAttribute('data-activity-disclosure-key',activityKey);
   }
   if(live) _setActivityElapsedStartedAt(group);
   _syncToolCallGroupSummary(group);
@@ -4647,7 +4709,7 @@ function renderMessages(options){
         if(!anchorRow) continue;
         const anchorParent=anchorRow.parentElement;
         const insertAfterNode = anchorInsertAfter.get(anchorRow) || anchorRow;
-        const group=ensureActivityGroup(anchorParent,{collapsed:true,anchor:insertAfterNode});
+        const group=ensureActivityGroup(anchorParent,{collapsed:true,anchor:insertAfterNode,activityKey:`assistant:${aIdx}`});
         const sourceMsg=S.messages[aIdx]||{};
         if(sourceMsg._turnDuration!==undefined) group.setAttribute('data-turn-duration', String(sourceMsg._turnDuration));
         const body=group&&group.querySelector('.tool-call-group-body');
@@ -4874,27 +4936,12 @@ function _syncToolCallGroupSummary(group){
   if(!group) return;
   const cards=Array.from(group.querySelectorAll('.tool-card-row .tool-card'));
   const toolCount=cards.length;
-  const thinkingCount=group.querySelectorAll('.agent-activity-thinking .thinking-card').length;
-  const names=cards.map(card=>{
-    const el=card.querySelector('.tool-card-name');
-    return el?String(el.textContent||'').trim():'';
-  }).filter(Boolean);
-  const uniqueNames=[...new Set(names)];
   const label=group.querySelector('.tool-call-group-label');
-  const list=group.querySelector('.tool-call-group-list');
-  const badge=group.querySelector('.tool-call-group-count');
   const durationEl=group.querySelector('.tool-call-group-duration');
-  const parts=[];
-  if(thinkingCount) parts.push('thinking');
-  if(uniqueNames.length) parts.push(uniqueNames.slice(0,5).join(', ')+(uniqueNames.length>5?'…':''));
-  const total=toolCount+thinkingCount;
   if(label){
-    if(thinkingCount&&toolCount) label.textContent=`Activity: thinking + ${toolCount} tool${toolCount===1?'':'s'}`;
-    else if(thinkingCount) label.textContent='Activity: thinking';
-    else if(toolCount) label.textContent=`Activity: ${toolCount} tool${toolCount===1?'':'s'}`;
+    if(toolCount) label.textContent=`Activity: ${toolCount} tool${toolCount===1?'':'s'}`;
     else label.textContent='Activity';
   }
-  if(list) list.textContent=parts.join(' · ')||'tools / thinking';
   if(durationEl){
     if(group.getAttribute('data-live-tool-call-group')==='1'){
       const activeText=_activityElapsedLabel(group);
@@ -4908,7 +4955,6 @@ function _syncToolCallGroupSummary(group){
       durationEl.style.display=durationText?'':'none';
     }
   }
-  if(badge) badge.textContent=String(total);
 }
 
 // ── Live tool card helpers (called during SSE streaming) ──
@@ -4972,7 +5018,7 @@ function appendLiveToolCard(tc){
   }
   const children=Array.from(inner.children);
   const anchor=children.filter(el=>el.matches('[data-live-assistant="1"],.tool-call-group,.tool-card-row,.agent-activity-thinking')).pop();
-  const group=ensureActivityGroup(inner,{live:true,collapsed:false,anchor});
+  const group=ensureActivityGroup(inner,{live:true,collapsed:true,anchor,activityKey:_activityKeyForLiveTurn()});
   const body=group.querySelector('.tool-call-group-body');
   // Update existing card in place (tool_complete after tool_start)
   if(tid){
@@ -5764,7 +5810,7 @@ function appendThinking(text=''){
     el.id!=='toolRunningRow' &&
     el.matches('[data-live-assistant="1"],.tool-call-group,.tool-card-row,.agent-activity-thinking')
   ).pop();
-  const group=ensureActivityGroup(blocks,{live:true,collapsed:true,anchor});
+  const group=ensureActivityGroup(blocks,{live:true,collapsed:true,anchor,activityKey:_activityKeyForLiveTurn()});
   const body=group&&group.querySelector('.tool-call-group-body');
   if(!body) return;
   let row=body.querySelector('.agent-activity-thinking[data-thinking-active="1"]');

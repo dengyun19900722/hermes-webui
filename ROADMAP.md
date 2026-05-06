@@ -2,7 +2,7 @@
 
 > Web companion to the Hermes Agent CLI. Same workflows, browser-native.
 >
-> Last updated: v0.51.7 (May 5, 2026) — 4550 tests collected — single-PR docs+dx (#1695: AIAgent not available diagnostic)
+> Last updated: v0.51.8 (May 6, 2026) — 4584 tests collected — 7-PR full-sweep batch (#1725-1730, #1732)
 > Test source: `pytest tests/ --collect-only -q`
 > Per-version detail: see [CHANGELOG.md](./CHANGELOG.md)
 
