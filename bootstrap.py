@@ -397,11 +397,19 @@ def main() -> int:
     log_path = state_dir / f"bootstrap-{args.port}.log"
 
     info(f"Starting Hermes Web UI on http://{args.host}:{args.port}")
+    server_env = os.environ.copy()
+    # When server runs under a different Python (e.g. miniconda) than the venv
+    # that owns the hermes-agent editable install, ensure the venv's site-packages
+    # is on PYTHONPATH so the agent modules are discoverable.
+    if agent_dir:
+        venv_site = str(agent_dir / "venv" / "lib" / "python3.11" / "site-packages")
+        if os.path.isdir(venv_site):
+            server_env["PYTHONPATH"] = venv_site + os.pathsep + server_env.get("PYTHONPATH", "")
     with log_path.open("ab") as log_file:
         proc = subprocess.Popen(
             [python_exe, server_path],
             cwd=server_cwd,
-            env=os.environ.copy(),
+            env=server_env,
             stdout=log_file,
             stderr=subprocess.STDOUT,
             start_new_session=True,
