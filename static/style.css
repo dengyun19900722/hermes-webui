@@ -309,9 +309,13 @@
   .system-health-foot{font-size:11px;color:var(--muted);line-height:1.45;opacity:.82;}
   .app-titlebar-icon{display:inline-flex;align-items:center;color:var(--accent);}
   .app-titlebar-title{font-size:12px;font-weight:600;color:var(--text);letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60vw;}
+  .app-titlebar-brand{font-size:12px;font-weight:700;color:var(--accent);white-space:nowrap;flex-shrink:0;letter-spacing:-.01em;}
+  .app-titlebar-brand[hidden]{display:none;}
   .app-titlebar-sub{font-size:10px;color:var(--muted);background:var(--hover-bg);padding:2px 7px;border-radius:4px;font-family:'SF Mono',ui-monospace,monospace;white-space:nowrap;flex-shrink:0;}
   .app-titlebar-sub[hidden]{display:none;}
   .app-titlebar-hamburger,.app-titlebar-spacer{display:none;width:32px;height:32px;flex-shrink:0;}
+  .version-badge{font-size:10px;font-family:'SF Mono',ui-monospace,monospace;color:var(--accent);background:rgba(245,197,66,.1);border:1px solid rgba(245,197,66,.25);padding:1px 6px;border-radius:4px;cursor:pointer;transition:background .15s;border:none;white-space:nowrap;flex-shrink:0;-webkit-app-region:no-drag;}
+  .version-badge:hover{background:rgba(245,197,66,.2);}
   .app-titlebar-hamburger{-webkit-app-region:no-drag;align-items:center;justify-content:center;background:none;border:none;color:var(--muted);border-radius:8px;cursor:pointer;padding:0;-webkit-tap-highlight-color:transparent;transition:background-color .15s,color .15s;}
   .app-titlebar-hamburger:hover{background:var(--hover-bg);color:var(--text);}
   .sidebar{width:300px;background:var(--sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:visible;flex-shrink:0;}
@@ -450,6 +454,7 @@
   .session-date-caret.collapsed{transform:rotate(-90deg);}
   .app-dialog-overlay{position:fixed;inset:0;background:rgba(7,12,19,.62);backdrop-filter:blur(6px);z-index:1100;display:none;align-items:center;justify-content:center;padding:24px;}
   .app-dialog{width:min(460px,100%);background:linear-gradient(180deg,rgba(21,31,45,.98),rgba(13,20,31,.98));border:1px solid var(--accent-bg-strong);border-radius:18px;box-shadow:0 18px 60px rgba(0,0,0,.45);padding:18px 18px 16px;color:var(--text);}
+  #changelogDialog>.app-dialog{width:min(640px,100%);max-height:85vh;overflow:hidden;display:flex;flex-direction:column;}
   .app-dialog-header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px;}
   .app-dialog-title{font-size:16px;font-weight:700;letter-spacing:.01em;color:var(--text);}
   .app-dialog-close{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border:none;border-radius:10px;background:rgba(255,255,255,.04);color:var(--muted);cursor:pointer;transition:background .15s,color .15s;}
@@ -465,6 +470,16 @@
   .app-dialog-btn.confirm.danger{border-color:var(--error);background:rgba(239,83,80,.12);color:var(--error);}
   .app-dialog-btn.confirm.danger:hover{background:rgba(239,83,80,.2);border-color:var(--error);}
   .app-dialog-btn:focus-visible,.app-dialog-close:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+  .changelog-entry{border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:10px;background:var(--surface);}
+  .changelog-entry-header{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px;}
+  .changelog-version{font-size:14px;font-weight:700;color:var(--accent);font-family:'SF Mono',ui-monospace,monospace;}
+  .changelog-date{font-size:11px;color:var(--muted);}
+  .changelog-section{margin-bottom:8px;}
+  .changelog-section:last-child{margin-bottom:0;}
+  .changelog-section-title{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;}
+  .changelog-items{margin:0;padding-left:18px;color:var(--text);font-size:13px;line-height:1.7;}
+  .changelog-items li{margin-bottom:3px;}
+  .changelog-items li::marker{color:var(--accent);}
   .toast{position:fixed;top:24px;right:24px;left:auto;bottom:auto;transform:translateY(-6px);background:color-mix(in srgb,var(--accent) 14%,var(--surface));border:1px solid color-mix(in srgb,var(--accent) 45%,var(--surface));color:var(--accent-text);font-size:13px;font-weight:500;padding:10px 16px;border-radius:10px;pointer-events:none;opacity:0;transition:opacity .2s,transform .2s;z-index:100;box-shadow:0 6px 24px rgba(0,0,0,.12);letter-spacing:.01em;max-width:min(420px,calc(100vw - 48px));}
   .toast.show{opacity:1;transform:translateY(0);}
   .toast.success{background:color-mix(in srgb,var(--success) 14%,var(--surface));border-color:color-mix(in srgb,var(--success) 45%,var(--surface));color:var(--success);}
@@ -1281,6 +1296,18 @@
   @container composer-footer (min-width: 1100px) {
     .composer-toolsets-wrap{display:block;}
   }
+
+  /* Desktop (>=768px): show hamburger when sidebar collapses, keep titlebar centred */
+  @media(min-width:768px){
+    .app-titlebar-hamburger,.app-titlebar-spacer{display:none;}
+    /* Space-between so left/right anchor to edges, inner centres naturally */
+    .app-titlebar{justify-content:space-between;}
+    .app-titlebar-inner{flex:1 1 auto;justify-content:center;min-width:0;}
+    .app-titlebar-right{display:flex;align-items:center;flex-shrink:0;}
+  }
+  /* Left branding: logo + bot name — always visible on desktop */
+  .app-titlebar-left{display:flex;align-items:center;gap:6px;flex-shrink:0;}
+  .app-titlebar-botname{font-size:12px;font-weight:600;color:var(--accent);white-space:nowrap;letter-spacing:-.01em;}
 
   @media(max-width:640px){
     /* Viewport-phone rules handle app chrome and touch sizing; they intentionally

@@ -59,22 +59,25 @@
   <button class="app-titlebar-hamburger" id="btnHamburger" onclick="toggleMobileSidebar()" type="button" title="Menu" aria-label="Menu">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
   </button>
+  <div class="app-titlebar-left" id="appTitlebarLeft" aria-label="Assistant branding">
+    <svg viewBox="0 0 64 64" width="20" height="20" aria-hidden="true">
+      <defs>
+        <linearGradient id="app-titlebar-gold" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" style="stop-color:#F5C542"/>
+          <stop offset="100%" style="stop-color:#D4961C"/>
+        </linearGradient>
+      </defs>
+      <rect x="30" y="10" width="4" height="46" rx="2" fill="url(#app-titlebar-gold)"/>
+      <path d="M30 18 C24 14, 14 14, 10 18 C14 16, 22 16, 28 20" fill="#F5C542" opacity="0.9"/>
+      <path d="M34 18 C40 14, 50 14, 54 18 C50 16, 42 16, 36 20" fill="#F5C542" opacity="0.9"/>
+      <circle cx="32" cy="10" r="4" fill="#F5C542"/>
+    </svg>
+    <span class="app-titlebar-botname" id="appTitlebarBotname">ZK运维智能体</span>
+    <button class="version-badge" id="versionBadge" onclick="showChangelogDialog()" title="查看发布历史" aria-label="查看发布历史">v1.0.0</button>
+  </div>
   <div class="app-titlebar-inner">
-    <span class="app-titlebar-icon" aria-hidden="true">
-      <svg viewBox="0 0 64 64" width="16" height="16" aria-hidden="true">
-        <defs>
-          <linearGradient id="app-titlebar-gold" x1="0%" y1="0%" x2="0%" y2="100%">
-            <stop offset="0%" style="stop-color:#F5C542"/>
-            <stop offset="100%" style="stop-color:#D4961C"/>
-          </linearGradient>
-        </defs>
-        <rect x="30" y="10" width="4" height="46" rx="2" fill="url(#app-titlebar-gold)"/>
-        <path d="M30 18 C24 14, 14 14, 10 18 C14 16, 22 16, 28 20" fill="#F5C542" opacity="0.9"/>
-        <path d="M34 18 C40 14, 50 14, 54 18 C50 16, 42 16, 36 20" fill="#F5C542" opacity="0.9"/>
-        <circle cx="32" cy="10" r="4" fill="#F5C542"/>
-      </svg>
-    </span>
     <span class="app-titlebar-title" id="appTitlebarTitle">Hermes</span>
+    <span class="app-titlebar-brand" id="appTitlebarBrand" hidden>Hermes</span>
     <span class="app-titlebar-sub" id="appTitlebarSub" hidden></span>
   </div>
   <div class="app-titlebar-spacer" aria-hidden="true"></div>
@@ -1269,8 +1272,27 @@
     <div class="kanban-modal-actions">
       <button type="button" class="btn secondary" onclick="closeKanbanBoardModal()" data-i18n="cancel">Cancel</button>
       <button type="button" class="btn primary" id="kanbanBoardModalSubmit" onclick="submitKanbanBoardModal()" data-i18n="save">Save</button>
+  </div>
+</div>
+
+<!-- Changelog Dialog (ZKREQ-098) -->
+<div id="changelogDialog" class="app-dialog-overlay" role="dialog" aria-modal="true" aria-labelledby="changelogDialogTitle">
+  <div class="app-dialog" style="max-height:85vh;display:flex;flex-direction:column;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+      <span id="changelogDialogTitle" class="dialog-title" data-i18n="changelog_title">版本发布历史</span>
+      <button class="app-dialog-close" onclick="closeChangelogDialog()" aria-label="关闭">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <input type="text" id="changelogSearch" class="app-dialog-input" placeholder="搜索版本或变更内容…" data-i18n-placeholder="changelog_search_placeholder" oninput="filterChangelog()"/>
+    <div id="changelogList" style="margin-top:12px;overflow-y:auto;flex:1;min-height:0;">
+      <div id="changelogLoading" style="text-align:center;color:var(--muted);padding:20px;" data-i18n="loading">加载中…</div>
+    </div>
+    <div style="margin-top:12px;text-align:center;">
+      <span id="changelogCount" style="font-size:12px;color:var(--muted);"></span>
     </div>
   </div>
 </div>
+
 </body>
 </html>

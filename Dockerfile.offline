@@ -1,0 +1,92 @@
+# Dockerfile.offline
+# Hermes WebUI 完全离线版
+# 所有 Python 依赖、uv 全部预装进镜像
+
+FROM python:3.12-slim
+
+LABEL maintainer="zk-ops"
+LABEL description="Hermes WebUI — Offline Ready"
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=en_US.utf8
+ENV LC_ALL=C
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONIOENCODING=utf-8
+
+WORKDIR /apptoo
+
+# ── 1. 系统依赖 ──────────────────────────────────────
+RUN apt-get update -y --fix-missing \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates curl wget gnupg rsync sudo locales git \
+    && localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── 2. 用户与目录（必须在 venv 预装之前）──────────────
+RUN groupadd -g 1025 hermeswebuitoo \
+    && groupadd -g 1024 hermeswebui \
+    && useradd -u 1025 -d /home/hermeswebuitoo -g hermeswebuitoo -s /bin/bash -m hermeswebuitoo \
+    && useradd -u 1000 -d /home/hermeswebui -g 1024 -s /bin/bash -m hermeswebui \
+    && adduser hermeswebuitoo sudo \
+    && adduser hermeswebui sudo \
+    && mkdir -p /home/hermeswebuitoo/.hermes \
+    && chown -R hermeswebuitoo:hermeswebuitoo /home/hermeswebuitoo \
+    && mkdir -p /home/hermeswebui/.hermes \
+    && chown -R hermeswebui:hermeswebui /home/hermeswebui
+
+# ── 3. COPY uv（不用多阶段构建）──────────────────────
+COPY uv /usr/local/bin/uv
+
+# ── 4. 预装 venv Python 依赖（fire/requests/dotenv/anthropic）───────
+# ── 5. 预装系统 Python 依赖（pyyaml/hindsight-client）─────────────
+COPY pypackages /tmp/pypackages
+RUN python -m venv /app/venv \
+    && /app/venv/bin/pip install --no-cache-dir \
+       -i https://pypi.tuna.tsinghua.edu.cn/simple \
+       --find-links /tmp/pypackages/ \
+        fire requests python-dotenv 'anthropic>=0.39.0' pyyaml 'hindsight-client>=0.4.22' openai
+    && touch /app/venv/.deps_installed \
+    && chown -R hermeswebui:hermeswebui /app \
+    && chmod +x /usr/local/bin/uv
+
+# ── sudoers（必须在用户创建之后）────────────────────
+RUN echo '# File managed by Dockerfile' > /etc/sudoers \
+    && echo 'Defaults env_reset' >> /etc/sudoers \
+    && echo 'Defaults mail_badpass' >> /etc/sudoers \
+    && echo 'Defaults secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' >> /etc/sudoers \
+    && echo '' >> /etc/sudoers \
+    && echo 'root ALL=(ALL:ALL) ALL' >> /etc/sudoers \
+    && echo '%sudo ALL=(ALL:ALL) ALL' >> /etc/sudoers \
+    && echo '%sudo ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers \
+    && echo 'hermeswebuitoo ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers \
+    && echo 'hermeswebui ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers \
+    && rm -f /etc/sudoers.d/*
+
+# ── 5. 复制代码 ─────────────────────────────────────
+COPY --chown=hermeswebuitoo:hermeswebuitoo . /apptoo
+
+# bake version
+ARG HERMES_VERSION=offline
+RUN echo "__version__ = '${HERMES_VERSION}'" > /apptoo/api/_version.py
+
+# ── 6. 运行时环境 ───────────────────────────────────
+ENV HERMES_WEBUI_HOST=0.0.0.0
+ENV HERMES_WEBUI_PORT=8787
+ENV HERMES_WEBUI_STATE_DIR=/home/hermeswebui/.hermes/webui-state
+ENV HERMES_WEBUI_DEFAULT_WORKSPACE=/workspace
+ENV PATH="/home/hermeswebuitoo/.local/bin:$PATH"
+
+EXPOSE 8787
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:8787/health || exit 1
+
+# ── 7. 启动脚本 ──────────────────────────────────────
+COPY --chmod=555 docker_init.bash /hermeswebui_init.bash
+RUN touch /.within_container
+
+# 以 hermeswebuitoo (1025) 启动，让 init 脚本检测到与 hermeswebui 不同后执行 usermod 切换
+USER hermeswebuitoo
+CMD ["/hermeswebui_init.bash"]

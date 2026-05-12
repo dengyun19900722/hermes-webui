@@ -2259,6 +2259,73 @@ def _handle_audit_export(handler, parsed):
     return True
 
 
+def _handle_changelog(handler):
+    """Serve ZK_CHANGELOG.md parsed into JSON for the changelog dialog."""
+    import re as _re
+    from pathlib import Path as _Path
+
+    changelog_path = _Path(__file__).resolve().parent.parent / "ZK_CHANGELOG.md"
+    if not changelog_path.exists():
+        return j(handler, {"error": "ZK_CHANGELOG.md not found"}, status=404)
+
+    try:
+        content = changelog_path.read_text(encoding="utf-8")
+    except Exception:
+        return j(handler, {"error": "failed to read ZK_CHANGELOG.md"}, status=500)
+
+    # Parse [vx.x.x] — YYYY-MM-DD blocks
+    # Format:
+    # ## [v1.2.3] — 2026-05-06
+    # ### Added
+    # - item
+    # ### Fixed
+    # - item
+    entries = []
+    # Split on version headers
+    version_blocks = _re.split(r"(?=^## \[v\d)", content, flags=_re.MULTILINE)
+    for block in version_blocks:
+        block = block.strip()
+        if not block:
+            continue
+        # Parse version + date from first line: ## [vx.x.x] — YYYY-MM-DD
+        m = _re.match(r"^## \[(v[\d.]+)\][\s]*—[\s]*(\d{4}-\d{2}-\d{2})", block)
+        if not m:
+            continue
+        version = m.group(1)
+        date = m.group(2)
+        # Strip version header line, then group by ### section headers
+        body = block[m.end():].strip()
+        sections = {}
+        # Split on ### headers
+        parts = _re.split(r"(?=^###\s+)", body, flags=_re.MULTILINE)
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            sm = _re.match(r"^###\s+(.+)$", part, _re.MULTILINE)
+            if sm:
+                section_title = sm.group(1).strip()
+                section_body = part[sm.end():].strip()
+            else:
+                section_title = "Other"
+                section_body = part
+            # Extract bullet items
+            items = [
+                line.strip().lstrip("-* ").strip()
+                for line in section_body.split("\n")
+                if line.strip().startswith(("-" , "*"))
+            ]
+            if items:
+                sections[section_title] = items
+        entries.append({
+            "version": version,
+            "date": date,
+            "sections": sections,
+        })
+
+    return j(handler, {"entries": entries, "total": len(entries)})
+
+
 # ── GET routes ─────────────────────────────────────────────────────────────---
 
 
@@ -3328,6 +3395,10 @@ def handle_get(handler, parsed) -> bool:
         return _handle_audit_export(handler, parsed)
     if parsed.path.startswith("/api/audit/get"):
         return _handle_audit_get(handler, parsed)
+
+    # ── Changelog (GET) ────────────────────────────────────────────────────────
+    if parsed.path == "/api/changelog":
+        return _handle_changelog(handler)
 
     # ── MCP Tools (GET) ──
     if parsed.path == "/api/mcp/tools":

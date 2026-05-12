@@ -1,3 +1,12 @@
+// ZKREQ-098: Fix changelogDialog reparented inside kanbanBoardModal (blocks dialog)
+(function(){
+  var cd = document.getElementById('changelogDialog');
+  var km = document.getElementById('kanbanBoardModal');
+  if (cd && km && cd.parentElement === km) {
+    var next = km.nextSibling;
+    km.parentElement.insertBefore(cd, next);
+  }
+})();
 async function cancelStream(){
   const streamId = S.activeStreamId;
   if(!streamId) return;

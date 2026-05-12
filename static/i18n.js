@@ -2034,6 +2034,11 @@ const LOCALES = {
     audit_detail_close: 'Close',
     audit_prev: 'Prev',
     audit_next: 'Next',
+    changelog_title: 'Version History',
+    changelog_search_placeholder: 'Search versions or changes…',
+    changelog_no_results: 'No matching results.',
+    changelog_count: '共 {0} 个版本',
+    changelog_count_filtered: '显示 {0}/{1} 个版本',
   },
 
   ru: {
@@ -4867,6 +4872,11 @@ const LOCALES = {
     voice_mode_toggle: 'Voice mode',  // TODO: translate
     voice_mode_toggle_active: 'Exit voice mode',  // TODO: translate
     subagent_children: 'Subagent sessions',  // TODO: translate
+    changelog_title: '版本发布历史',
+    changelog_search_placeholder: '搜索版本或变更内容…',
+    changelog_no_results: '未找到匹配结果',
+    changelog_count: '共 {0} 个版本',
+    changelog_count_filtered: '显示 {0}/{1} 个版本',
   },
 
   zh: {

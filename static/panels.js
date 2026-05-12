@@ -46,19 +46,32 @@ const APP_TITLEBAR_KEYS = {
 function syncAppTitlebar() {
   const titleEl = document.getElementById('appTitlebarTitle');
   const subEl = document.getElementById('appTitlebarSub');
+  const brandEl = document.getElementById('appTitlebarBrand');
+  const botnameEl = document.getElementById('appTitlebarBotname');
   if (!titleEl) return;
+
+  // Sync bot name from settings (window._botName) to the left branding
+  if (botnameEl && typeof window._botName !== 'undefined') {
+    botnameEl.textContent = window._botName;
+  }
+
   const panel = (typeof _currentPanel === 'string' && _currentPanel) ? _currentPanel : 'chat';
   let mainText = '';
   let subText = '';
   let sourceLabel = '';
+  let showBrand = false;  // show Hermes brand in titlebar on non-chat panels
   if (panel === 'chat' && typeof S !== 'undefined' && S && S.session) {
-    mainText = S.session.title || (typeof t === 'function' ? t('untitled') : 'Untitled');
+    const rawTitle = S.session.title || (typeof t === 'function' ? t('untitled') : 'Untitled');
+    // Title is centred; branding is handled by the left logo+botname section
+    mainText = rawTitle;
     const vis = Array.isArray(S.messages) ? S.messages.filter(m => m && m.role && m.role !== 'tool') : [];
     if (typeof t === 'function') subText = t('n_messages', vis.length);
     if (S.session.is_cli_session) sourceLabel = S.session.source_label || S.session.source_tag || S.session.raw_source || '';
+    showBrand = false;
   } else {
     const key = APP_TITLEBAR_KEYS[panel];
     mainText = key && typeof t === 'function' ? t(key) : (panel.charAt(0).toUpperCase() + panel.slice(1));
+    showBrand = true;
   }
 
   // Don't touch the element while an inline rename is in progress — replacing
@@ -80,6 +93,11 @@ function syncAppTitlebar() {
       subEl.hidden = false;
     }
     else { subEl.textContent = ''; subEl.hidden = true; }
+  }
+
+  // Show Hermes brand badge on non-chat panels so the brand is always visible.
+  if (brandEl) {
+    brandEl.hidden = !showBrand;
   }
 
   // Double-click on the titlebar title → rename the active session (same behaviour

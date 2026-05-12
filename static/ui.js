@@ -6449,3 +6449,100 @@ async function exportAuditCSV() {
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
+
+function showChangelogDialog() {
+  const overlay = document.getElementById('changelogDialog');
+  if (!overlay) return;
+  const dialog = overlay.querySelector('.app-dialog');
+  overlay.style.display = 'flex';
+  overlay.setAttribute('aria-hidden', 'false');
+  // Set width explicitly so the CSS min() resolves after display:none→flex transition.
+  if (dialog) {
+    dialog.style.width = 'min(640px, 100%)';
+    dialog.style.maxHeight = '85vh';
+  }
+  document.getElementById('changelogSearch').value = '';
+  const list = document.getElementById('changelogList');
+  list.innerHTML = '<div style="text-align:center;color:var(--muted);padding:20px;" data-i18n="loading">加载中…</div>';
+  document.getElementById('changelogCount').textContent = '';
+  loadChangelog();
+}
+
+function closeChangelogDialog() {
+  const overlay = document.getElementById('changelogDialog');
+  if (overlay) {
+    overlay.style.display = 'none';
+    overlay.setAttribute('aria-hidden', 'true');
+  }
+}
+
+let _changelogCache = null;
+
+async function loadChangelog() {
+  try {
+    const res = await fetch('api/changelog', { credentials: 'include' });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    _changelogCache = data.entries || [];
+    filterChangelog();
+  } catch (e) {
+    document.getElementById('changelogList').innerHTML =
+      '<div style="text-align:center;color:var(--muted);padding:20px;">加载失败：' + escHtml(e.message) + '</div>';
+  }
+}
+
+function filterChangelog() {
+  const q = (document.getElementById('changelogSearch') || { value: '' }).value.trim().toLowerCase();
+  const list = document.getElementById('changelogList');
+  if (!_changelogCache) return;
+  const visible = _changelogCache.filter(entry => {
+    if (!q) return true;
+    if (entry.version.toLowerCase().includes(q)) return true;
+    if (entry.date.includes(q)) return true;
+    for (const items of Object.values(entry.sections || {})) {
+      for (const item of items) {
+        if (item.toLowerCase().includes(q)) return true;
+      }
+    }
+    return false;
+  });
+  if (!visible.length) {
+    list.innerHTML = '<div style="text-align:center;color:var(--muted);padding:20px;" data-i18n="changelog_no_results">未找到匹配结果</div>';
+    document.getElementById('changelogCount').textContent = '';
+    return;
+  }
+  const t_ = window.t || t;
+  let html = '';
+  for (const entry of visible) {
+    html += '<div class="changelog-entry">';
+    html += '<div class="changelog-entry-header">';
+    html += '<span class="changelog-version">' + escHtml(entry.version) + '</span>';
+    html += '<span class="changelog-date">' + escHtml(entry.date) + '</span>';
+    html += '</div>';
+    for (const [section, items] of Object.entries(entry.sections || {})) {
+      if (!items || !items.length) continue;
+      html += '<div class="changelog-section">';
+      html += '<div class="changelog-section-title">' + escHtml(section) + '</div>';
+      html += '<ul class="changelog-items">';
+      for (const item of items) {
+        html += '<li>' + escHtml(item) + '</li>';
+      }
+      html += '</ul></div>';
+    }
+    html += '</div>';
+  }
+  list.innerHTML = html;
+  const total = _changelogCache.length;
+  const shown = visible.length;
+  document.getElementById('changelogCount').textContent =
+    shown === total ? (t_ ? t_('changelog_count', total) : '共 ' + total + ' 个版本') :
+                      (t_ ? t_('changelog_count_filtered', shown, total) : '显示 ' + shown + '/' + total + ' 个版本');
+}
+
+// ESC closes changelog dialog
+document.addEventListener('keydown', e => {
+  const overlay = document.getElementById('changelogDialog');
+  if (overlay && overlay.style.display !== 'none' && e.key === 'Escape') {
+    closeChangelogDialog();
+  }
+});
