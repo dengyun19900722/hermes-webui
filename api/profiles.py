@@ -5,14 +5,15 @@ Wraps hermes_cli.profiles to provide profile switching for the web UI.
 The web UI maintains a process-level "active profile" that determines which
 HERMES_HOME directory is used for config, skills, memory, cron, and API keys.
 Profile switches update os.environ['HERMES_HOME'] and monkey-patch module-level
-cached paths in hermes-agent modules (skills_tool, cron/jobs) that snapshot
-HERMES_HOME at import time.
+cached paths in hermes-agent modules (skills_tool, skill_manager_tool,
+cron/jobs) that snapshot HERMES_HOME at import time.
 """
 import json
 import logging
 import os
 import re
 import shutil
+import sys
 import threading
 from pathlib import Path
 
@@ -36,6 +37,22 @@ _loaded_profile_env_keys: set[str] = set()
 # reads its own profile from the hermes_profile cookie instead of the
 # process-global _active_profile.
 _tls = threading.local()
+
+_SKILL_HOME_MODULES = ("tools.skills_tool", "tools.skill_manager_tool")
+
+
+def _patch_skill_home_modules(home: Path) -> None:
+    """Patch imported skill modules that cache HERMES_HOME at import time."""
+    for module_name in _SKILL_HOME_MODULES:
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        try:
+            module.HERMES_HOME = home
+            module.SKILLS_DIR = home / "skills"
+        except AttributeError:
+            logger.debug("Failed to patch %s module", module_name)
+
 
 def _unwrap_profile_home_to_base(home: Path) -> Path:
     """Return the base Hermes home when *home* is already a named profile dir."""
@@ -170,6 +187,33 @@ def _is_root_profile(name: str) -> bool:
         return name in _root_profile_name_cache
 
 
+def _profiles_match(row_profile, active_profile) -> bool:
+    """Return True if a session/project row's profile matches the active profile.
+
+    Treats both the literal alias 'default' and any renamed-root display name
+    (per _is_root_profile) as equivalent, so legacy rows tagged 'default'
+    still surface when the user has renamed the root profile to e.g. 'kinni',
+    and vice versa.
+
+    A row with no profile (`None` or empty string) is treated as belonging to
+    the root profile — that's the convention used by the legacy backfill at
+    api/models.py::all_sessions, and matches the default seen in
+    `static/sessions.js` (`S.activeProfile||'default'`).
+
+    Originally lived in api/routes.py; relocated here so both routes.py and
+    out-of-process consumers (mcp_server.py) can import the canonical helper
+    instead of duplicating the body. See #1614 for the visibility model.
+    """
+    row = row_profile or 'default'
+    active = active_profile or 'default'
+    if row == active:
+        return True
+    # Cross-alias the renamed root.
+    if _is_root_profile(row) and _is_root_profile(active):
+        return True
+    return False
+
+
 def get_active_profile_name() -> str:
     """Return the currently active profile name.
 
@@ -248,6 +292,82 @@ def get_active_hermes_home() -> Path:
 _cron_env_lock = threading.Lock()
 
 
+def _cron_profile_context_depth() -> int:
+    return int(getattr(_tls, 'cron_profile_depth', 0) or 0)
+
+
+def _push_cron_profile_context_depth() -> None:
+    _tls.cron_profile_depth = _cron_profile_context_depth() + 1
+
+
+def _pop_cron_profile_context_depth() -> None:
+    depth = _cron_profile_context_depth()
+    _tls.cron_profile_depth = max(0, depth - 1)
+
+
+def _home_for_scheduled_cron_job(job: dict) -> Path:
+    """Resolve the profile home an auto-fired scheduler job should execute in.
+
+    Legacy jobs with no profile keep the scheduler's server-default profile.
+    Jobs pinned to a named profile execute under that profile's HERMES_HOME, so
+    an in-process WebUI scheduler thread does not leak process-global config or
+    .env into the agent run. If a profile was deleted after the job was saved,
+    fall back to the server default rather than crashing every scheduler tick.
+    """
+    raw = str((job or {}).get('profile') or '').strip()
+    if not raw:
+        return get_active_hermes_home()
+    if _is_root_profile(raw):
+        return _DEFAULT_HERMES_HOME
+    if not _PROFILE_ID_RE.fullmatch(raw):
+        logger.warning(
+            "Cron job %s has invalid profile %r; falling back to server default",
+            (job or {}).get('id', '?'), raw,
+        )
+        return get_active_hermes_home()
+    home = _resolve_named_profile_home(raw)
+    if not home.is_dir():
+        logger.warning(
+            "Cron job %s references missing profile %r; falling back to server default",
+            (job or {}).get('id', '?'), raw,
+        )
+        return get_active_hermes_home()
+    return home
+
+
+def install_cron_scheduler_profile_isolation() -> None:
+    """Patch cron.scheduler.run_job for WebUI in-process scheduler safety.
+
+    Standard WebUI deployments do not start the scheduler thread in-process, but
+    if a future/single-process deployment calls cron.scheduler.tick() from the
+    WebUI worker, tick's background job path has no request TLS context. Wrap
+    run_job so each auto-fired job's persisted ``profile`` field gets the same
+    HERMES_HOME isolation as the manual /api/crons/run path.
+    """
+    try:
+        import cron.scheduler as _cs
+    except ImportError:
+        logger.debug("install_cron_scheduler_profile_isolation: cron.scheduler unavailable")
+        return
+
+    original = getattr(_cs, 'run_job', None)
+    if original is None or getattr(original, '_webui_profile_isolated', False):
+        return
+
+    def _webui_profile_isolated_run_job(job, *args, **kwargs):
+        # Manual WebUI runs already enter cron_profile_context_for_home before
+        # calling run_job. Avoid nesting the non-reentrant env lock or changing
+        # the explicitly selected manual execution profile.
+        if _cron_profile_context_depth() > 0:
+            return original(job, *args, **kwargs)
+        with cron_profile_context_for_home(_home_for_scheduled_cron_job(job)):
+            return original(job, *args, **kwargs)
+
+    _webui_profile_isolated_run_job._webui_profile_isolated = True
+    _webui_profile_isolated_run_job._webui_original_run_job = original
+    _cs.run_job = _webui_profile_isolated_run_job
+
+
 class cron_profile_context_for_home:
     """Context manager that pins HERMES_HOME to an explicit profile home path.
 
@@ -261,6 +381,7 @@ class cron_profile_context_for_home:
 
     def __enter__(self):
         _cron_env_lock.acquire()
+        _push_cron_profile_context_depth()
         try:
             self._prev_env = os.environ.get('HERMES_HOME')
             os.environ['HERMES_HOME'] = str(self._home)
@@ -296,6 +417,7 @@ class cron_profile_context_for_home:
             except (ImportError, AttributeError):
                 logger.debug("cron_profile_context_for_home: cron.scheduler unavailable")
         except Exception:
+            _pop_cron_profile_context_depth()
             _cron_env_lock.release()
             raise
         return self
@@ -319,6 +441,7 @@ class cron_profile_context_for_home:
                 except (ImportError, AttributeError):
                     pass
         finally:
+            _pop_cron_profile_context_depth()
             _cron_env_lock.release()
         return False
 
@@ -337,6 +460,7 @@ class cron_profile_context:
 
     def __enter__(self):
         _cron_env_lock.acquire()
+        _push_cron_profile_context_depth()
         try:
             self._prev_env = os.environ.get('HERMES_HOME')
             home = get_active_hermes_home()
@@ -371,6 +495,7 @@ class cron_profile_context:
             except (ImportError, AttributeError):
                 logger.debug("cron_profile_context: cron.scheduler unavailable; env-var only")
         except Exception:
+            _pop_cron_profile_context_depth()
             _cron_env_lock.release()
             raise
         return self
@@ -397,6 +522,7 @@ class cron_profile_context:
                 except (ImportError, AttributeError):
                     pass
         finally:
+            _pop_cron_profile_context_depth()
             _cron_env_lock.release()
         return False
 
@@ -502,13 +628,7 @@ def _set_hermes_home(home: Path):
     """Set HERMES_HOME env var and monkey-patch cached module-level paths."""
     os.environ['HERMES_HOME'] = str(home)
 
-    # Patch skills_tool module-level cache (snapshots HERMES_HOME at import)
-    try:
-        import tools.skills_tool as _sk
-        _sk.HERMES_HOME = home
-        _sk.SKILLS_DIR = home / 'skills'
-    except (ImportError, AttributeError):
-        logger.debug("Failed to patch skills_tool module")
+    _patch_skill_home_modules(home)
 
     # Patch cron/jobs module-level cache
     try:
@@ -573,6 +693,7 @@ def init_profile_state() -> None:
     _active_profile = _read_active_profile_file()
     home = get_active_hermes_home()
     _set_hermes_home(home)
+    install_cron_scheduler_profile_isolation()
     _reload_dotenv(home)
 
 
@@ -596,13 +717,18 @@ def switch_profile(name: str, *, process_wide: bool = True) -> dict:
     # Import here to avoid circular import at module load
     from api.config import STREAMS, STREAMS_LOCK, reload_config
 
-    # Block if agent is running
-    with STREAMS_LOCK:
-        if len(STREAMS) > 0:
-            raise RuntimeError(
-                'Cannot switch profiles while an agent is running. '
-                'Cancel or wait for it to finish.'
-            )
+    # Process-wide profile switches mutate HERMES_HOME, module-level path caches,
+    # os.environ-backed .env keys, and the global config cache. Keep those blocked
+    # while any agent stream is active. Per-client WebUI switches are cookie/TLS
+    # scoped (process_wide=False) and do not mutate those globals, so users can
+    # leave a running session in one profile and start work in another (#1700).
+    if process_wide:
+        with STREAMS_LOCK:
+            if len(STREAMS) > 0:
+                raise RuntimeError(
+                    'Cannot switch profiles while an agent is running. '
+                    'Cancel or wait for it to finish.'
+                )
 
     # Resolve profile directory
     if _is_root_profile(name):
