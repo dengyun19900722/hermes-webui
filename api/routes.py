@@ -3027,6 +3027,14 @@ def _serve_shell_unavailable(handler, exc: Exception) -> bool:
 def handle_get(handler, parsed) -> bool:
     """Handle all GET routes. Returns True if handled, False for 404."""
 
+    if parsed.path.startswith("/api/notes"):
+        from api.obsidian_notes import handle_notes_get
+
+        result = handle_notes_get(handler, parsed)
+        if result is False:
+            return bad(handler, f"unknown notes endpoint: GET {parsed.path}", status=404)
+        return True
+
     if parsed.path.startswith("/session/static/"):
         # Strip the leading "/session" so _serve_static() sees a path that
         # starts with "/static/" (its required prefix). _serve_static enforces
@@ -4072,6 +4080,10 @@ def handle_post(handler, parsed) -> bool:
         return handle_upload(handler)
     if parsed.path == "/api/upload/extract":
         return handle_upload_extract(handler)
+    if parsed.path == "/api/notes/upload":
+        from api.obsidian_notes import handle_notes_upload
+
+        return handle_notes_upload(handler)
 
     if parsed.path == "/api/transcribe":
         return handle_transcribe(handler)
@@ -4096,6 +4108,13 @@ def handle_post(handler, parsed) -> bool:
         result = handle_kanban_post(handler, parsed, body)
         if result is False:
             return _kanban_unknown_endpoint(handler, parsed, "POST")
+        return True
+    if parsed.path.startswith("/api/notes"):
+        from api.obsidian_notes import handle_notes_post
+
+        result = handle_notes_post(handler, parsed, body)
+        if result is False:
+            return bad(handler, f"unknown notes endpoint: POST {parsed.path}", status=404)
         return True
     if parsed.path == "/api/dashboard/config":
         from api import dashboard_probe
@@ -5356,6 +5375,21 @@ def handle_post(handler, parsed) -> bool:
     return False  # 404
 
 
+def handle_put(handler, parsed) -> bool:
+    """Handle all PUT routes. Returns True if handled, False for 404."""
+    if not _check_csrf(handler):
+        return j(handler, {"error": "Cross-origin request rejected"}, status=403)
+    body = read_body(handler)
+    if parsed.path.startswith("/api/notes"):
+        from api.obsidian_notes import handle_notes_put
+
+        result = handle_notes_put(handler, parsed, body)
+        if result is False:
+            return bad(handler, f"unknown notes endpoint: PUT {parsed.path}", status=404)
+        return True
+    return False
+
+
 def handle_patch(handler, parsed) -> bool:
     """Handle all PATCH routes. Returns True if handled, False for 404."""
     if not _check_csrf(handler):
@@ -5382,6 +5416,13 @@ def handle_delete(handler, parsed) -> bool:
         result = handle_kanban_delete(handler, parsed, body)
         if result is False:
             return _kanban_unknown_endpoint(handler, parsed, "DELETE")
+        return True
+    if parsed.path.startswith("/api/notes"):
+        from api.obsidian_notes import handle_notes_delete
+
+        result = handle_notes_delete(handler, parsed, body)
+        if result is False:
+            return bad(handler, f"unknown notes endpoint: DELETE {parsed.path}", status=404)
         return True
     return False
 
