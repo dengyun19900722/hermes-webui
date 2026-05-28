@@ -2,8 +2,8 @@
 Shared pytest fixtures for webui-mvp tests.
 
 TEST ISOLATION:
-  Tests run against a SEPARATE server instance on port 8788 with a
-  completely separate state directory. Production data is never touched.
+  Tests run against a SEPARATE server instance on an auto-derived test port
+  with a completely separate state directory. Production data is never touched.
   The test state dir is wiped before each full test run and again on teardown.
 
 PATH DISCOVERY:
@@ -32,7 +32,7 @@ HERMES_HOME = pathlib.Path(os.getenv('HERMES_HOME', str(HOME / '.hermes')))
 
 # ── Test server config ────────────────────────────────────────────────────
 # Port and state dir auto-derive from the repo path when no env var is set,
-# giving every worktree its own isolated port (8800-8899) and state directory.
+# giving every worktree its own isolated port (20000-29999) and state directory.
 # Override with HERMES_WEBUI_TEST_PORT / HERMES_WEBUI_TEST_STATE_DIR to pin.
 
 def _auto_test_port(repo_root) -> int:
@@ -170,6 +170,36 @@ def pytest_configure(config):
 # Setting this here instead of in a fixture so it lands BEFORE any test-file
 # imports trigger botocore initialisation.
 os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")
+
+# ── Permanent os.execv guard for the pytest session ────────────────────────
+# Several tests in tests/test_update_banner_fixes.py exercise
+# api.updates._schedule_restart(), which spawns a DAEMON thread that sleeps
+# for a short delay and then calls ``os.execv(sys.executable, sys.argv)``.
+# Those tests monkeypatch ``os.execv`` to a no-op for the test scope, but
+# monkeypatch teardown happens at test exit — if the daemon thread has not
+# yet woken up by then (system load, GC pause, _apply_lock contention), the
+# real ``os.execv`` is restored before the thread fires it. The daemon then
+# REPLACES the pytest process image with a fresh ``pytest tests/ -q ...``
+# invocation, looking from the outside like pytest "hangs at 99%" and then
+# restarts the entire suite from 0% — a self-perpetuating loop.
+#
+# Daemon threads cannot be reliably joined from a test fixture (they live in
+# ``api.updates`` module scope), so the only safe answer is to render
+# ``os.execv`` permanently inert for the pytest session. Production code is
+# unaffected because production never imports this conftest.
+#
+# Tests that need to verify execv WAS called still monkeypatch it themselves
+# — their patched version takes precedence over this no-op wrapper for the
+# test's lifetime, and the no-op only kicks in after teardown for daemon
+# threads that wake up late.
+_real_execv = os.execv
+
+def _pytest_session_safe_execv(_exe, _args):  # pragma: no cover — never called in prod
+    # Drop the call on the floor. A late-firing daemon thread from
+    # _schedule_restart() must not be able to re-exec the pytest process.
+    return None
+
+os.execv = _pytest_session_safe_execv
 
 # ── Hermetic network isolation ─────────────────────────────────────────────
 # Tests must not reach the public internet. Outbound to Anthropic / OpenAI /
@@ -348,6 +378,11 @@ def pytest_collection_modifyitems(config, items):
         'test_cron_update_unknown_job_404',
         'test_cron_delete_unknown_404',
         'test_crons_output_limit_param',
+        'test_delivery_options_returns_200',
+        'test_delivery_options_has_platforms',
+        'test_delivery_options_structure',
+        'test_delivery_options_includes_common_platforms',
+        'test_delivery_options_local_label',
         # Skills endpoints (need tools.skills_tool module)
         'test_skills_list',
         'test_skills_list_has_required_fields',
@@ -506,6 +541,7 @@ def test_server():
     # pytest-side block can't see.
     env["HERMES_WEBUI_TEST_NETWORK_BLOCK"] = "1"
     env.update({
+        "HERMES_WEBUI_WORKSPACE_GIT_DESTRUCTIVE": "1",
         "HERMES_WEBUI_PORT":              str(TEST_PORT),
         "HERMES_WEBUI_HOST":              "127.0.0.1",
         "HERMES_WEBUI_STATE_DIR":         str(TEST_STATE_DIR),

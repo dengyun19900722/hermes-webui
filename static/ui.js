@@ -1,7 +1,12 @@
 const S={session:null,messages:[],entries:[],busy:false,pendingFiles:[],toolCalls:[],activeStreamId:null,currentDir:'.',activeProfile:'default',showHiddenWorkspaceFiles:false};
+
+function assistantDisplayName(){
+  if(S.activeProfile&&S.activeProfile!=='default') return S.activeProfile.charAt(0).toUpperCase()+S.activeProfile.slice(1);
+  return window._botName||'Hermes';
+}
 const INFLIGHT={};  // keyed by session_id while request in-flight
 const SESSION_QUEUES={};  // keyed by session_id for queued follow-up turns
-const MAX_UPLOAD_BYTES=20*1024*1024;
+const MAX_UPLOAD_BYTES=(window.__HERMES_CONFIG__&&window.__HERMES_CONFIG__.maxUploadBytes)||20*1024*1024;
 const MAX_UPLOAD_MB=Math.round(MAX_UPLOAD_BYTES/1024/1024);
 // Tracks which session's queue to drain in setBusy(false).
 // Set to activeSid just before setBusy(false) in done/error handlers so the
@@ -260,9 +265,42 @@ function _statusCardHtml(card){
 const MESSAGE_RENDER_WINDOW_DEFAULT=50;
 let _messageRenderWindowSid=null;
 let _messageRenderWindowSize=MESSAGE_RENDER_WINDOW_DEFAULT;
+// Cached visWithIdx array — invalidated when S.messages.length changes.
+let _visWithIdxCache=null;
+let _visWithIdxCacheLen=0;
 function _resetMessageRenderWindow(sid){
   _messageRenderWindowSid=sid||null;
   _messageRenderWindowSize=MESSAGE_RENDER_WINDOW_DEFAULT;
+  _clearRenderCache();
+  _visWithIdxCache=null;
+  _visWithIdxCacheLen=0;
+}
+
+// ── renderMd / _renderUserFencedBlocks cache ──────────────────────────────
+// Long sessions re-render the same messages on every renderMessages() call.
+// Cache the rendered HTML so unchanged messages skip the expensive regex
+// pipeline entirely.  ~95% of messages are identical between renders.
+const _renderCache = new Map();
+const _renderCacheMax = 300;
+function _clearRenderCache(){ _renderCache.clear(); }
+function _renderCacheKey(text, isUser){
+  const p = isUser ? 'u' : 'a';
+  // Short content: use the full string as key (cheap Map lookup).
+  // Long content: length + prefix + suffix is good enough — collisions on
+  // 20-char prefix+suffix are vanishingly rare for chat messages.
+  if(text.length <= 500) return p + ':' + text;
+  return p + ':' + text.length + ':' + text.slice(0,20) + ':' + text.slice(-20);
+}
+function _getCachedRender(text, isUser){
+  const key = _renderCacheKey(text, isUser);
+  const hit = _renderCache.get(key);
+  if(hit !== undefined) return hit;
+  const rendered = isUser
+    ? _renderUserFencedBlocks(text)
+    : renderMd(_stripXmlToolCallsDisplay(String(text)));
+  if(_renderCache.size > _renderCacheMax) _renderCache.clear();
+  _renderCache.set(key, rendered);
+  return rendered;
 }
 function _currentMessageRenderWindowSize(){
   return Math.max(
@@ -350,6 +388,43 @@ async function jumpToSessionStart(){
   }
 }
 
+function _userMessageDomId(rawIdx){
+  return `msg-user-${rawIdx}`;
+}
+
+function _questionJumpButtonHtml(questionRawIdx){
+  if(typeof questionRawIdx!=='number'||questionRawIdx<0) return '';
+  const label=t('jump_to_question')||'Question';
+  const title=t('jump_to_question_label')||'Jump to the question for this response';
+  return `<button class="msg-question-jump-btn" type="button" title="${esc(title)}" aria-label="${esc(title)}" onclick="jumpToTurnQuestion(${questionRawIdx})"><span aria-hidden="true">↑</span><span>${esc(label)}</span></button>`;
+}
+
+function _highlightQuestionRow(row){
+  if(!row) return;
+  row.classList.remove('msg-question-highlight');
+  void row.offsetWidth;
+  row.classList.add('msg-question-highlight');
+  window.setTimeout(()=>row.classList.remove('msg-question-highlight'),1800);
+}
+
+async function jumpToTurnQuestion(questionRawIdx){
+  const container=$('messages');
+  if(!container||typeof questionRawIdx!=='number'||questionRawIdx<0) return;
+  const scrollToTarget=()=>{
+    const row=document.getElementById(_userMessageDomId(questionRawIdx));
+    if(!row) return false;
+    row.scrollIntoView({block:'center',behavior:'smooth'});
+    _highlightQuestionRow(row);
+    return true;
+  };
+  if(scrollToTarget()) return;
+  if(_messageHiddenBeforeCount()>0){
+    _messageRenderWindowSize=Math.max(_currentMessageRenderWindowSize(),_messageRenderableMessageCount());
+    renderMessages({ preserveScroll:true });
+    requestAnimationFrame(scrollToTarget);
+  }
+}
+
 const DASHBOARD_STATUS_TTL_MS=60000;
 let _dashboardStatusCache=null;
 let _dashboardStatusFetchedAt=0;
@@ -359,10 +434,15 @@ function _dashboardIsBrowserLoopback(){
   return host==='127.0.0.1'||host==='localhost'||host==='::1';
 }
 function _dashboardBrowserUrl(status){
-  if(!status||!status.running||!status.port) return '';
+  if(!status||!status.running) return '';
+  if(status.browser_url||status.url){
+    try{return new URL(status.browser_url||status.url).toString().replace(/\/$/,'');}
+    catch(_){}
+  }
+  if(!status.port) return '';
   let source;
-  try{source=new URL(status.url||('http://127.0.0.1:'+status.port));}
-  catch(_){source=new URL('http://127.0.0.1:'+status.port);}
+  try{source=new URL('http://127.0.0.1:'+status.port);}
+  catch(_){return '';}
   const browserHost=window.location.hostname||source.hostname;
   const displayHost=browserHost.includes(':')&&!browserHost.startsWith('[')?'['+browserHost+']':browserHost;
   return source.protocol+'//'+displayHost+':'+status.port;
@@ -450,7 +530,31 @@ if(document.readyState==='complete'){
 }
 
 /* ── Image lightbox — click any .msg-media-img to enlarge ─────────────────── */
-function _openImgLightbox(src, alt) {
+function _openImgLightbox(imgEl) {
+  if(!imgEl || !imgEl.src) return;
+  const src=imgEl.src, alt=imgEl.alt||'';
+  // Find sibling images in the same message for prev/next navigation.
+  // Walk up from the clicked image to find the message container, then
+  // collect all .msg-media-img within it.
+  // Composer attach-tray chips bypass sibling detection — each chip click
+  // opens a single-image lightbox (no navigation between staged uploads).
+  let allImages = [];
+  let startIndex = 0;
+  if(!imgEl.closest('.attach-tray')){
+    let container = imgEl.closest('.msg-row, .assistant-turn-blocks, .assistant-turn, .user-turn');
+    if(!container) container = imgEl.parentElement;
+    if(container){
+      const siblings = container.querySelectorAll('.msg-media-img');
+      if(siblings.length>1){
+        allImages = Array.from(siblings);
+        startIndex = allImages.indexOf(imgEl);
+        if(startIndex===-1) startIndex=0;
+      }
+    }
+  }
+  _openImgLightboxWithNav(src, alt, allImages, startIndex);
+}
+function _openImgLightboxWithNav(src, alt, images, index) {
   const lb = document.createElement('div');
   lb.className = 'img-lightbox';
   lb.setAttribute('role', 'dialog');
@@ -466,31 +570,84 @@ function _openImgLightbox(src, alt) {
   cls.onclick = () => _closeImgLightbox(lb);
   lb.appendChild(img);
   lb.appendChild(cls);
+  // Prev/Next navigation — store index and images on lb so a single set of
+  // handlers reads live values without closure churn on every nav.
+  lb._navIndex = index;
+  lb._navImages = (images && images.length>1) ? images : null;
+  if(lb._navImages){
+    const prevBtn = document.createElement('button');
+    prevBtn.className = 'img-lightbox-nav img-lightbox-nav-prev';
+    prevBtn.setAttribute('aria-label', 'Previous image');
+    prevBtn.innerHTML = '‹';
+    prevBtn.onclick = e => { e.stopPropagation(); _navigateLightbox(lb, -1); };
+    lb.appendChild(prevBtn);
+    const nextBtn = document.createElement('button');
+    nextBtn.className = 'img-lightbox-nav img-lightbox-nav-next';
+    nextBtn.setAttribute('aria-label', 'Next image');
+    nextBtn.innerHTML = '›';
+    nextBtn.onclick = e => { e.stopPropagation(); _navigateLightbox(lb, 1); };
+    lb.appendChild(nextBtn);
+    lb._counterEl = document.createElement('div');
+    lb._counterEl.className = 'img-lightbox-counter';
+    lb.appendChild(lb._counterEl);
+    lb._counterEl.textContent = (index+1) + ' / ' + images.length;
+  }
   lb.onclick = () => _closeImgLightbox(lb);
   document.body.appendChild(lb);
-  // Close on Escape
-  lb._escHandler = e => { if(e.key==='Escape') _closeImgLightbox(lb); };
-  document.addEventListener('keydown', lb._escHandler);
+  // Single keyboard handler — reads lb._navX live, no remove/add churn.
+  lb._keyHandler = e => {
+    if(e.key==='Escape'){ _closeImgLightbox(lb); return; }
+    if(lb._navImages){
+      if(e.key==='ArrowLeft'){ e.preventDefault(); _navigateLightbox(lb, -1); }
+      if(e.key==='ArrowRight'){ e.preventDefault(); _navigateLightbox(lb, 1); }
+    }
+  };
+  document.addEventListener('keydown', lb._keyHandler);
+}
+function _navigateLightbox(lb, direction) {
+  const images = lb._navImages;
+  if(!images) return;
+  const newIndex = lb._navIndex + direction;
+  if(newIndex<0 || newIndex>=images.length) return;
+  lb._navIndex = newIndex;
+  const nextImg = images[newIndex];
+  const lbImg = lb.querySelector('img');
+  if(!lbImg) return;
+  lbImg.src = nextImg.src;
+  lbImg.alt = nextImg.alt || '';
+  lb.setAttribute('aria-label', nextImg.alt || 'Image');
+  // Update counter via stored reference — no DOM query.
+  if(lb._counterEl) lb._counterEl.textContent = (newIndex+1) + ' / ' + images.length;
 }
 function _closeImgLightbox(lb) {
   if(!lb || !lb.parentNode) return;
-  document.removeEventListener('keydown', lb._escHandler);
+  document.removeEventListener('keydown', lb._keyHandler);
   lb.style.animation = 'lb-in .12s ease reverse';
   setTimeout(() => lb.parentNode && lb.parentNode.removeChild(lb), 120);
 }
 
 document.addEventListener('click', e => {
   if(!e.target || !e.target.closest) return;
+  const workspaceLink=e.target.closest('a[href^="#workspace="]');
+  if(workspaceLink){
+    e.preventDefault();
+    const href=workspaceLink.getAttribute('href')||'';
+    try{
+      const rel=decodeURIComponent(href.slice('#workspace='.length));
+      if(rel && typeof openArtifactPath==='function') openArtifactPath(rel);
+    }catch(_){}
+    return;
+  }
   // Message-attached images (already wired since v0.50.x).
   let img = e.target.closest('.msg-media-img');
-  if(img){ _openImgLightbox(img.src, img.alt); return; }
+  if(img){ _openImgLightbox(img); return; }
   // Composer attach-tray image thumbnails — click any pasted/dropped image
   // chip to lightbox-zoom it before sending. Excludes audio/video chips,
   // which keep their inline media controls. SVG thumbnails (.attach-thumb--svg)
   // are still images visually, so they qualify.
   img = e.target.closest('.attach-thumb');
   if(img && img.tagName === 'IMG'){
-    _openImgLightbox(img.src, img.alt || img.title || 'Attached image');
+    _openImgLightbox(img);
     return;
   }
 });
@@ -597,10 +754,97 @@ if(document.readyState==='loading') document.addEventListener('DOMContentLoaded'
 else _initMediaPlaybackObserver();
 setTimeout(_initMediaPlaybackObserver,0);
 
+// ── Ambient provider quota indicator (#1766) ────────────────────────────────
+let _providerQuotaRefreshInFlight=false;
+
+function _formatQuotaMoneyShort(value){
+  const n=Number(value);
+  if(!Number.isFinite(n)) return '';
+  if(Math.abs(n)>=100) return '$'+n.toFixed(0);
+  if(Math.abs(n)>=10) return '$'+n.toFixed(1);
+  return '$'+n.toFixed(2);
+}
+function _formatQuotaPercentShort(value){
+  const n=Number(value);
+  if(!Number.isFinite(n)) return '';
+  return Math.max(0,Math.min(100,n)).toFixed(0)+'%';
+}
+function _providerQuotaIndicatorText(status){
+  if(!status||status.status!=='available') return null;
+  const provider=status.display_name||status.provider||'Provider';
+  const accountLimits=status.account_limits||null;
+  if(accountLimits&&Array.isArray(accountLimits.windows)&&accountLimits.windows.length){
+    const w=accountLimits.windows.find(x=>x&&Number.isFinite(Number(x.remaining_percent)))||accountLimits.windows[0];
+    const remaining=_formatQuotaPercentShort(w&&w.remaining_percent);
+    if(remaining) return {label:provider+' '+remaining, title:(status.message||'Provider usage loaded')+' — '+remaining+' remaining'};
+  }
+  const quota=status.quota||null;
+  if(quota){
+    const remaining=_formatQuotaMoneyShort(quota.limit_remaining);
+    const used=_formatQuotaMoneyShort(quota.usage);
+    const limit=_formatQuotaMoneyShort(quota.limit);
+    if(remaining){
+      const parts=[];
+      if(used) parts.push('used '+used);
+      if(limit) parts.push('limit '+limit);
+      return {label:provider+' '+remaining, title:(status.message||'Provider quota loaded')+(parts.length?' — '+parts.join(' · '):'')};
+    }
+  }
+  return null;
+}
+function renderProviderQuotaIndicator(status){
+  const chip=$('providerQuotaChip');
+  const label=$('providerQuotaChipLabel');
+  if(!chip||!label) return;
+  // Hide entirely when the user has disabled the ambient quota chip in Settings.
+  // Default is off (window._showQuotaChip defaults to false in boot.js) so users
+  // never see the chip unless they opt in.
+  if(window._showQuotaChip!==true){
+    chip.hidden=true;
+    label.textContent='';
+    chip.removeAttribute('title');
+    return;
+  }
+  const text=_providerQuotaIndicatorText(status);
+  if(!text||status.status!=='available'||(!status.quota&&!status.account_limits)){
+    chip.hidden=true;
+    label.textContent='';
+    chip.removeAttribute('title');
+    return;
+  }
+  label.textContent=text.label;
+  chip.title=text.title;
+  chip.hidden=false;
+}
+async function refreshProviderQuotaIndicator(){
+  // Short-circuit before the fetch when the chip is disabled — no point asking
+  // the server for quota data the UI will throw away.
+  if(window._showQuotaChip!==true){
+    const chip=$('providerQuotaChip');
+    if(chip){chip.hidden=true;chip.removeAttribute('title');}
+    return;
+  }
+  if(_providerQuotaRefreshInFlight) return;
+  _providerQuotaRefreshInFlight=true;
+  try{
+    const status=await api('/api/provider/quota');
+    renderProviderQuotaIndicator(status);
+  }catch(_e){
+    renderProviderQuotaIndicator(null);
+  }finally{
+    _providerQuotaRefreshInFlight=false;
+  }
+}
+window.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible'&&typeof refreshProviderQuotaIndicator==='function') refreshProviderQuotaIndicator();
+});
+
 // Dynamic model labels -- populated by populateModelDropdown(), fallback to static map
 let _dynamicModelLabels={};
 window._configuredModelBadges=window._configuredModelBadges||{};
 const MODEL_STATE_KEY='hermes-webui-model-state';
+const PENDING_SESSION_MODEL_PREFIX='hermes-webui-pending-session-model:';
+const PENDING_SESSION_MODEL_MAX_AGE_MS=10*60*1000;
 
 // ── Smart model resolver ────────────────────────────────────────────────────
 // Finds the best matching option value in a <select> for a given model ID.
@@ -610,6 +854,7 @@ const MODEL_STATE_KEY='hermes-webui-model-state';
 // first colliding entry.
 function _getOptionProviderId(opt){
   if(!opt) return '';
+  if(opt.dataset && opt.dataset.provider) return opt.dataset.provider;
   const group=opt.parentElement;
   if(group && group.tagName==='OPTGROUP' && group.dataset && group.dataset.provider){
     return group.dataset.provider;
@@ -623,6 +868,18 @@ function _providerFromModelValue(modelId){
   if(value.startsWith('@')&&value.includes(':')) return value.slice(1,value.lastIndexOf(':'));
   return '';
 }
+function _providerSkipsModelMismatchWarning(providerId){
+  const p=String(providerId||'').toLowerCase();
+  return !p||p==='custom'||p.startsWith('custom:')||p==='openrouter';
+}
+function _providerDefersMissingModelFallback(providerId){
+  const p=String(providerId||'').toLowerCase();
+  // Named custom providers and OpenRouter can legitimately route vendor-prefixed
+  // model IDs that are not present in the current static catalog. Do not
+  // silently rewrite those sessions to the default just because the option has
+  // not been hydrated yet (#2405).
+  return p.startsWith('custom:')||p==='openrouter';
+}
 function _modelStateForSelect(sel, modelId){
   const value=String(modelId||'').trim();
   if(!value) return {model:'',model_provider:null};
@@ -631,6 +888,33 @@ function _modelStateForSelect(sel, modelId){
   const opt=sel&&sel.selectedOptions&&sel.selectedOptions[0];
   const provider=String(_getOptionProviderId(opt)||'').trim();
   return {model:value,model_provider:(provider&&provider!=='default')?provider:null};
+}
+function _captureModelDropdownSelection(sel){
+  if(!sel||!sel.value) return null;
+  try{
+    const state=_modelStateForSelect(sel,sel.value);
+    if(state&&state.model) return state;
+  }catch(_){}
+  return {model:String(sel.value||''),model_provider:null};
+}
+function _reconcileModelDropdownSelection(sel,data,previousState,opts){
+  if(!sel) return null;
+  const activeSession=(typeof S!=='undefined'&&S&&S.session)?S.session:null;
+  // Fresh boot is the only path where the profile/server default intentionally
+  // beats a browser-persisted or static fallback value. Every other model-list
+  // rebuild should preserve the loaded session model or the user's current
+  // in-page selection when it still exists in the refreshed catalog.
+  const shouldApplyBootDefault=!!(opts&&opts.preferProfileDefaultOnFreshBoot);
+  if(shouldApplyBootDefault && data&&data.default_model && !(activeSession&&activeSession.model)){
+    return _applyModelToDropdown(data.default_model,sel,data.active_provider||null);
+  }
+  if(activeSession&&activeSession.model){
+    return _applyModelToDropdown(activeSession.model,sel,activeSession.model_provider||null);
+  }
+  if(previousState&&previousState.model){
+    return _applyModelToDropdown(previousState.model,sel,previousState.model_provider||null);
+  }
+  return null;
 }
 function _providerQualifiedModelValueForSelect(sel, modelId){
   return _modelStateForSelect(sel,modelId).model;
@@ -668,6 +952,71 @@ function _writePersistedModelState(model, modelProvider){
 function _clearPersistedModelState(){
   localStorage.removeItem('hermes-webui-model');
   localStorage.removeItem(MODEL_STATE_KEY);
+}
+function _pendingSessionModelKey(sessionId){
+  return PENDING_SESSION_MODEL_PREFIX+String(sessionId||'');
+}
+function _rememberPendingSessionModel(sessionId, model, modelProvider){
+  const sid=String(sessionId||'').trim();
+  const value=String(model||'').trim();
+  if(!sid||!value) return;
+  const provider=modelProvider?String(modelProvider).trim():(_providerFromModelValue(value)||null);
+  try{
+    sessionStorage.setItem(_pendingSessionModelKey(sid), JSON.stringify({
+      model:value,
+      model_provider:provider||null,
+      saved_at:Date.now(),
+    }));
+  }catch(_){}
+}
+function _readPendingSessionModel(sessionId){
+  const sid=String(sessionId||'').trim();
+  if(!sid) return null;
+  try{
+    const raw=sessionStorage.getItem(_pendingSessionModelKey(sid));
+    if(!raw) return null;
+    const parsed=JSON.parse(raw);
+    const model=String(parsed&&parsed.model||'').trim();
+    if(!model){
+      sessionStorage.removeItem(_pendingSessionModelKey(sid));
+      return null;
+    }
+    const savedAt=Number(parsed.saved_at||0);
+    if(savedAt&&Date.now()-savedAt>PENDING_SESSION_MODEL_MAX_AGE_MS){
+      sessionStorage.removeItem(_pendingSessionModelKey(sid));
+      return null;
+    }
+    return {
+      model,
+      model_provider:parsed&&parsed.model_provider?String(parsed.model_provider):(_providerFromModelValue(model)||null),
+    };
+  }catch(_){
+    try{sessionStorage.removeItem(_pendingSessionModelKey(sid));}catch(__){}
+    return null;
+  }
+}
+function _clearPendingSessionModel(sessionId){
+  const sid=String(sessionId||'').trim();
+  if(!sid) return;
+  try{sessionStorage.removeItem(_pendingSessionModelKey(sid));}catch(_){}
+}
+function _applyPendingSessionModelForSession(sessionId){
+  if(!S.session||S.session.session_id!==sessionId) return false;
+  const pending=_readPendingSessionModel(sessionId);
+  if(!pending) return false;
+  const sameModel=String(S.session.model||'')===pending.model;
+  const sameProvider=String(S.session.model_provider||'')===String(pending.model_provider||'');
+  if(sameModel&&sameProvider){
+    _clearPendingSessionModel(sessionId);
+    return false;
+  }
+  S.session.model=pending.model;
+  S.session.model_provider=pending.model_provider||null;
+  const retry=_persistSessionModelCorrection(pending.model,pending.model_provider||null,{propagateErrors:true});
+  if(retry&&typeof retry.then==='function'){
+    retry.then(()=>_clearPendingSessionModel(sessionId)).catch(()=>{});
+  }
+  return true;
 }
 function _findModelInDropdown(modelId, sel, preferredProviderId){
   if(!modelId||!sel) return null;
@@ -724,19 +1073,41 @@ function _applyModelToDropdown(modelId, sel, preferredProviderId){
   }
   return null;
 }
+function _ensureModelOptionInDropdown(modelId, sel, preferredProviderId){
+  if(!modelId||!sel) return null;
+  const applied=_applyModelToDropdown(modelId,sel,preferredProviderId);
+  if(applied) return applied;
+  const value=modelId;
+  const opt=document.createElement('option');
+  opt.value=modelId;
+  opt.textContent=typeof getModelLabel==='function'?getModelLabel(modelId):modelId;
+  opt.dataset.custom='1';
+  const badge=(window._configuredModelBadges||{})[value];
+  if(badge&&badge.provider) opt.dataset.provider=badge.provider;
+  const provider=preferredProviderId||(badge&&badge.provider)||_providerFromModelValue(modelId)||'';
+  if(provider) opt.dataset.provider=provider;
+  sel.appendChild(opt);
+  sel.value=modelId;
+  if(sel.id==='modelSelect'){
+    if(typeof syncModelChip==='function') syncModelChip();
+    _refreshOpenModelDropdown();
+  }
+  return modelId;
+}
 function _modelStateFromAppliedDropdown(sel, modelValue){
   const state=(typeof _modelStateForSelect==='function')
     ? _modelStateForSelect(sel,modelValue)
     : {model:modelValue,model_provider:null};
   return {model:state.model||modelValue,model_provider:state.model_provider||null};
 }
-function _persistSessionModelCorrection(model, provider){
+function _persistSessionModelCorrection(model, provider, opts){
   if(!S.session) return;
-  fetch(new URL('api/session/update',document.baseURI||location.href).href,{
+  const request=fetch(new URL('api/session/update',document.baseURI||location.href).href,{
     method:'POST',credentials:'include',
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({session_id:S.session.id||S.session.session_id,model:model,model_provider:provider||null})
-  }).catch(()=>{});
+  });
+  return opts&&opts.propagateErrors ? request : request.catch(()=>{});
 }
 function _applySessionModelFallback(sel){
   if(!sel) return null;
@@ -757,33 +1128,83 @@ function _applySessionModelFallback(sel){
   return null;
 }
 
-async function populateModelDropdown(){
+async function populateModelDropdown(opts={}){
   const sel=$('modelSelect');
   if(!sel) return;
   try{
     const _modelsRes=await fetch(new URL('api/models',document.baseURI||location.href).href,{credentials:'include'});
     if(_redirectIfUnauth(_modelsRes)) return;
     const data=await _modelsRes.json();
-    if(!data.groups||!data.groups.length) return; // keep HTML defaults
     // Store active provider globally so the send path can warn on mismatch
     window._activeProvider=data.active_provider||null;
     // Store default model so newSession() can apply it (#872).
     // Per-page-load — not synced across browser tabs.
     window._defaultModel=data.default_model||null;
     window._configuredModelBadges=data.configured_model_badges||{};
+    // Keep the g.extra_models label hydration path below in this function; tests
+    // assert populateModelDropdown preserves that full-catalog label contract.
+    window._modelEndpointErrors={};
+
+    const _synthGroupsFromConfigured=()=>{
+      const badgeMap=window._configuredModelBadges||{};
+      const grouped=new Map();
+      const addModel=(providerId,modelId)=>{
+        const pid=String(providerId||'configured').trim()||'configured';
+        const mid=String(modelId||'').trim();
+        if(!mid) return;
+        if(!grouped.has(pid)) grouped.set(pid,[]);
+        const arr=grouped.get(pid);
+        if(arr.some(m=>m.id===mid)) return;
+        arr.push({id:mid,label:getModelLabel(mid)});
+      };
+
+      for(const [modelId,badge] of Object.entries(badgeMap)){
+        const mid=String(modelId||'').trim();
+        // Prefer canonical IDs only; skip derived aliases such as
+        // @provider:model and provider/model to avoid noisy duplicates.
+        if(!mid||mid.startsWith('@')||mid.includes('/')) continue;
+        const provider=(badge&&badge.provider)||'configured';
+        addModel(provider,mid);
+      }
+
+      if(grouped.size===0&&data&&data.default_model){
+        addModel(data.active_provider||'configured',data.default_model);
+      }
+
+      const groups=[];
+      for(const [providerId,models] of grouped.entries()){
+        const display=(String(providerId).startsWith('custom:')
+          ? String(providerId).slice('custom:'.length)
+          : String(providerId))||'Configured';
+        groups.push({provider:display,provider_id:providerId,models});
+      }
+      return groups;
+    };
+
+    const groups=(Array.isArray(data.groups)&&data.groups.length)
+      ? data.groups
+      : _synthGroupsFromConfigured();
+
+    if(!groups.length) return; // no server groups and no configured fallback
+    const previousSelection=_captureModelDropdownSelection(sel);
     // Clear existing options
     sel.innerHTML='';
     _dynamicModelLabels={};
-    for(const g of data.groups){
+    for(const g of groups){
       const og=document.createElement('optgroup');
       og.label=g.provider;
       if(g.provider_id) og.dataset.provider=g.provider_id;
-      for(const m of g.models){
+      if(g.models_endpoint_error){
+        const errorKey=g.provider_id||g.provider||'';
+        og.dataset.modelsEndpointError=JSON.stringify(g.models_endpoint_error);
+        if(errorKey) window._modelEndpointErrors[errorKey]=g.models_endpoint_error;
+      }
+      for(const m of (Array.isArray(g.models)?g.models:[])){
         const opt=document.createElement('option');
         opt.value=m.id;
         opt.textContent=m.label;
         og.appendChild(opt);
-        _dynamicModelLabels[m.id]=m.label;
+        _dynamicModelLabels[m.id]=m.id;
       }
       // Hydrate the label map from extra_models too (the catalog tail that
       // doesn't render as <option> entries when the picker is capped — see
@@ -793,15 +1214,12 @@ async function populateModelDropdown(){
       // instead of falling back to the bare ID. #1567.
       if(Array.isArray(g.extra_models)){
         for(const m of g.extra_models){
-          if(m && m.id) _dynamicModelLabels[m.id]=m.label||m.id;
+          if(m && m.id) _dynamicModelLabels[m.id]=m.id;
         }
       }
       sel.appendChild(og);
     }
-    // Set default model from server if no localStorage preference
-    if(data.default_model && !(typeof _readPersistedModelState==='function'&&_readPersistedModelState()) && !localStorage.getItem('hermes-webui-model')){
-      _applyModelToDropdown(data.default_model, sel, data.active_provider||null);
-    }
+    _reconcileModelDropdownSelection(sel,data,previousSelection,opts);
     if(typeof syncModelChip==='function') syncModelChip();
     const dd=$('composerModelDropdown');
     if(dd&&dd.classList.contains('open')&&typeof renderModelDropdown==='function'){
@@ -843,21 +1261,20 @@ function _addLiveModelsToSelect(provider, models, sel){
     sel.appendChild(providerGroup);
   }
   const existingIds=new Set([...sel.options].map(o=>o.value));
-  // Normalized dedup: strip @provider: prefix and unify separators so
+  // Normalized dedup: strip one @provider: prefix and namespace so
   // 'minimax/minimax-m2.7' matches '@nous:minimax/minimax-m2.7' (#907).
-  // Strip ONLY the first colon — Ollama tag IDs are multi-colon
-  // (e.g. '@ollama-cloud:qwen3-vl:235b-instruct') and split(':',2) would
-  // truncate the tag suffix in JS (the limit arg discards extras, unlike Python).
   const _normId=id=>{
     let s=String(id||'');
-    if(s.startsWith('@')&&s.includes(':')) s=s.substring(s.indexOf(':')+1); // strip only @provider:
-    s=s.split('/').pop();                                                    // strip namespace prefix
+    if(s.startsWith('@')&&s.includes(':')) s=s.substring(s.indexOf(':')+1);
+    s=s.split('/').pop();
     return s.replace(/-/g,'.').toLowerCase();
   };
   const existingNorm=new Set([...sel.options].map(o=>_normId(o.value)));
   let added=0;
   const _ap=(window._activeProvider||'').toLowerCase();
-  const _isPortalFetch=_ap && _ap!=='openrouter' && _ap!=='custom' && _ap!=='openai-codex' && provider===_ap;
+  const _providerLower=String(provider||'').toLowerCase();
+  const _isNamedCustomActiveProvider=_ap.startsWith('custom:');
+  const _isPortalFetch=_ap && _ap!=='openrouter' && _ap!=='custom' && _ap!=='openai-codex' && (_providerLower===_ap||_isNamedCustomActiveProvider&&_providerLower===_ap);
   for(const m of models){
     let mid=m.id;
     if(_isPortalFetch && !mid.startsWith('@')){
@@ -922,12 +1339,13 @@ async function _fetchLiveModels(provider, sel){
  *
  * Provider detection is intentionally loose — we compare the model's slash
  * prefix (e.g. "openai/" from "openai/gpt-4o") against the active provider
- * name. Custom/local endpoints report active_provider='custom' or the
- * base_url hostname and we skip the check to avoid false positives.
+ * name. Custom/local endpoints report active_provider='custom', a named
+ * custom provider such as 'custom:zenmux', or the base_url hostname; skip the
+ * check for those values to avoid false positives.
  */
 function _checkProviderMismatch(modelId){
   const ap=(window._activeProvider||'').toLowerCase();
-  if(!ap||ap==='custom'||ap==='openrouter') return null; // can't reliably check
+  if(_providerSkipsModelMismatchWarning(ap)) return null; // can't reliably check
   // @provider: prefixed IDs came from that provider's live model list — no mismatch possible
   if(modelId.startsWith('@')) return null;
   const slash=modelId.indexOf('/');
@@ -1032,12 +1450,27 @@ function renderModelDropdown(){
   for(const child of Array.from(sel.children)){
     if(child.tagName==='OPTGROUP'){
       const providerId=child.dataset&&child.dataset.provider?child.dataset.provider:'';
+      let modelsEndpointError=null;
+      if(child.dataset&&child.dataset.modelsEndpointError){
+        try{ modelsEndpointError=JSON.parse(child.dataset.modelsEndpointError); }catch(_e){ modelsEndpointError=null; }
+      }
       for(const opt of Array.from(child.children)){
-        _modelData.push({value:opt.value,name:esc(opt.textContent||getModelLabel(opt.value)),id:esc(opt.value),group:child.label||'',badge:_getConfiguredModelBadge(opt.value,_badgeMap,providerId)});
+        const rawValue=String(opt.value||'');
+        const displayName=rawValue.startsWith('@custom:')
+          ? getModelLabel(rawValue)
+          : (opt.textContent||getModelLabel(rawValue));
+        _modelData.push({value:opt.value,name:esc(displayName),id:esc(opt.value),group:child.label||'',providerId,modelsEndpointError,badge:_getConfiguredModelBadge(opt.value,_badgeMap,providerId)});
+      }
+      if(modelsEndpointError && !child.children.length){
+        _modelData.push({value:`__models_endpoint_error__:${providerId||child.label||''}`,name:'',id:'',group:child.label||'',providerId,modelsEndpointError,endpointErrorOnly:true});
       }
     }
     if(child.tagName==='OPTION'){
-      _modelData.push({value:child.value,name:esc(child.textContent||getModelLabel(child.value)),id:esc(child.value),group:'',badge:_getConfiguredModelBadge(child.value,_badgeMap)});
+      const rawValue=String(child.value||'');
+      const displayName=rawValue.startsWith('@custom:')
+        ? getModelLabel(rawValue)
+        : (child.textContent||getModelLabel(rawValue));
+      _modelData.push({value:child.value,name:esc(displayName),id:esc(child.value),group:'',badge:_getConfiguredModelBadge(child.value,_badgeMap)});
     }
   }
   const _existingConfiguredKeys=new Set(_modelData.map(existing=>_normalizeConfiguredModelKey(existing.value)));
@@ -1091,8 +1524,32 @@ function renderModelDropdown(){
       }
     }
     const matches=(m)=>!term||found.has(m.value);
-    const configuredModels=_modelData
-      .filter(m=>m.badge&&matches(m))
+    const configuredCandidates=_modelData
+      .filter(m=>m.badge&&matches(m));
+    const configuredBySemanticKey=new Map();
+    const _configuredProviderKey=(m)=>String((m&&m.badge&&m.badge.provider)||_providerFromModelValue(m&&m.value)||'').toLowerCase();
+    const _configuredModelKey=(m)=>_normalizeConfiguredModelKey(m&&m.value||'');
+    const _configuredDisplayPriority=(m)=>{
+      // Prefer plain IDs over provider-qualified aliases for readability.
+      const v=String((m&&m.value)||'');
+      if(v.startsWith('@')) return 0;
+      if(v.includes('/')) return 1;
+      return 2;
+    };
+    for(const candidate of configuredCandidates){
+      const semanticKey=`${_configuredProviderKey(candidate)}::${_configuredModelKey(candidate)}`;
+      const existing=configuredBySemanticKey.get(semanticKey);
+      if(!existing){
+        configuredBySemanticKey.set(semanticKey,candidate);
+        continue;
+      }
+      const candidatePriority=_configuredDisplayPriority(candidate);
+      const existingPriority=_configuredDisplayPriority(existing);
+      if(candidatePriority>existingPriority){
+        configuredBySemanticKey.set(semanticKey,candidate);
+      }
+    }
+    const configuredModels=[...configuredBySemanticKey.values()]
       .sort((a,b)=>{
         const configuredRankA=_configuredRank(a.badge);
         const configuredRankB=_configuredRank(b.badge);
@@ -1112,18 +1569,29 @@ function renderModelDropdown(){
       configuredHeading.className='model-group';
       configuredHeading.textContent=t('model_group_configured')||'Configured';
       dd.appendChild(configuredHeading);
+      // 为了显示原始ID，建立 badgeKeyMap: badge对象->原始key
+      const badgeKeyMap = new Map();
+      for(const [k, v] of Object.entries(_badgeMap)){
+        badgeKeyMap.set(v, k);
+      }
       for(const m of configuredModels){
         const row=document.createElement('div');
         row.className='model-opt'+(m.value===sel.value?' active':'');
-        // Add provider info to badge label (e.g., "Primary (jingdong)")
-        let badgeLabel=m.badge?(m.badge.label||'Configured'):'';
-        if(m.badge&&m.badge.provider){
-          const providerName=m.badge.provider.replace(/^custom:/,'').split('/')[0];
-          badgeLabel+=` (${providerName})`;
+        let badgeLabel = '';
+        let modelName = m.name;
+        if (m.badge) {
+          // 直接用badge的原始key（即config.yaml里的ID）
+          const rawId = badgeKeyMap.get(m.badge) || m.value || m.badge.label || 'Configured';
+          badgeLabel = rawId;
+          modelName = rawId; // model-opt-name直接用原始ID
+          if(m.badge.provider){
+            const providerName=m.badge.provider.replace(/^custom:/,'').split('/')[0];
+            badgeLabel += ` (${providerName})`;
+          }
         }
         const badgeHtml=m.badge?`<span class="model-opt-badge model-opt-badge--${esc(m.badge.role||'configured')}">${esc(badgeLabel)}</span>`:'';
-        row.innerHTML=`<div class="model-opt-top"><span class="model-opt-name">${m.name}</span>${badgeHtml}</div><span class="model-opt-id">${m.id}</span>`;
-        row.onclick=()=>selectModelFromDropdown(m.value);
+        row.innerHTML=`<div class="model-opt-top"><span class="model-opt-name">${esc(modelName)}</span>${badgeHtml}</div><span class="model-opt-id">${esc(m.id)}</span>`;
+        row.onclick=()=>selectModelFromDropdown(m.value,(m.badge&&m.badge.provider)||m.providerId||null);
         dd.appendChild(row);
       }
     }
@@ -1133,8 +1601,17 @@ function renderModelDropdown(){
     const _groupCounts={};
     for(const m of _modelData){
       if(configuredIds.has(m.value)) continue;
-      if(m.group) _groupCounts[m.group]=(_groupCounts[m.group]||0)+1;
+      if(m.group&&!m.endpointErrorOnly) _groupCounts[m.group]=(_groupCounts[m.group]||0)+1;
     }
+    const _renderProviderEndpointHint=(groupName)=>{
+      if(!groupName) return;
+      const entry=_modelData.find(m=>m.group===groupName&&m.modelsEndpointError);
+      if(!entry||!entry.modelsEndpointError) return;
+      const hint=document.createElement('div');
+      hint.className='model-provider-hint';
+      hint.textContent=entry.modelsEndpointError.message||'Models endpoint could not be reached for this provider.';
+      dd.appendChild(hint);
+    };
     for(const m of _modelData){
       if(configuredIds.has(m.value)||!matches(m)) continue;
       if(m.group&&m.group!==_lastGroup){
@@ -1143,15 +1620,17 @@ function renderModelDropdown(){
         const count=_groupCounts[m.group]||0;
         heading.textContent=count>1?`${m.group} (${count})`:m.group;
         dd.appendChild(heading);
+        _renderProviderEndpointHint(m.group);
         _lastGroup=m.group;
       }
+      if(m.endpointErrorOnly) continue;
       const row=document.createElement('div');
       row.className='model-opt'+(m.value===sel.value?' active':'');
       const badgeHtml=m.badge?`<span class="model-opt-badge model-opt-badge--${esc(m.badge.role||'configured')}">${esc(m.badge.label||'Configured')}</span>`:'';
       // Inline provider chip on every row that has a group (#1425)
       const providerChip=m.group?`<span class="model-opt-provider">${esc(m.group)}</span>`:'';
-      row.innerHTML=`<div class="model-opt-top"><span class="model-opt-name">${m.name}</span>${badgeHtml}${providerChip}</div><span class="model-opt-id">${m.id}</span>`;
-      row.onclick=()=>selectModelFromDropdown(m.value);
+      row.innerHTML=`<div class="model-opt-top"><span class="model-opt-name">${esc(m.name)}</span>${badgeHtml}${providerChip}</div><span class="model-opt-id">${esc(m.id)}</span>`;
+      row.onclick=()=>selectModelFromDropdown(m.value,m.providerId||(m.badge&&m.badge.provider)||null);
       dd.appendChild(row);
     }
     // Show "No results" if filtered and nothing matched
@@ -1189,20 +1668,23 @@ function renderModelDropdown(){
 }
 
 async function selectModelFromDropdown(value){
+  const preferredProviderId=arguments[1];
   const sel=$('modelSelect');
-  if(!sel||sel.value===value) { closeModelDropdown(); return; }
-  // If the value isn't in the option list (custom model ID), add a temporary option
-  // so sel.value assignment succeeds and the model chip shows the custom ID.
-  if(!Array.from(sel.options).some(o=>o.value===value)){
-    const opt=document.createElement('option');
-    opt.value=value;
-    opt.textContent=getModelLabel(value);
-    opt.dataset.custom='1';
-    // Remove any previous custom option before adding new one
-    sel.querySelectorAll('option[data-custom]').forEach(o=>o.remove());
-    sel.appendChild(opt);
+  if(!sel) { closeModelDropdown(); return; }
+  const provider=String(preferredProviderId||'').trim()||null;
+  const currentState=(typeof _modelStateForSelect==='function')
+    ? _modelStateForSelect(sel, sel.value)
+    : {model:sel.value,model_provider:null};
+  const sameModel=String(currentState.model||'')===String(value||'');
+  const sameProvider=String(currentState.model_provider||'')===String(provider||'');
+  if(sameModel&&sameProvider){ closeModelDropdown(); return; }
+  // Resolve the provider-specific option so duplicate bare IDs (e.g. gpt-5.5
+  // under OpenAI Codex vs OpenRouter) update session model_provider correctly.
+  if(typeof _ensureModelOptionInDropdown==='function'){
+    _ensureModelOptionInDropdown(value, sel, provider);
+  }else{
+    sel.value=value;
   }
-  sel.value=value;
   syncModelChip();
   closeModelDropdown();
   if(typeof sel.onchange==='function') await sel.onchange();
@@ -1219,9 +1701,9 @@ async function toggleModelDropdown(){
   if(typeof closeWsDropdown==='function') closeWsDropdown();
   if(typeof closeReasoningDropdown==='function') closeReasoningDropdown();
   if(typeof closeToolsetsDropdown==='function') closeToolsetsDropdown();
-  const ready=window._modelDropdownReady;
-  if(ready&&typeof ready.then==='function'){
-    try{await ready;}catch(_){}
+  if(typeof window._ensureModelDropdownReady==='function'){
+    const ready=window._ensureModelDropdownReady();
+    if(ready&&typeof ready.catch==='function') ready.catch(()=>{});
   }
   if(dd.classList.contains('open')) return;
   renderModelDropdown();
@@ -1261,6 +1743,7 @@ window.addEventListener('resize',()=>{
 
 // ── Reasoning effort chip ────────────────────────────────────────────────────
 let _currentReasoningEffort=null;
+let _currentReasoningEffortsSupported=null;
 
 function _normalizeReasoningEffort(eff){
   return String(eff||'').trim().toLowerCase();
@@ -1272,17 +1755,65 @@ function _formatReasoningEffortLabel(effort){
   return effort;
 }
 
+function _reasoningEffortQuery(){
+  const sel=$('modelSelect');
+  const model=(S&&S.session&&S.session.model)||(sel&&sel.value)||'';
+  let provider=(S&&S.session&&S.session.model_provider)||'';
+  if(!provider&&sel&&model&&typeof _modelStateForSelect==='function'){
+    provider=_modelStateForSelect(sel, model).model_provider||'';
+  }
+  const params=new URLSearchParams();
+  if(model) params.set('model', model);
+  if(provider) params.set('provider', provider);
+  const qs=params.toString();
+  return qs?('?'+qs):'';
+}
+
+function _applyReasoningOptions(supportedEfforts){
+  const dd=$('composerReasoningDropdown');
+  if(!dd) return;
+  const supported=new Set(Array.isArray(supportedEfforts)?supportedEfforts:[]);
+  dd.querySelectorAll('.reasoning-option').forEach(function(opt){
+    const effort=opt.dataset.effort;
+    if(effort==='none'){
+      opt.style.display='';
+      return;
+    }
+    if(!supported.size){
+      opt.style.display='none';
+      return;
+    }
+    opt.style.display=supported.has(effort)?'':'none';
+  });
+}
+
 function _applyReasoningChip(eff){
+  const meta=arguments[1]||null;
   const effort=_normalizeReasoningEffort(eff);
   _currentReasoningEffort=effort;
+  if(meta&&Array.isArray(meta.supported_efforts)){
+    _currentReasoningEffortsSupported=meta.supported_efforts;
+  }
   const wrap=$('composerReasoningWrap');
   const label=$('composerReasoningLabel');
   const chip=$('composerReasoningChip');
   const mobileLabel=$('composerMobileReasoningLabel');
   const mobileAction=$('composerMobileReasoningAction');
   if(!wrap||!label) return;
+  const supportedEfforts=(typeof _currentReasoningEffortsSupported==='undefined')
+    ?null
+    :_currentReasoningEffortsSupported;
+  const supports=Array.isArray(supportedEfforts)
+    ?supportedEfforts.length>0
+    :true;
+  if(!supports){
+    wrap.style.display='none';
+    if(mobileAction) mobileAction.style.display='none';
+    return;
+  }
   wrap.style.display='';
   if(mobileAction) mobileAction.style.display='';
+  if(typeof _applyReasoningOptions==='function') _applyReasoningOptions(supportedEfforts);
   const text=_formatReasoningEffortLabel(effort);
   label.textContent=text;
   if(mobileLabel) mobileLabel.textContent=text;
@@ -1296,14 +1827,13 @@ function _applyReasoningChip(eff){
 }
 
 function fetchReasoningChip(){
-  api('/api/reasoning').then(function(st){
-    _applyReasoningChip((st&&st.reasoning_effort)||'');
-  }).catch(function(){_applyReasoningChip('');});
+  api('/api/reasoning'+_reasoningEffortQuery()).then(function(st){
+    _applyReasoningChip((st&&st.reasoning_effort)||'', st||{});
+  }).catch(function(){_applyReasoningChip('', {supported_efforts:[]});});
 }
 
 function syncReasoningChip(){
-  if(_currentReasoningEffort===null){fetchReasoningChip();return;}
-  _applyReasoningChip(_currentReasoningEffort);
+  fetchReasoningChip();
 }
 
 function _highlightReasoningOption(effort){
@@ -1369,7 +1899,7 @@ document.addEventListener('click',function(e){
     if(effort){
       api('/api/reasoning',{method:'POST',body:JSON.stringify({effort:effort})})
         .then(function(st){
-          _applyReasoningChip((st&&st.reasoning_effort)||effort);
+          _applyReasoningChip((st&&st.reasoning_effort)||effort, st||{});
           showToast('🧠 Reasoning effort set to '+((st&&st.reasoning_effort)||effort));
         })
         .catch(function(){showToast('🧠 Failed to set effort');});
@@ -1672,12 +2202,14 @@ function _recordNonMessageScrollIntent(e){
     // input event so later scrollTop decreases caused by layout/windowing do
     // not masquerade as user intent and strand live streaming away from bottom.
     _lastMessageUpwardIntentMs=performance.now();
-    _messageUserUnpinned=true;
     // User is intentionally moving in the transcript. Cancel any delayed
     // scrollToBottom settling that was scheduled by session-load/layout growth.
     _cancelBottomSettle();
-    _nearBottomCount=0;
-    _scrollPinned=false;
+    if(typeof e.deltaY==='number'&&e.deltaY<0){
+      _messageUserUnpinned=true;
+      _nearBottomCount=0;
+      _scrollPinned=false;
+    }
   }
 }
 function _recentMessageUpwardIntent(){
@@ -1694,7 +2226,76 @@ if(typeof document!=='undefined'){
 // prevent the new chat's first scroll comparing against the previous chat's
 // scrollTop (Opus stage-302 SHOULD-FIX, #1731 follow-up).
 function _resetScrollDirectionTracker(){ _lastScrollTop=null; }
-if (typeof window !== 'undefined') window._resetScrollDirectionTracker = _resetScrollDirectionTracker;
+if(typeof window!=='undefined') window._resetScrollDirectionTracker=_resetScrollDirectionTracker;
+/* ── Pull-to-refresh for PWA standalone (Android) ── */
+(function(){
+  if(typeof document==='undefined') return;
+  const isStandalone=window.navigator?.standalone||matchMedia('(display-mode:standalone),(display-mode:fullscreen)').matches;
+  if(!isStandalone) return;
+  const el=document.getElementById('messages');
+  if(!el) return;
+  let _ptrState=0; // 0=idle, 1=pulling, 2=ready
+  let _ptrStartY=0;
+  let _ptrCurrentY=0;
+  const THRESHOLD=80;
+  let _indicator=null;
+  function _ptrCreateIndicator(){
+    if(_indicator) return;
+    _indicator=document.createElement('div');
+    _indicator.className='pull-to-refresh-indicator';
+    _indicator.innerHTML='<span class="ptr-icon">↓</span> <span class="ptr-text">Pull to refresh</span>';
+    el.parentNode.insertBefore(_indicator,el);
+  }
+  function _ptrUpdate(progress){
+    _ptrCreateIndicator();
+    const pulling=progress<1;
+    _indicator.classList.toggle('active',progress>0);
+    const icon=_indicator.querySelector('.ptr-icon');
+    const text=_indicator.querySelector('.ptr-text');
+    if(icon) icon.classList.toggle('ready',!pulling);
+    if(text) text.textContent=pulling?'Pull to refresh':'Release to refresh';
+  }
+  function _ptrReset(){
+    _ptrState=0;
+    _ptrStartY=0;
+    _ptrCurrentY=0;
+    if(_indicator) _indicator.classList.remove('active');
+  }
+  el.addEventListener('touchstart',function(e){
+    if(el.scrollTop>0||_ptrState!==0) return;
+    _ptrStartY=e.touches[0].clientY;
+    _ptrState=1;
+  },{passive:true});
+  el.addEventListener('touchmove',function(e){
+    if(_ptrState!==1) return;
+    _ptrCurrentY=e.touches[0].clientY;
+    const pull=_ptrCurrentY-_ptrStartY;
+    if(pull<0){ _ptrReset(); return; }
+    /* If not at the top, smooth-scroll to top first.
+       Next pull gesture will trigger the refresh. */
+    if(el.scrollTop>0){
+      el.scrollTo({top:0,behavior:'smooth'});
+      _ptrReset();
+      return;
+    }
+    const progress=Math.min(pull/THRESHOLD,1);
+    _ptrUpdate(progress);
+    _ptrState=progress>=1?2:1;
+    if(progress>0.3) e.preventDefault();
+  },{passive:false});
+  el.addEventListener('touchend',function(){
+    if(_ptrState===2){
+      if(typeof window.refreshSessionList==='function'){
+        Promise.resolve(window.refreshSessionList('pull', {force:true, refreshActive:true})).catch(()=>{}).finally(_ptrReset);
+      }else{
+        window.location.reload();
+      }
+      return;
+    }
+    _ptrReset();
+  },{passive:true});
+  el.addEventListener('touchcancel',_ptrReset,{passive:true});
+})();
 (function(){
   const el=document.getElementById('messages');
   if(!el) return;
@@ -1717,7 +2318,8 @@ if (typeof window !== 'undefined') window._resetScrollDirectionTracker = _resetS
         if(_scrollPinned) _messageUserUnpinned=false;
       } // #1360
       const btn=$('scrollToBottomBtn');
-      if(btn) btn.style.display=_scrollPinned?'none':'flex';
+      const showBottomButton=!_scrollPinned && el.scrollHeight-top-el.clientHeight>80;
+      if(btn) btn.style.display=showBottomButton?'flex':'none';
       if(typeof _updateSessionStartJumpButton==='function') _updateSessionStartJumpButton();
       // Prefetch older messages before the reader hits the hard top. Prepending
       // then preserving scrollTop is seamless only if there is runway left for
@@ -1749,8 +2351,49 @@ function _formatActiveElapsedTimer(seconds){
   const s=total%60;
   return`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
 }
+const _COMPRESSION_ELAPSED_MAX_SECONDS=5*60;
+let _compressionElapsedTimer=null;
+function _compressionElapsedStartedAt(state){const n=Number(state&&state.startedAt);return Number.isFinite(n)&&n>0?n:null;}
+function _compressionElapsedLabel(state){
+  const started=_compressionElapsedStartedAt(state);
+  if(!started)return'';
+  const elapsed=Math.max(0,(Date.now()/1000)-started);
+  if(elapsed>=_COMPRESSION_ELAPSED_MAX_SECONDS)return '5+ min';
+  return _formatActiveElapsedTimer(elapsed);
+}
+function _compressionElapsedExpired(state){const started=_compressionElapsedStartedAt(state);return !!(started&&((Date.now()/1000)-started)>=_COMPRESSION_ELAPSED_MAX_SECONDS);}
+function _compressionLiveCardNode(){return document.querySelector('[data-live-compression-card="1"][data-compression-started-at]');}
+function _compressionLiveCardState(){
+  const node=_compressionLiveCardNode();
+  const started=Number(node&&node.getAttribute('data-compression-started-at'));
+  if(!node||!S.session||!Number.isFinite(started)||started<=0)return null;
+  return {sessionId:S.session.session_id,phase:'running',automatic:true,message:node.getAttribute('data-compression-message')||'Auto-compressing context...',startedAt:started};
+}
+function _updateCompressionElapsedCards(state){
+  if(!state)return false;
+  const preview=_autoCompressionPreviewText(state), detail=_autoCompressionDetailText(state);
+  let updated=false;
+  document.querySelectorAll('.tool-card-compress-auto.tool-card-compress-running').forEach(card=>{
+    const previewEl=card.querySelector('.tool-card-preview');
+    const detailEl=card.querySelector('.tool-card-result pre');
+    if(previewEl) previewEl.textContent=preview;
+    if(detailEl) detailEl.textContent=detail;
+    updated=true;
+  });
+  return updated;
+}
+function _updateCompressionElapsedTimer(){
+  const state=_compressionStateForCurrentSession()||_compressionLiveCardState();
+  if(state&&state.automatic&&state.phase==='running'){
+    _updateCompressionElapsedCards(state);
+    if(_compressionElapsedExpired(state)) _clearCompressionElapsedTimer();
+  }else _clearCompressionElapsedTimer();
+}
+function _startCompressionElapsedTimer(){if(!_compressionElapsedTimer)_compressionElapsedTimer=setInterval(_updateCompressionElapsedTimer,1000);}
+function _clearCompressionElapsedTimer(){if(_compressionElapsedTimer){clearInterval(_compressionElapsedTimer);_compressionElapsedTimer=null;}}
 let _activityElapsedTimer=null;
 let _activityElapsedTimerGroup=null;
+function _activityNowSeconds(){return Date.now()/1000;}
 function _activityElapsedStartedAt(group){
   if(!group)return null;
   const raw=(group.dataset&&group.dataset.turnStartedAt!==undefined&&group.dataset.turnStartedAt!=='')
@@ -1762,7 +2405,52 @@ function _activityElapsedStartedAt(group){
 function _activityElapsedLabel(group){
   const started=_activityElapsedStartedAt(group);
   if(!started)return'';
-  return _formatActiveElapsedTimer((Date.now()/1000)-started);
+  return _formatActiveElapsedTimer(_activityNowSeconds()-started);
+}
+function _activityMarkObserved(group, ts){
+  if(!group||group.getAttribute('data-live-tool-call-group')!=='1')return;
+  const stamp=Number(ts||_activityNowSeconds());
+  if(Number.isFinite(stamp)&&stamp>0) group.setAttribute('data-last-activity-at',String(stamp));
+}
+function _activityLastObservedAge(group){
+  const stamp=Number(group&&group.getAttribute('data-last-activity-at'));
+  if(!Number.isFinite(stamp)||stamp<=0)return null;
+  return Math.max(0,_activityNowSeconds()-stamp);
+}
+function _activityClockLabel(ts){
+  const stamp=Number(ts||_activityNowSeconds());
+  if(!Number.isFinite(stamp)||stamp<=0)return'';
+  try{return new Date(stamp*1000).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});}catch(_){return'';}
+}
+function _activityStatusNode({kind='info',label='',detail='',status='done',ts=null,id=''}){
+  const row=document.createElement('div');
+  row.className=`agent-activity-status agent-activity-status-${kind} agent-activity-status-${status}`;
+  if(id) row.setAttribute('data-activity-event-id',id);
+  if(ts) row.setAttribute('data-activity-at',String(ts));
+  const iconMap={run:li('play',13),model:li('bot',13),waiting:'<span class="tool-card-running-dot"></span>',thinking:li('lightbulb',13),tool:li('wrench',13),done:li('check',13),warning:li('alert-triangle',13)};
+  row.innerHTML=`<span class="agent-activity-status-icon">${iconMap[kind]||li('clock',13)}</span><span class="agent-activity-status-copy"><span class="agent-activity-status-label">${esc(label)}</span>${detail?`<span class="agent-activity-status-detail">${esc(detail)}</span>`:''}</span><span class="agent-activity-status-time">${esc(_activityClockLabel(ts))}</span>`;
+  return row;
+}
+function _appendActivityEvent(group, event){
+  if(!group)return null;
+  const body=group.querySelector('.tool-call-group-body');
+  if(!body)return null;
+  const eventId=event&&event.id;
+  let row=eventId?body.querySelector(`.agent-activity-status[data-activity-event-id="${CSS.escape(eventId)}"]`):null;
+  const next=_activityStatusNode(event||{});
+  if(row){row.replaceWith(next);row=next;}
+  else{body.appendChild(next);row=next;}
+  _activityMarkObserved(group,event&&event.ts);
+  return row;
+}
+function _ensureLiveActivityBaseline(group){
+  if(!group||group.getAttribute('data-live-tool-call-group')!=='1')return;
+  const started=_activityElapsedStartedAt(group)||_activityNowSeconds();
+  if(!group.getAttribute('data-turn-started-at')) group.setAttribute('data-turn-started-at',String(started));
+  if(!group.getAttribute('data-last-activity-at')) group.setAttribute('data-last-activity-at',String(started));
+  _appendActivityEvent(group,{id:'run-started',kind:'run',label:'Run started',detail:'Observable activity will appear here as the agent works.',status:'done',ts:started});
+  const modelLabel=(S.session&&S.session.model)?getModelLabel(S.session.model):'';
+  if(modelLabel)_appendActivityEvent(group,{id:'run-model',kind:'model',label:`Model: ${modelLabel}`,detail:S.activeProfile&&S.activeProfile!=='default'?`Profile: ${S.activeProfile}`:'',status:'done',ts:started});
 }
 function _setActivityElapsedStartedAt(group){
   if(!group||group.getAttribute('data-live-tool-call-group')!=='1')return;
@@ -1771,7 +2459,7 @@ function _setActivityElapsedStartedAt(group){
 }
 function _updateActiveActivityElapsedTimer(){
   const group=_activityElapsedTimerGroup;
-  if(!group||!group.isConnected||group.getAttribute('data-live-tool-call-group')!=='1'){
+  if(!group||!group.isConnected||group.getAttribute('data-live-tool-call-group')!=='1'||group.getAttribute('data-live-activity-current')!=='1'){
     _clearActivityElapsedTimer();
     return;
   }
@@ -1783,8 +2471,10 @@ function _updateActiveActivityElapsedTimer(){
     group.removeAttribute('data-active-turn-elapsed');
   }
   if(durationEl){
-    durationEl.textContent=label?`Working ${label}`:'';
-    durationEl.style.display=label?'':'none';
+    const activeText=label?`Working for ${label}`:'';
+    const progressText=_activityLiveProgressLabel(group);
+    durationEl.textContent=[progressText, activeText].filter(Boolean).join(' · ');
+    durationEl.style.display=durationEl.textContent?'':'none';
   }
 }
 function _startActivityElapsedTimer(group){
@@ -1899,12 +2589,14 @@ function _syncCtxIndicator(usage){
   // branch below — honest "no data" instead of misleading "890% used".
   const promptTok=usage.last_prompt_tokens||0;
   const totalTok=(usage.input_tokens||0)+(usage.output_tokens||0);
+  const cacheReadTok=usage.cache_read_tokens||0;
+  const cacheWriteTok=usage.cache_write_tokens||0;
   // Default context window to 128K when not provided by backend
   const DEFAULT_CTX=128*1024;
   const ctxWindow=usage.context_length||DEFAULT_CTX;
   const cost=usage.estimated_cost;
   // Show indicator whenever we have any usage data (tokens or cost)
-  if(!promptTok&&!totalTok&&!cost){
+  if(!promptTok&&!totalTok&&!cost&&!cacheReadTok&&!cacheWriteTok){
     if(wrap) wrap.style.display='none';
     _syncMobileCtxDisplay({visible:false});
     return;
@@ -1937,9 +2629,12 @@ function _syncCtxIndicator(usage){
   const compressText=pct>=75?t('ctx_compress_action'):(pct>=50?t('ctx_compress_hint'):'');
   if(compressWrap) compressWrap.style.display=compressText?'':'none';
   _setCtxCompressButton(compressBtn,compressText);
+  const cacheHitPct=usage.cache_hit_percent;
+  const cacheText=cacheHitPct!=null?t('usage_cache_hit_detail',cacheHitPct,_fmtTokens(cacheReadTok),_fmtTokens(cacheWriteTok)):'';
   let label=hasPromptTok?`Context window ${pct}% used`:`${_fmtTokens(totalTok)} tokens used`;
   if(!hasExplicitCtx&&hasPromptTok) label+=' (est. 128K)';
   if(cost) label+=` \u00b7 $${cost<0.01?cost.toFixed(4):cost.toFixed(2)}`;
+  if(cacheText) label+=` \u00b7 ${cacheText}`;
   el.setAttribute('aria-label',label);
   const usageText=hasPromptTok?(overflowed?`${rawPct}% used (context exceeded)`:`${pct}% used (${100-pct}% left)`):`${_fmtTokens(totalTok)} tokens used`;
   const tokensText=hasPromptTok?`${_fmtTokens(promptTok)} / ${_fmtTokens(ctxWindow)} tokens used`:`In: ${_fmtTokens(usage.input_tokens||0)} \u00b7 Out: ${_fmtTokens(usage.output_tokens||0)}`;
@@ -1961,6 +2656,11 @@ function _syncCtxIndicator(usage){
   if(costLine){
     if(cost){
       costText=`Estimated cost: $${cost<0.01?cost.toFixed(4):cost.toFixed(2)}`;
+      if(cacheText) costText+=` \u00b7 ${cacheText}`;
+      costLine.style.display='';
+      costLine.textContent=costText;
+    }else if(cacheText){
+      costText=cacheText;
       costLine.style.display='';
       costLine.textContent=costText;
     }else{
@@ -2083,6 +2783,17 @@ function _fmtOllamaLabel(mid){
 
 function getModelLabel(modelId){
   if(!modelId) return 'Unknown';
+  const rawId=String(modelId||'');
+  // Preserve custom gateway model IDs exactly as configured.
+  // Examples:
+  //   @custom:ai_gateway:Qwen3.6-35B-A3B -> Qwen3.6-35B-A3B
+  //   @custom:qwen397b-64k               -> qwen397b-64k
+  if(rawId.startsWith('@custom:')){
+    const rest=rawId.slice('@custom:'.length);
+    if(rest.includes(':')) return rest.slice(rest.lastIndexOf(':')+1)||rawId;
+    if(rest.includes('/')) return rest.split('/').pop()||rawId;
+    return rest||rawId;
+  }
   // Check dynamic labels first, then fall back to splitting the ID
   if(_dynamicModelLabels[modelId]) return _dynamicModelLabels[modelId];
   // Static fallback for common models
@@ -2093,11 +2804,15 @@ function getModelLabel(modelId){
   // Strip @provider: prefix if present (e.g. @ollama-cloud:kimi-k2.6)
   if (_last.startsWith('@') && _last.includes(':')) _last = _last.split(':').slice(1).join(':');
   const looksLikeOllamaTag = /^[a-z0-9][\w.-]*:[\w.-]+$/i.test(_last);
+  const atProvider=(rawId.startsWith('@')&&rawId.includes(':'))
+    ? rawId.slice(1,rawId.indexOf(':')).toLowerCase()
+    : '';
+  const allowOllamaFormat=!atProvider||atProvider.startsWith('ollama');
   // Narrow: only apply Ollama formatter to IDs with explicit @ollama prefix or colon-tag format.
   // Avoids reformatting bare provider model IDs like claude-sonnet-4-6 or gpt-4o.
   const looksLikeBareOllamaId = modelId.startsWith('@ollama') || looksLikeOllamaTag;
   const ollamaLabel = _fmtOllamaLabel(_last);
-  if ((modelId.startsWith('ollama/') || modelId.startsWith('@ollama') || looksLikeOllamaTag || looksLikeBareOllamaId) && ollamaLabel !== _last) {
+  if (allowOllamaFormat && (modelId.startsWith('ollama/') || modelId.startsWith('@ollama') || looksLikeOllamaTag || looksLikeBareOllamaId) && ollamaLabel !== _last) {
     return ollamaLabel;
   }
   return _last || 'Unknown';
@@ -2166,6 +2881,16 @@ function _stripXmlToolCallsDisplay(s){
 function _sanitizeThinkingDisplayText(text){
   const stripped=_stripXmlToolCallsDisplay(String(text||''));
   return stripped.trim();
+}
+
+function _stripVisibleAssistantEchoFromThinking(thinkingText, visibleText){
+  let out=String(thinkingText||'');
+  const visible=String(visibleText||'');
+  if(!out||!visible) return out.trim();
+  visible.split(/\n{2,}/).map(s=>s.trim()).filter(s=>s.length>=20).forEach(snippet=>{
+    out=out.split(snippet).join('');
+  });
+  return out.trim();
 }
 
 function renderMd(raw){
@@ -2330,7 +3055,7 @@ function renderMd(raw){
   s=s.replace(/\\\[([\s\S]+?)\\\]/g,(_,m)=>{math_stash.push({type:'display',src:m});return '\x00M'+(math_stash.length-1)+'\x00';});
   // Inline math: $...$ — require non-space at boundaries to avoid false positives
   // e.g. "costs $5 and $10" should not trigger (space after opening $)
-  s=s.replace(/\$([^\s$\n][^$\n]*?[^\s$\n]|\S)\$/g,(_,m)=>{math_stash.push({type:'inline',src:m});return '\x00M'+(math_stash.length-1)+'\x00';});
+  s=s.replace(/\$([^\s$\n][^$\n]*?[^\s$\n]|\S)\$/g,(_,m)=>{if(m.includes(' | '))return '\$'+m+'\$';math_stash.push({type:'inline',src:m});return '\x00M'+(math_stash.length-1)+'\x00';});
   // Also stash \(...\) LaTeX delimiters.
   // Match a single literal backslash before the delimiter (the common LLM form).
   s=s.replace(/\\\((.+?)\\\)/g,(_,m)=>{math_stash.push({type:'inline',src:m});return '\x00M'+(math_stash.length-1)+'\x00';});
@@ -2397,7 +3122,7 @@ function renderMd(raw){
     t=t.replace(/\x00C(\d+)\x00/g,(_,i)=>_code_stash[+i]);
     // Stash [label](url) links before autolink so the URL in href= is not re-linked
     const _link_stash=[];
-    t=t.replace(/\[([^\]]+)\]\((https?:\/\/[^\)]+)\)/g,(_,lb,u)=>{_link_stash.push(`<a href="${u.replace(/"/g,'%22')}" target="_blank" rel="noopener">${esc(lb)}</a>`);return `\x00L${_link_stash.length-1}\x00`;});
+    t=t.replace(/\[([^\]]+)\]\(((?:https?:\/\/|file:\/\/|workspace:\/\/|mailto:|tel:)[^\s\)]+)\)/g,(_,lb,u)=>{_link_stash.push(`<a href="${_markdownHref(u)}" target="_blank" rel="noopener">${esc(lb)}</a>`);return `\x00L${_link_stash.length-1}\x00`;});
     t=t.replace(/(https?:\/\/[^\s<>"')\]]+)/g,(url)=>{const trail=url.match(/[.,;:!?)]$/)?url.slice(-1):'';const clean=trail?url.slice(0,-1):url;return `<a href="${clean}" target="_blank" rel="noopener">${esc(clean)}</a>${trail}`;});
     t=t.replace(/\x00L(\d+)\x00/g,(_,i)=>_link_stash[+i]);
     t=t.replace(/\x00G(\d+)\x00/g,(_,i)=>_img_stash[+i]);
@@ -2460,11 +3185,26 @@ function renderMd(raw){
     if(rows.length<2)return block;
     const isSep=r=>/^\|[\s|:-]+\|$/.test(r.trim());
     if(!isSep(rows[1]))return block;
-    const parseRow=r=>r.trim().replace(/^\|/,'').replace(/\|$/,'').split('|').map(c=>`<td>${inlineMd(c.trim())}</td>`).join('');
-    const parseHeader=r=>r.trim().replace(/^\|/,'').replace(/\|$/,'').split('|').map(c=>`<th>${inlineMd(c.trim())}</th>`).join('');
+    // _protectPipes: temporarily swap pipes inside matching bracket pairs for a
+    // sentinel before split('|'), then restore. Iterates until no more matches
+    // so all pipes inside one pair are caught.
+    // Note: both opening and closing brace literals in the character classes
+    // are written as hex escapes (\x7b and \x7d) so the JS source contains no
+    // bare brace glyphs that would confuse the brace-counting extractFunc in
+    // tests/test_renderer_js_behaviour.py. Regex semantics are identical.
+    // Bracket set is paren / square / curly only -- NOT angle brackets, since
+    // angle brackets are overwhelmingly comparison operators in real LLM table
+    // output (`| x < 5 | y > 10 |`) and treating them as a pair collapses cells.
+    const _protectPipes=r=>{let prev;do{prev=r;r=r.replace(/([([\x7b][^)\]\x7d]*)[|]([^)\]\x7d]*[)\]\x7d])/g,(_,a,b)=>a+'\x00PIPE\x00'+b);}while(r!==prev);return r;};
+    const _restorePipes=s=>s.replace(/\x00PIPE\x00/g,'|');
+    const parseRow=r=>{r=_protectPipes(r);return r.trim().replace(/^\|/,'').replace(/\|$/,'').split('|').map(c=>`<td>${inlineMd(_restorePipes(c.trim()))}</td>`).join('');};
+    const parseHeader=r=>{r=_protectPipes(r);return r.trim().replace(/^\|/,'').replace(/\|$/,'').split('|').map(c=>`<th>${inlineMd(_restorePipes(c.trim()))}</th>`).join('');};
     const header=`<tr>${parseHeader(rows[0])}</tr>`;
     const body=rows.slice(2).map(r=>`<tr>${parseRow(r)}</tr>`).join('');
-    return `<table><thead>${header}</thead><tbody>${body}</tbody></table>`;
+    // Surround with blank lines so the final paragraph splitter treats the
+    // generated table as its own block even when the regex consumes one of the
+    // markdown block's trailing newlines.
+    return `\n\n<table><thead>${header}</thead><tbody>${body}</tbody></table>\n\n`;
   });
   // #487: Outer image pass — handles ![alt](url) in plain paragraphs (outside tables/lists).
   // Runs AFTER the table pass (images in table cells are handled by inlineMd() above).
@@ -2475,7 +3215,7 @@ function renderMd(raw){
   // Stash existing <a> tags first to avoid re-linking already-linked URLs.
   const _a_stash=[];
   s=s.replace(/(<a\b[^>]*>[\s\S]*?<\/a>)/g,m=>{_a_stash.push(m);return `\x00A${_a_stash.length-1}\x00`;});
-  s=s.replace(/\[([^\]]+)\]\((https?:\/\/[^\)]+)\)/g,(_,label,url)=>`<a href="${url.replace(/"/g,'%22')}" target="_blank" rel="noopener">${esc(label)}</a>`);
+  s=s.replace(/\[([^\]]+)\]\(((?:https?:\/\/|file:\/\/|workspace:\/\/|mailto:|tel:)[^\s\)]+)\)/g,(_,label,url)=>`<a href="${_markdownHref(url)}" target="_blank" rel="noopener">${esc(label)}</a>`);
   s=s.replace(/\x00A(\d+)\x00/g,(_,i)=>_a_stash[+i]);
   // Restore raw <pre> only after markdown rewrites so literal preformatted
   // content stays placeholder-protected, then let the sanitizer normalize tags.
@@ -2491,12 +3231,33 @@ function renderMd(raw){
   function _safeAttrValue(v){
     return String(v||'').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&amp;/g,'&').trim();
   }
+  function _markdownHref(raw){
+    const href=String(raw||'').replace(/"/g,'%22');
+    if(/^workspace:\/\//i.test(href)){
+      try{
+        const rel=decodeURIComponent(href.replace(/^workspace:\/\//i,'')).replace(/^~\//,'').replace(/^\.\//,'');
+        return '#workspace='+encodeURIComponent(rel);
+      }catch(_){
+        return '#';
+      }
+    }
+    if(/^file:\/\//i.test(href)){
+      try{
+        const path=decodeURIComponent(href.replace(/^file:\/\//i,''));
+        return 'api/media?path='+encodeURIComponent(path)+'&inline=1';
+      }catch(_){
+        return 'api/media?path='+encodeURIComponent(href.replace(/^file:\/\//i,''))+'&inline=1';
+      }
+    }
+    return href;
+  }
   function _isSafeUrl(v, img){
     const raw=_safeAttrValue(v);
     const compact=raw.replace(/[\u0000-\u001f\u007f\s]+/g,'').toLowerCase();
     if(!compact) return false;
     if(/^(javascript|data|vbscript):/i.test(compact)) return false;
     if(/^https?:\/\//i.test(raw)) return true;
+    if(/^(mailto:|tel:)/i.test(raw)) return true;
     if(img && /^api\//i.test(raw)) return true;
     if(!img && (/^api\//i.test(raw) || /^#/.test(raw))) return true;
     return false;
@@ -2607,7 +3368,7 @@ function renderMd(raw){
     return '\x00E'+(_pre_stash.length-1)+'\x00';
   });
   const parts=s.split(/\n{2,}/);
-  s=parts.map(p=>{p=p.trim();if(!p)return '';if(/^<(h[1-6]|ul|ol|pre|hr|blockquote)|^\x00[EQ]/.test(p))return p;return `<p>${p.replace(/\n/g,'<br>')}</p>`;}).join('\n');
+  s=parts.map(p=>{p=p.trim();if(!p)return '';if(/^<(h[1-6]|ul|ol|table|pre|hr|blockquote)|^\x00[EQ]/.test(p))return p;return `<p>${p.replace(/\n/g,'<br>')}</p>`;}).join('\n');
   s=s.replace(/\x00E(\d+)\x00/g,(_,i)=>_pre_stash[+i]);
   // ── Restore MEDIA stash → inline images or download links ─────────────────
   s=s.replace(/\x00D(\d+)\x00/g,(_,i)=>{
@@ -2892,6 +3653,16 @@ function setBusy(v){
     if(next){
       updateQueueBadge(sid);
       setTimeout(()=>{
+        // Guard: if the user switched away from the drain session during
+        // the 120ms settle window, the queued message must NOT go to the
+        // wrong chat.  Put it back into the original session's queue and
+        // skip sending — it will drain when the user returns to that session
+        // or when its next stream completes while it is the active view.
+        if(S.session&&S.session.session_id!==sid){
+          queueSessionMessage(sid,next);
+          updateQueueBadge(sid);
+          return;
+        }
         $('msg').value=next.text||'';
         S.pendingFiles=Array.isArray(next.files)?[...next.files]:[];
         // Restore model from queued item (sent in /api/chat/start payload)
@@ -3410,6 +4181,19 @@ function copyMsg(btn){
     setTimeout(()=>{btn.innerHTML=orig;btn.style.color='';},1500);
   }).catch(()=>showToast(t('copy_failed')));
 }
+function _copyThinkingText(btn){
+  const card=btn&&btn.closest?btn.closest('.thinking-card'):null;
+  if(!card)return;
+  const pre=card.querySelector('.thinking-card-body pre');
+  const text=pre?pre.textContent:'';
+  if(!text)return;
+  _copyText(text).then(()=>{
+    const orig=btn.innerHTML;
+    btn.innerHTML=li('check',12);
+    btn.style.color='var(--accent)';
+    setTimeout(()=>{btn.innerHTML=orig;btn.style.color='';},1500);
+  }).catch(()=>showToast(t('copy_failed')));
+}
 
 // ── TTS: Text-to-Speech via Web Speech API (#499) ──
 // Strips markdown, code blocks, and MEDIA: paths for clean speech output.
@@ -3526,6 +4310,29 @@ function autoReadLastAssistant(){
 // ── Reconnect banner (B4/B5: reload resilience) ──
 const INFLIGHT_KEY = 'hermes-webui-inflight'; // localStorage key for in-flight session tracking
 const INFLIGHT_STATE_KEY = 'hermes-webui-inflight-state'; // localStorage snapshots for mid-stream reload recovery
+const INFLIGHT_STATE_DEFAULT_LIMITS = {
+  maxSessions:8,
+  messages:24,
+  toolCalls:48,
+  stringChars:60000,
+  jsonChars:1500000,
+};
+
+function _boundedInflightInt(value, fallback, min, max){
+  const n=parseInt(value,10);
+  if(!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
+function _getInflightStateLimits(){
+  const configured=(typeof window!=='undefined'&&window._inflightStateLimits&&typeof window._inflightStateLimits==='object')?window._inflightStateLimits:{};
+  return {
+    maxSessions:_boundedInflightInt(configured.maxSessions, INFLIGHT_STATE_DEFAULT_LIMITS.maxSessions, 1, 25),
+    messages:_boundedInflightInt(configured.messages, INFLIGHT_STATE_DEFAULT_LIMITS.messages, 1, 100),
+    toolCalls:_boundedInflightInt(configured.toolCalls, INFLIGHT_STATE_DEFAULT_LIMITS.toolCalls, 1, 200),
+    stringChars:_boundedInflightInt(configured.stringChars, INFLIGHT_STATE_DEFAULT_LIMITS.stringChars, 1000, 500000),
+    jsonChars:_boundedInflightInt(configured.jsonChars, INFLIGHT_STATE_DEFAULT_LIMITS.jsonChars, 100000, 4000000),
+  };
+}
 
 function _readInflightStateMap(){
   try{
@@ -3536,13 +4343,75 @@ function _readInflightStateMap(){
     return {};
   }
 }
+function _isStorageQuotaError(err){
+  return !!err && (
+    err.name==='QuotaExceededError' ||
+    err.name==='NS_ERROR_DOM_QUOTA_REACHED' ||
+    err.code===22 ||
+    err.code===1014
+  );
+}
+function _truncateInflightValue(value, maxChars){
+  const limits=_getInflightStateLimits();
+  const stringLimit=_boundedInflightInt(maxChars, limits.stringChars, 1000, 500000);
+  if(typeof value==='string'){
+    if(value.length<=stringLimit) return value;
+    return value.slice(0,stringLimit)+'\n\n[truncated for browser recovery storage]';
+  }
+  if(Array.isArray(value)) return value.map(v=>_truncateInflightValue(v, Math.max(2000, Math.floor(stringLimit/2))));
+  if(value&&typeof value==='object'){
+    const out={};
+    for(const [k,v] of Object.entries(value)) out[k]=_truncateInflightValue(v, stringLimit);
+    return out;
+  }
+  return value;
+}
+function _compactInflightState(state){
+  const limits=_getInflightStateLimits();
+  const messages=Array.isArray(state.messages)?state.messages.slice(-limits.messages):[];
+  const toolCalls=Array.isArray(state.toolCalls)?state.toolCalls.slice(-limits.toolCalls):[];
+  return _truncateInflightValue({
+    streamId:state.streamId||null,
+    messages,
+    uploaded:Array.isArray(state.uploaded)?state.uploaded.slice(-20):[],
+    toolCalls,
+  }, limits.stringChars);
+}
+function _writeInflightStateMap(all){
+  const limits=_getInflightStateLimits();
+  const entries=Object.entries(all||{})
+    .sort((a,b)=>Number(b[1]&&b[1].updated_at||0)-Number(a[1]&&a[1].updated_at||0))
+    .slice(0,limits.maxSessions);
+  const compact={};
+  for(const [sid,entry] of entries) compact[sid]=entry;
+  let json=JSON.stringify(compact);
+  if(json.length>limits.jsonChars){
+    const current=entries[0];
+    json=JSON.stringify(current?{[current[0]]:current[1]}:{});
+  }
+  if(json.length>limits.jsonChars){
+    localStorage.removeItem(INFLIGHT_STATE_KEY);
+    return false;
+  }
+  localStorage.setItem(INFLIGHT_STATE_KEY,json);
+  return true;
+}
 function saveInflightState(sid, state){
   if(!sid||!state) return;
+  const entry={..._compactInflightState(state),updated_at:Date.now()};
   try{
     const all=_readInflightStateMap();
-    all[sid]={...state,updated_at:Date.now()};
-    localStorage.setItem(INFLIGHT_STATE_KEY, JSON.stringify(all));
-  }catch(_){ }
+    all[sid]=entry;
+    _writeInflightStateMap(all);
+  }catch(err){
+    if(!_isStorageQuotaError(err)) return;
+    try{
+      localStorage.removeItem(INFLIGHT_STATE_KEY);
+      _writeInflightStateMap({[sid]:entry});
+    }catch(_){
+      try{localStorage.removeItem(INFLIGHT_STATE_KEY);}catch(__){}
+    }
+  }
 }
 function loadInflightState(sid, streamId){
   if(!sid) return null;
@@ -3567,8 +4436,78 @@ function clearInflightState(sid){
   }catch(_){ }
 }
 
+function snapshotLiveTurnHtmlForSession(sid){
+  // Keep the DOM snapshot memory-only. Persisted INFLIGHT state intentionally
+  // stores structured stream state, not outerHTML, so a hard reload still uses
+  // the safer flat replay path instead of reviving stale nodes/listeners.
+  if(!sid||!INFLIGHT[sid]) return;
+  const turn=$('liveAssistantTurn');
+  if(!turn) return;
+  if(turn.dataset&&turn.dataset.sessionId&&turn.dataset.sessionId!==sid) return;
+  INFLIGHT[sid].liveTurnHtml=turn.outerHTML;
+}
+
+function _liveAssistantSegmentTextLength(seg){
+  if(!seg) return 0;
+  const body=seg.querySelector('.msg-body')||seg;
+  return String(body.textContent||'').trim().length;
+}
+
+function _mergeRestoredLiveAssistantSegment(restored, existing){
+  if(!restored||!existing) return;
+  const existingLive=existing.querySelector('[data-live-assistant="1"]');
+  if(!existingLive) return;
+  const restoredLive=restored.querySelector('[data-live-assistant="1"]');
+  const existingLen=_liveAssistantSegmentTextLength(existingLive);
+  const restoredLen=_liveAssistantSegmentTextLength(restoredLive);
+  if(existingLen<=restoredLen) return;
+  const replacement=existingLive.cloneNode(true);
+  if(restoredLive){
+    restoredLive.replaceWith(replacement);
+    return;
+  }
+  const blocks=_assistantTurnBlocks(restored);
+  if(!blocks) return;
+  const anchor=Array.from(blocks.children).filter(el=>
+    el.matches('.tool-call-group,.tool-card-row,.agent-activity-thinking,.thinking-card-row,[data-live-assistant="1"]')
+  ).pop();
+  if(anchor) anchor.insertAdjacentElement('afterend', replacement);
+  else blocks.appendChild(replacement);
+}
+
+function restoreLiveTurnHtmlForSession(sid){
+  const inflight=INFLIGHT[sid];
+  if(!sid||!inflight||!inflight.liveTurnHtml) return false;
+  const inner=$('msgInner');
+  if(!inner) return false;
+  const template=document.createElement('template');
+  template.innerHTML=String(inflight.liveTurnHtml||'').trim();
+  const restored=template.content.firstElementChild;
+  if(!restored) return false;
+  restored.id='liveAssistantTurn';
+  if(S.session) restored.dataset.sessionId=S.session.session_id;
+  const existing=$('liveAssistantTurn');
+  _mergeRestoredLiveAssistantSegment(restored, existing);
+  if(existing) existing.replaceWith(restored);
+  else inner.appendChild(restored);
+  const liveGroup=restored.querySelector('.tool-call-group[data-live-tool-call-group="1"]');
+  if(liveGroup&&typeof _startActivityElapsedTimer==='function') _startActivityElapsedTimer(liveGroup);
+  if(typeof placeLiveToolCardsHost==='function') placeLiveToolCardsHost();
+  requestAnimationFrame(()=>postProcessRenderedMessages(restored));
+  return true;
+}
+
 function markInflight(sid, streamId) {
-  localStorage.setItem(INFLIGHT_KEY, JSON.stringify({sid, streamId, ts: Date.now()}));
+  const payload=JSON.stringify({sid, streamId, ts: Date.now()});
+  try{
+    localStorage.setItem(INFLIGHT_KEY, payload);
+  }catch(err){
+    if(!_isStorageQuotaError(err)) return;
+    try{
+      localStorage.removeItem(INFLIGHT_STATE_KEY);
+      localStorage.setItem(INFLIGHT_KEY, payload);
+    }catch(_){}
+  }
 }
 function clearInflight() {
   localStorage.removeItem(INFLIGHT_KEY);
@@ -3762,7 +4701,7 @@ async function refreshSession() {
     const data = await api(`/api/session?session_id=${encodeURIComponent(S.session.session_id)}`);
     S.session = data.session;
     S.messages = data.session.messages || [];
-    const pendingMsg=getPendingSessionMessage(data.session);
+    const pendingMsg=getPendingSessionMessage(data.session,S.messages);
     if(pendingMsg) S.messages.push(pendingMsg);
     S.activeStreamId=data.session.active_stream_id||null;
 
@@ -3773,8 +4712,243 @@ async function refreshSession() {
 // ── Update banner ──
 function _formatUpdateTargetStatus(label,info){
   if(!info||!(info.behind>0)) return null;
-  const branch=info.branch?` (${info.branch})`:'';
-  return `${label}${branch}: ${info.behind} update${info.behind>1?'s':''}`;
+  const release=(info.release_based&&info.latest_version)
+    ?` (${info.current_version||'unknown'} -> ${info.latest_version})`
+    :(info.branch?` (${info.branch})`:'');
+  const noun=info.release_based?'release':'update';
+  return `${label}${release}: ${info.behind} ${noun}${info.behind>1?'s':''}`;
+}
+function _formatUpdateCheckError(label,info){
+  if(!info||!info.error) return null;
+  const detail=String(info.error).replace(/^fetch failed:?\s*/i,'').trim();
+  return detail ? `${label}: ${detail}` : label;
+}
+function _isSafeUpdateCompareUrl(url){
+  if(!url||!/^https?:\/\//i.test(url)) return false;
+  try{
+    const parsed=new URL(url);
+    return parsed.protocol==='https:'||parsed.protocol==='http:';
+  }catch(e){
+    return false;
+  }
+}
+function _updateCompareUrl(info){
+  if(!info) return null;
+  const compareUrl=info.compare_url||null;
+  if(compareUrl) return _isSafeUpdateCompareUrl(compareUrl)?compareUrl:null;
+  const repo_url=info.repo_url;
+  const currentSha=info.current_sha;
+  const latestSha=info.latest_sha;
+  if(!(repo_url&&currentSha&&latestSha)) return null;
+  const fallbackUrl=repo_url+'/compare/'+currentSha+'...'+latestSha;
+  return _isSafeUpdateCompareUrl(fallbackUrl)?fallbackUrl:null;
+}
+function _updateWhatsNewTargets(data){
+  const targets=[
+    {key:'webui',label:'WebUI',info:data&&data.webui},
+    {key:'agent',label:'Agent',info:data&&data.agent},
+  ];
+  return targets.map((target)=>({
+    key:target.key,
+    label:target.label,
+    info:target.info,
+    url:_updateCompareUrl(target.info),
+  })).filter((target)=>target.info&&target.info.behind>0&&target.url);
+}
+function _appendUpdateDiffLinks(container,targets,prefix){
+  if(!container) return;
+  if(prefix) container.appendChild(document.createTextNode(prefix));
+  targets.forEach((target,idx)=>{
+    if(idx>0) container.appendChild(document.createTextNode(' \u00b7 '));
+    const link=document.createElement('a');
+    link.href=target.url;
+    link.target='_blank';
+    link.rel='noopener';
+    link.style.color='var(--accent)';
+    link.style.textDecoration='underline';
+    link.textContent=target.label;
+    container.appendChild(link);
+  });
+}
+function _hideUpdateSummaryPanel(){
+  const panel=$('updateSummaryPanel');
+  const text=$('updateSummaryText');
+  const links=$('updateSummaryDiffLinks');
+  if(panel) panel.style.display='none';
+  if(text) text.textContent='';
+  if(links){links.replaceChildren();links.style.display='none';}
+}
+const WHATS_NEW_SUMMARY_STORAGE_KEY='hermes-whats-new-generated-summaries';
+function _loadStoredUpdateSummaries(){
+  window._whatsNewGeneratedSummaries=window._whatsNewGeneratedSummaries||{};
+  try{
+    const raw=sessionStorage.getItem(WHATS_NEW_SUMMARY_STORAGE_KEY);
+    if(!raw) return window._whatsNewGeneratedSummaries;
+    const stored=JSON.parse(raw);
+    if(stored&&typeof stored==='object') window._whatsNewGeneratedSummaries=stored;
+  }catch(_e){
+    try{sessionStorage.removeItem(WHATS_NEW_SUMMARY_STORAGE_KEY);}catch(_ignore){}
+  }
+  return window._whatsNewGeneratedSummaries;
+}
+function _persistGeneratedSummaries(){
+  try{sessionStorage.setItem(WHATS_NEW_SUMMARY_STORAGE_KEY,JSON.stringify(window._whatsNewGeneratedSummaries||{}));}catch(_e){}
+}
+function _pruneGeneratedSummaries(data){
+  const cache=_loadStoredUpdateSummaries();
+  const valid=new Set(_updateWhatsNewTargets(data||{}).map((target)=>target.key));
+  let changed=false;
+  Object.keys(cache).forEach((key)=>{
+    if(!valid.has(key)){delete cache[key];changed=true;}
+  });
+  if(changed) _persistGeneratedSummaries();
+}
+function _updateSummarySignature(info){
+  if(!info) return '';
+  return [info.current_sha||'',info.latest_sha||'',info.behind||0,info.compare_url||''].join('|');
+}
+function _updateSummaryButtonLabel(target,data){
+  const labels=target.key==='webui'
+    ? {generate:'Generate WebUI update summary',view:'View generated WebUI update summary',regenerate:'Re-generate WebUI update summary'}
+    : {generate:'Generate Agent update summary',view:'View generated Agent update summary',regenerate:'Re-generate Agent update summary'};
+  const cache=_loadStoredUpdateSummaries()[target.key];
+  const signature=_updateSummarySignature(data&&data[target.key]);
+  if(cache&&cache.signature===signature&&cache.payload) return labels.view;
+  if(cache&&cache.signature!==signature) return labels.regenerate;
+  return labels.generate;
+}
+function _rememberGeneratedSummary(target,payload,data){
+  if(!target) return;
+  window._whatsNewGeneratedSummaries=window._whatsNewGeneratedSummaries||{};
+  window._whatsNewGeneratedSummaries[target]={
+    signature:_updateSummarySignature(data&&data[target]),
+    payload:payload,
+  };
+  _persistGeneratedSummaries();
+}
+function _renderUpdateSummaryPanel(payload,data,targetKey){
+  const panel=$('updateSummaryPanel');
+  const text=$('updateSummaryText');
+  const links=$('updateSummaryDiffLinks');
+  if(!panel||!text) return;
+  panel.style.display='block';
+  const sections=Array.isArray(payload&&payload.summary_sections)?payload.summary_sections:null;
+  text.replaceChildren();
+  if(sections&&sections.length){
+    const wrap=document.createElement('div');
+    wrap.id='updateSummarySections';
+    wrap.style.display='grid';
+    wrap.style.gap='8px';
+    sections.forEach((section)=>{
+      const block=document.createElement('section');
+      const title=document.createElement('div');
+      title.style.fontWeight='650';
+      title.style.marginBottom='3px';
+      title.textContent=section.title||'Summary';
+      block.appendChild(title);
+      const ul=document.createElement('ul');
+      ul.style.margin='0';
+      ul.style.paddingLeft='18px';
+      (Array.isArray(section.items)?section.items:[]).forEach((item)=>{
+        const li=document.createElement('li');
+        li.textContent=String(item||'').trim();
+        if(li.textContent) ul.appendChild(li);
+      });
+      if(!ul.children.length){
+        const li=document.createElement('li');
+        li.textContent='No summary details available.';
+        ul.appendChild(li);
+      }
+      block.appendChild(ul);
+      wrap.appendChild(block);
+    });
+    text.appendChild(wrap);
+  }else{
+    text.textContent=(payload&&payload.summary)||payload||'No summary available.';
+  }
+  const targets=_updateWhatsNewTargets(data||window._updateData||{}).filter((target)=>!targetKey||target.key===targetKey);
+  if(links){
+    links.replaceChildren();
+    if(targets.length){
+      links.style.display='block';
+      _appendUpdateDiffLinks(links,targets,'Regular diff comparison: ');
+    }else{
+      links.style.display='none';
+    }
+  }
+}
+async function showWhatsNewSummary(target){
+  const data=window._updateData||{};
+  const scopedUpdates=target?{[target]:data[target]}:data;
+  const cache=target?_loadStoredUpdateSummaries()[target]:null;
+  const signature=target?_updateSummarySignature(data[target]):'';
+  if(cache&&cache.signature===signature&&cache.payload){
+    _renderUpdateSummaryPanel(cache.payload,data,target);
+    _renderUpdateWhatsNewLinks(data,{mode:'summary'});
+    return;
+  }
+  _renderUpdateSummaryPanel({summary:'Writing a simple summary…'},data,target);
+  try{
+    const res=await api('/api/updates/summary',{method:'POST',body:JSON.stringify({updates:scopedUpdates,target:target||null}),timeoutMs:60000});
+    _rememberGeneratedSummary(target,res,data);
+    _renderUpdateSummaryPanel(res,data,target);
+    _renderUpdateWhatsNewLinks(data,{mode:'summary'});
+  }catch(e){
+    console.warn('[updates] summary failed',e);
+    _renderUpdateSummaryPanel({
+      summary_sections:[
+        {title:"What you'll notice",items:['Could not generate the summary right now.']},
+        {title:'Worth knowing',items:['Try again later, or use the comparison links below for the raw update details.']},
+      ],
+    },data,target);
+  }
+}
+function _renderUpdateWhatsNewLinks(data){
+  const options=arguments.length>1&&arguments[1]?arguments[1]:{};
+  const container=$('updateWhatsNewLinks');
+  if(!container) return;
+  container.replaceChildren();
+  const targets=_updateWhatsNewTargets(data);
+  if(!targets.length){
+    container.style.display='none';
+    _hideUpdateSummaryPanel();
+    return;
+  }
+  container.style.display='block';
+  _pruneGeneratedSummaries(data);
+  const useSummary=(options.mode||'')==='summary'||window._whatsNewSummaryEnabled===true;
+  if(useSummary){
+    targets.forEach((target,idx)=>{
+      if(idx>0) container.appendChild(document.createTextNode(' \u00b7 '));
+      const btn=document.createElement('button');
+      btn.type='button';
+      btn.className='linklike';
+      btn.style.color='var(--accent)';
+      btn.style.textDecoration='underline';
+      btn.style.background='none';
+      btn.style.border='0';
+      btn.style.padding='0';
+      btn.style.cursor='pointer';
+      btn.textContent=_updateSummaryButtonLabel(target,data);
+      btn.onclick=()=>showWhatsNewSummary(target.key);
+      container.appendChild(btn);
+    });
+    return;
+  }
+  _hideUpdateSummaryPanel();
+  if(targets.length===1){
+    const target=targets[0];
+    const link=document.createElement('a');
+    link.href=target.url;
+    link.target='_blank';
+    link.rel='noopener';
+    link.style.color='var(--accent)';
+    link.style.textDecoration='underline';
+    link.textContent="What's new in "+target.label+'?';
+    container.appendChild(link);
+    return;
+  }
+  _appendUpdateDiffLinks(container,targets,"What's new: ");
 }
 function _showUpdateBanner(data){
   const parts=[];
@@ -3782,32 +4956,19 @@ function _showUpdateBanner(data){
   const agentPart=_formatUpdateTargetStatus('Agent',data.agent);
   if(webuiPart) parts.push(webuiPart);
   if(agentPart) parts.push(agentPart);
-  if(!parts.length)return;
+  window._updateData=data;
+  if(!parts.length){
+    _renderUpdateWhatsNewLinks(data);
+    const staleBanner=$('updateBanner');
+    if(staleBanner) staleBanner.classList.remove('visible');
+    return;
+  }
   const msg=$('updateMsg');
   if(msg) msg.textContent='\u2B06 '+parts.join(', ')+' available';
   const banner=$('updateBanner');
   if(banner) banner.classList.add('visible');
-  window._updateData=data;
-  // Wire up "What's new?" link.
-  //
-  // Reset display:none + clear the href on every render — otherwise a stale
-  // link from a prior update banner can stay visible after we've moved past
-  // a state where the new payload no longer carries usable SHAs (#1579 case
-  // when the local HEAD diverges from upstream and the compare URL would 404).
-  const link=$('updateWhatsNew');
-  if(link){
-    link.style.display='none';
-    link.removeAttribute('href');
-    if(data.webui){
-      const repoUrl=data.webui.repo_url;
-      const curSha=data.webui.current_sha;
-      const newSha=data.webui.latest_sha;
-      if(repoUrl && curSha && newSha){
-        link.href=repoUrl+'/compare/'+curSha+'...'+newSha;
-        link.style.display='inline';
-      }
-    }
-  }
+  const summaryMode=window._whatsNewSummaryEnabled===true?'summary':'diff';
+  _renderUpdateWhatsNewLinks(data,{mode:summaryMode});
 }
 function dismissUpdate(){
   const b=$('updateBanner');if(b)b.classList.remove('visible');
@@ -3847,9 +5008,16 @@ async function applyUpdates(){
   const targets=[];
   if(window._updateData?.webui?.behind>0) targets.push('webui');
   if(window._updateData?.agent?.behind>0) targets.push('agent');
+  if(!targets.length){
+    const msg='No update target selected. Refresh update status and retry.';
+    if(errEl){errEl.textContent=msg;errEl.style.display='block';}
+    else showToast(msg,5000,'error');
+    resetApplyButton(0);
+    return;
+  }
   try{
     for(const target of targets){
-      const res=await api('/api/updates/apply',{method:'POST',body:JSON.stringify({target})});
+      const res=await api('/api/updates/apply',{method:'POST',body:JSON.stringify({target}),timeoutMs:120000});
       if(!res.ok){
         _showUpdateError(target,res);
         resetApplyButton(0);
@@ -3898,7 +5066,7 @@ async function forceUpdate(btn){
   const errEl=$('updateError');
   if(errEl){errEl.style.display='none';}
   try{
-    const res=await api('/api/updates/force',{method:'POST',body:JSON.stringify({target})});
+    const res=await api('/api/updates/force',{method:'POST',body:JSON.stringify({target}),timeoutMs:120000});
     if(!res.ok){
       if(errEl){errEl.textContent='Force update failed: '+(res.message||'unknown error');errEl.style.display='block';}
       btn.disabled=false;btn.textContent='Force update';
@@ -3948,11 +5116,12 @@ async function _waitForServerThenReload(opts){
   if(msgEl) msgEl.textContent='⚠️ Server is taking longer than expected — click Reload when ready';
 }
 
-function getPendingSessionMessage(session){
+function getPendingSessionMessage(session, messagesOverride=null){
   const text=String(session?.pending_user_message||'').trim();
   if(!text) return null;
   const attachments=Array.isArray(session?.pending_attachments)?session.pending_attachments.filter(Boolean):[];
-  const messages=Array.isArray(session?.messages)?session.messages:[];
+  const sourceMessages=Array.isArray(messagesOverride)?messagesOverride:session?.messages;
+  const messages=Array.isArray(sourceMessages)?sourceMessages:[];
   const lastUser=[...messages].reverse().find(m=>m&&m.role==='user');
   if(lastUser){
     const lastText=String(msgContent(lastUser)||'').trim();
@@ -3997,7 +5166,7 @@ async function checkInflightOnBoot(sid) {
 
 function syncTopbar(){
   if(!S.session){
-    document.title=window._botName||'Hermes';
+    document.title=assistantDisplayName();
     if(typeof syncWorkspaceDisplays==='function') syncWorkspaceDisplays();
     if(typeof _syncWorkspaceHeadingState==='function') _syncWorkspaceHeadingState();
     if(typeof syncModelChip==='function') syncModelChip();
@@ -4017,7 +5186,7 @@ function syncTopbar(){
   }
   const sessionTitle=S.session.title||t('untitled');
   const _topbarTitle=$('topbarTitle');if(_topbarTitle)_topbarTitle.textContent=sessionTitle;
-  document.title=sessionTitle+' \u2014 '+(window._botName||'Hermes');
+  document.title=sessionTitle+' \u2014 '+assistantDisplayName();
   const vis=S.messages.filter(m=>m&&m.role&&m.role!=='tool');
   const _topbarMeta=$('topbarMeta');
   if(_topbarMeta){
@@ -4072,25 +5241,40 @@ function syncTopbar(){
       }
     } else {
       const applied=_applyModelToDropdown(currentModel,modelSel,S.session.model_provider||null);
-      // If the model isn't in the current provider list, reset to the configured
-      // default rather than silently retaining the previous chat's selection (#1771).
+      // If the session model is missing from the current provider list, inject
+      // a session-scoped option instead of displaying the previous/static
+      // selection. Only fall back if that repair path is unavailable.
       if(!applied){
         const deferModelCorrection=Boolean(S.session._modelResolutionDeferred);
+        const missingModelIsRoutable=_providerDefersMissingModelFallback(S.session.model_provider||window._activeProvider||null);
         // Also defer if a live model fetch is still in flight — the model may be
         // in the list once the fetch completes. Persisting now would corrupt the
         // session with the wrong model before live models arrive (#1169).
         const liveStillPending=window._activeProvider&&_liveModelFetchPending.has(window._activeProvider);
-        if(liveStillPending){
+        if(liveStillPending||missingModelIsRoutable){
           // Live fetch in flight — don't touch sel.value or S.session.model yet.
           // _addLiveModelsToSelect() will re-apply S.session.model once done (#1169).
+          // Named custom providers/OpenRouter can also route vendor-prefixed IDs
+          // outside the static catalog, so preserve the user's explicit choice.
+          if(typeof _ensureModelOptionInDropdown==='function'){
+            const sessionOption=_ensureModelOptionInDropdown(currentModel,modelSel,S.session.model_provider||null);
+            if(sessionOption) currentModel=sessionOption;
+          }
         } else {
-          const fallback=_applySessionModelFallback(modelSel);
-          if(fallback&&!deferModelCorrection){
-            S.session.model=fallback.model;
-            S.session.model_provider=fallback.model_provider||null;
-            currentModel=fallback.model;
-            // Persist the correction so the session doesn't re-inject on next load.
-            _persistSessionModelCorrection(fallback.model,S.session.model_provider||null);
+          const sessionOption=(typeof _ensureModelOptionInDropdown==='function')
+            ? _ensureModelOptionInDropdown(currentModel,modelSel,S.session.model_provider||null)
+            : null;
+          if(sessionOption){
+            currentModel=sessionOption;
+          } else {
+            const fallback=_applySessionModelFallback(modelSel);
+            if(fallback&&!deferModelCorrection){
+              S.session.model=fallback.model;
+              S.session.model_provider=fallback.model_provider||null;
+              currentModel=fallback.model;
+              // Persist the correction so the session doesn't re-inject on next load.
+              _persistSessionModelCorrection(fallback.model,S.session.model_provider||null);
+            }
           }
         }
       }
@@ -4134,7 +5318,7 @@ function _messageHasReasoningPayload(m){
   if(!m||m.role!=='assistant') return false;
   if(m.reasoning) return true;
   if(Array.isArray(m.content)) return m.content.some(p=>p&&(p.type==='thinking'||p.type==='reasoning'));
-  return /<think>[\s\S]*?<\/think>|<\|channel>thought\n[\s\S]*?<channel\|>|<\|turn\|>thinking\n[\s\S]*?<turn\|>/.test(String(m.content||''));
+  return /^\s*(?:<think>[\s\S]*?<\/think>|<\|channel\|?>thought\n?[\s\S]*?<channel\|>|<\|turn\|>thinking\n[\s\S]*?<turn\|>)/.test(String(m.content||''));
 }
 function _formatTurnTps(value){
   const n=Number(value);
@@ -4146,7 +5330,7 @@ function isTpsDisplayEnabled(){
   return window._showTps===true;
 }
 function _assistantRoleHtml(tsTitle='', tpsText=''){
-  const _bn=window._botName||'Hermes';
+  const _bn=assistantDisplayName();
   const tps=(isTpsDisplayEnabled()&&tpsText)?`<span class="msg-tps-inline" title="Tokens per second">${esc(tpsText)}</span>`:'';
   return `<div class="msg-role assistant" ${tsTitle?`title="${esc(tsTitle)}"`:''}><div class="role-icon assistant">${esc(_bn.charAt(0).toUpperCase())}</div><span style="font-size:12px">${esc(_bn)}</span>${tps}</div>`;
 }
@@ -4172,23 +5356,26 @@ function _createAssistantTurn(tsTitle='', tpsText=''){
   const row=document.createElement('div');
   row.className='msg-row assistant-turn';
   row.dataset.role='assistant';
+  if(S.session) row.dataset.sessionId=S.session.session_id;
   row.innerHTML=`${_assistantRoleHtml(tsTitle, tpsText)}<div class="assistant-turn-blocks"></div>`;
   return row;
 }
 function _assistantTurnBlocks(turn){
   return turn?turn.querySelector('.assistant-turn-blocks'):null;
 }
-function _thinkingCardHtml(text){
+function _thinkingCardHtml(text, open){
   const clean=_sanitizeThinkingDisplayText(text);
-  return `<div class="thinking-card"><div class="thinking-card-header" onclick="this.parentElement.classList.toggle('open')"><span class="thinking-card-icon">${li('lightbulb',14)}</span><span class="thinking-card-label">${t('thinking')}</span><span class="thinking-card-toggle">${li('chevron-right',12)}</span></div><div class="thinking-card-body"><pre>${esc(clean)}</pre></div></div>`;
+  const copyBtn=`<button class="thinking-copy-btn" onclick="event.stopPropagation();_copyThinkingText(this)" title="${t('copy')}" aria-label="${t('copy')}">${li('copy',12)}</button>`;
+  const classes=`thinking-card${open?' open':''}`;
+  return `<div class="${classes}"><div class="thinking-card-header" onclick="this.parentElement.classList.toggle('open')"><span class="thinking-card-icon">${li('lightbulb',14)}</span><span class="thinking-card-label">${t('thinking')}</span><span class="thinking-card-btn-row">${copyBtn}<span class="thinking-card-toggle">${li('chevron-right',12)}</span></span></div><div class="thinking-card-body"><pre>${esc(clean)}</pre></div></div>`;
 }
 function isSimplifiedToolCalling(){
   return window._simplifiedToolCalling!==false;
 }
-function _thinkingActivityNode(text){
+function _thinkingActivityNode(text, open){
   const row=document.createElement('div');
   row.className='agent-activity-thinking';
-  row.innerHTML=_thinkingCardHtml(text);
+  row.innerHTML=_thinkingCardHtml(text, open);
   return row;
 }
 // ── Activity-group user expand intent (#1298) ──────────────────────────────
@@ -4253,7 +5440,7 @@ function ensureActivityGroup(inner, opts){
   if(!inner) return null;
   const live=!!opts.live;
   const activityKey=opts.activityKey||(live?_activityKeyForLiveTurn():null);
-  const selector=live?'.tool-call-group[data-live-tool-call-group="1"]':'.tool-call-group[data-agent-activity-group="1"]';
+  const selector=live?'.tool-call-group[data-live-tool-call-group="1"][data-live-activity-current="1"]':'.tool-call-group[data-agent-activity-group="1"]';
   let group=inner.querySelector(selector);
   if(!group){
     group=document.createElement('div');
@@ -4270,7 +5457,10 @@ function ensureActivityGroup(inner, opts){
     group.setAttribute('data-tool-call-group','1');
     group.setAttribute('data-agent-activity-group','1');
     if(activityKey) group.setAttribute('data-activity-disclosure-key',activityKey);
-    if(live) group.setAttribute('data-live-tool-call-group','1');
+    if(live){
+      group.setAttribute('data-live-tool-call-group','1');
+      group.setAttribute('data-live-activity-current','1');
+    }
     group.innerHTML=`<button type="button" class="tool-call-group-summary" aria-expanded="${collapsed?'false':'true'}" onclick="_toggleActivityGroup(this)"><span class="tool-call-group-chevron">${li('chevron-right',12)}</span><span class="tool-call-group-label">Activity</span><span class="tool-call-group-duration"></span></button><div class="tool-call-group-body"></div>`;
     const anchor=opts.anchor||null;
     if(anchor&&anchor.parentElement===inner) anchor.insertAdjacentElement('afterend', group);
@@ -4278,10 +5468,20 @@ function ensureActivityGroup(inner, opts){
   }else if(activityKey&&!group.getAttribute('data-activity-disclosure-key')){
     group.setAttribute('data-activity-disclosure-key',activityKey);
   }
-  if(live) _setActivityElapsedStartedAt(group);
+  if(live){
+    _setActivityElapsedStartedAt(group);
+    _ensureLiveActivityBaseline(group);
+  }
   _syncToolCallGroupSummary(group);
   if(live) _startActivityElapsedTimer(group);
   return group;
+}
+function closeCurrentLiveActivityGroup(){
+  const turn=$('liveAssistantTurn');
+  if(!turn) return;
+  turn.querySelectorAll('.tool-call-group[data-live-tool-call-group="1"][data-live-activity-current="1"]').forEach(group=>{
+    group.removeAttribute('data-live-activity-current');
+  });
 }
 function _compressionStateForCurrentSession(){
   const state=window._compressionUi;
@@ -4295,6 +5495,7 @@ function isCompressionUiRunning(){
 }
 function clearCompressionUi(){
   window._compressionUi=null;
+  _clearCompressionElapsedTimer();
   _setCompressionSessionLock(null);
   renderCompressionUi();
 }
@@ -4303,8 +5504,14 @@ function setCompressionUi(state){
     clearCompressionUi();
     return;
   }
-  window._compressionUi={...state};
-  if(state.sessionId) _setCompressionSessionLock(state.sessionId);
+  const nextState={...state};
+  if(nextState.automatic&&nextState.phase==='running'&&!_compressionElapsedStartedAt(nextState)){
+    nextState.startedAt=Date.now()/1000;
+  }
+  window._compressionUi=nextState;
+  if(nextState.sessionId) _setCompressionSessionLock(nextState.sessionId);
+  if(nextState.automatic&&nextState.phase==='running') _startCompressionElapsedTimer();
+  else _clearCompressionElapsedTimer();
   renderCompressionUi();
 }
 function _compressionCardsHtml(state){
@@ -4370,19 +5577,46 @@ function _compressionCardsHtml(state){
     </div>
     ${referenceHtml}`;
 }
-function _autoCompressionCardsHtml(state){
+function _autoCompressionBaseDetail(state){
   const fallback='Context auto-compressed to continue the conversation';
-  const detail=String(state.message||fallback).trim()||fallback;
-  const preview=String(state.summary?.headline||detail).trim()||detail;
+  const running=state&&state.phase==='running';
+  return running
+    ? (String(state.message||'Auto-compressing context...').trim()||'Auto-compressing context...')
+    : (String(state&&state.message||fallback).trim()||fallback);
+}
+function _autoCompressionPreviewText(state){
+  const copy=_engineAwareCompressionCopy(String(state&&state.engine||_compressionEngineForSession()).toLowerCase(), String(state&&state.mode||_compressionModeForSession()).toLowerCase());
+  const running=state&&state.phase==='running';
+  const detail=_autoCompressionBaseDetail(state);
+  if(!running) return (String(state&&state.summary?.headline||copy.preview||detail).trim()||detail);
+  const elapsedLabel=_compressionElapsedLabel(state);
+  return [detail, elapsedLabel].filter(Boolean).join(' · ');
+}
+function _autoCompressionDetailText(state){
+  const running=state&&state.phase==='running';
+  const base=_autoCompressionBaseDetail(state);
+  const elapsedLabel=running?_compressionElapsedLabel(state):'';
+  if(running)return elapsedLabel?`Elapsed: ${elapsedLabel}`:base;
+  const continuation=String(state&&state.continuationSessionId||'').trim();
+  const handoff=continuation?`Continued in compressed session: ${continuation}`:'';
+  return [base,handoff].filter(Boolean).join('\n');
+}
+function _autoCompressionCardsHtml(state){
+  const copy=_engineAwareCompressionCopy(String(state&&state.engine||_compressionEngineForSession()).toLowerCase(), String(state&&state.mode||_compressionModeForSession()).toLowerCase());
+  const running=state&&state.phase==='running';
+  const preview=_autoCompressionPreviewText(state);
+  const cardDetail=_autoCompressionDetailText(state);
   return `
     <div class="tool-card-row compression-card-row" data-compression-card="1">
       ${_compressionStatusCardHtml({
-        statusLabel: t('auto_compress_label'),
+        statusLabel: (String(state&&state.engine||'').toLowerCase()==='lcm'||String(state&&state.mode||'').toLowerCase()==='lossless_retrieval')?copy.label:t('auto_compress_label'),
         previewText: preview,
-        detail,
-        icon: li('check',13),
-        open: false,
-        variantClass: 'tool-card-compress-complete tool-card-compress-auto',
+        detail: cardDetail,
+        icon: running ? '<span class="tool-card-running-dot"></span>' : li('check',13),
+        open: running,
+        variantClass: running
+          ? 'tool-card-compress-running tool-card-compress-auto'
+          : 'tool-card-compress-complete tool-card-compress-auto',
       })}
     </div>`;
 }
@@ -4391,6 +5625,33 @@ function _compressionCardsNode(state){
   wrap.className='compression-turn';
   wrap.innerHTML=`<div class="compression-turn-blocks">${_compressionCardsHtml(state)}</div>`;
   return wrap;
+}
+function appendLiveCompressionCard(state){
+  if(!S.session||!S.activeStreamId||!state) return false;
+  let turn=$('liveAssistantTurn');
+  if(!turn){
+    turn=_createAssistantTurn();
+    turn.id='liveAssistantTurn';
+    if(S.session) turn.dataset.sessionId=S.session.session_id;
+    $('msgInner').appendChild(turn);
+  }
+  const inner=_assistantTurnBlocks(turn);
+  if(!inner) return false;
+  closeCurrentLiveActivityGroup();
+  const node=_compressionCardsNode(state);
+  if(!node) return false;
+  node.setAttribute('data-live-compression-card','1');
+  if(state.automatic&&state.phase==='running'){
+    const started=_compressionElapsedStartedAt(state)||Date.now()/1000;
+    node.setAttribute('data-compression-started-at',String(started));
+    node.setAttribute('data-compression-message',String(state.message||'Auto-compressing context...'));
+    _startCompressionElapsedTimer();
+  }
+  const existing=inner.querySelector('[data-live-compression-card="1"]');
+  if(existing) existing.replaceWith(node);
+  else inner.appendChild(node);
+  if(typeof scrollIfPinned==='function') scrollIfPinned();
+  return true;
 }
 function _isHandoffSummaryToolPayload(value){
   if(!value||typeof value!=='object'||Array.isArray(value)) return false;
@@ -4439,10 +5700,24 @@ function _isContextCompactionMessage(m){
   const text=msgContent(m)||String(m.content||'');
   return /^\s*\[context compaction/i.test(text) || /^\s*context compaction/i.test(text);
 }
+function _isPreservedCompressionTaskListMarkerText(text){
+  return /^\s*\[your active task list was preserved across context compression\]/i.test(String(text||''));
+}
+function _isPreservedCompressionTaskListMarkerOnlyText(text){
+  return _isPreservedCompressionTaskListMarkerText(text)
+    && !String(text||'')
+      .replace(/^\s*\[your active task list was preserved across context compression\]\s*/i,'')
+      .trim();
+}
 function _isPreservedCompressionTaskListMessage(m){
   if(!m||m.role!=='user') return false;
   const text=msgContent(m)||String(m.content||'');
   return /^\s*\[your active task list was preserved across context compression\]/i.test(text);
+}
+function _isMarkerOnlyAssistantCompressionMessage(m){
+  if(!m||m.role!=='assistant') return false;
+  const text=msgContent(m)||String(m.content||'');
+  return _isPreservedCompressionTaskListMarkerOnlyText(text);
 }
 function _preservedCompressionTaskListPreview(text){
   const body=String(text||'')
@@ -4469,9 +5744,11 @@ function _compressionAnchorIndex(visWithIdx, anchorKey, fallbackIdx=null){
     for(let i=visWithIdx.length-1;i>=0;i--){
       const candidate=_compressionMessageAnchorKey(visWithIdx[i].m);
       if(!candidate) continue;
+      const anchorTs=String(anchorKey.ts??'');
+      const candidateTs=String(candidate.ts??'');
       if(
         candidate.role===String(anchorKey.role||'') &&
-        String(candidate.ts??'')===String(anchorKey.ts??'') &&
+        (!anchorTs||!candidateTs||candidateTs===anchorTs) &&
         String(candidate.text||'')===String(anchorKey.text||'') &&
         Number(candidate.attachments||0)===Number(anchorKey.attachments||0)
       ){
@@ -4481,15 +5758,34 @@ function _compressionAnchorIndex(visWithIdx, anchorKey, fallbackIdx=null){
   }
   return typeof fallbackIdx==='number' ? fallbackIdx : null;
 }
+function _latestCompressionReferenceMessage(messages, summaryText=''){
+  if(!Array.isArray(messages)||!messages.length) return {message:null, rawIdx:-1};
+  const summaryNorm=String(summaryText||'').replace(/\s+/g,' ').trim();
+  for(let i=messages.length-1;i>=0;i--){
+    const m=messages[i];
+    if(!_isContextCompactionMessage(m)) continue;
+    if(!summaryNorm) return {message:m, rawIdx:i};
+    let content='';
+    try{
+      content=String(msgContent(m)||'');
+    }catch(_){
+      content=String((m&&m.content)||'');
+    }
+    const contentNorm=content.replace(/\s+/g,' ').trim();
+    if(contentNorm.includes(summaryNorm)) return {message:m, rawIdx:i};
+  }
+  return {message:null, rawIdx:-1};
+}
 function _compressionReferenceCardHtml(text, open=false){
+  const copy=_engineAwareCompressionCopy();
   const preview=text.split(/\n+/).filter(Boolean).slice(0,2).join(' ');
   return `
     <div class="tool-card-row compression-card-row" data-compression-card="1" data-raw-text="${esc(text)}">
       <div class="tool-card tool-card-compress-reference${open?' open':''}">
         <div class="tool-card-header" onclick="this.closest('.tool-card').classList.toggle('open')">
           <span class="tool-card-icon">${li('star',13)}</span>
-          <span class="tool-card-name">${esc(t('context_compaction_label'))}</span>
-          <span class="tool-card-preview">${esc(t('reference_only_label'))} · ${esc(preview)}</span>
+          <span class="tool-card-name">${esc(copy.label)}</span>
+          <span class="tool-card-preview">${esc(copy.preview)} · ${esc(preview)}</span>
           <span class="tool-card-toggle">${li('chevron-right',12)}</span>
           <button class="msg-copy-btn msg-action-btn tool-card-copy compression-reference-copy" title="${t('copy')}" onclick="copyMsg(this);event.stopPropagation()">${li('copy',13)}</button>
         </div>
@@ -4562,6 +5858,31 @@ function _formatMessageFooterTimestamp(tsVal){
   }
   const opts={month:'short', day:'numeric', hour:'numeric', minute:'2-digit'};
   return fmt?fmt(date,opts):date.toLocaleString([], opts);
+}
+function _compressionEngineForSession(){
+  return String(
+    (S.session&&(
+      S.session.compression_anchor_engine
+      || S.session.context_engine
+    )) || 'compressor'
+  ).trim().toLowerCase() || 'compressor';
+}
+function _compressionModeForSession(){
+  return String(
+    (S.session&&S.session.compression_anchor_mode) || 'summary_compaction'
+  ).trim().toLowerCase() || 'summary_compaction';
+}
+function _engineAwareCompressionCopy(engine=_compressionEngineForSession(), mode=_compressionModeForSession()){
+  if(engine==='lcm'||mode==='lossless_retrieval'){
+    return {
+      label:t('retrieval_context_label'),
+      preview:t('retrieval_context_preview'),
+    };
+  }
+  return {
+    label:t('context_compaction_label'),
+    preview:t('reference_only_label'),
+  };
 }
 function _compressionStatusCardHtml({
   statusLabel,
@@ -4666,19 +5987,63 @@ function renderCompressionUi(){
   el.style.display='none';
 }
 // Session render cache: avoids full markdown+DOM rebuild when switching back
-// to a session that was already rendered with the same message count.
+// to a session whose rendered transcript inputs are unchanged.
 // Keyed by session_id. Only used on cross-session navigation, never for
 // in-session updates (new messages, edits, stream events).
-//
-// Known limitation: cache key is session_id + message count. Edits and retries
-// that mutate message content without changing the count will serve stale HTML
-// on back-navigation until the user triggers an in-session update. Acceptable
-// for the common read-only back-navigation case; not suitable as a general cache.
 const _sessionHtmlCache=new Map();
 let _sessionHtmlCacheSid=null; // session_id currently rendered in the DOM
 function clearMessageRenderCache(){
   _sessionHtmlCache.clear();
   _sessionHtmlCacheSid=null;
+}
+
+function _messageRenderCacheSignature(){
+  let hash=2166136261;
+  function add(value){
+    const s=String(value==null?'':value);
+    for(let i=0;i<s.length;i++){
+      hash^=s.charCodeAt(i);
+      hash=Math.imul(hash,16777619)>>>0;
+    }
+    hash^=31;
+    hash=Math.imul(hash,16777619)>>>0;
+  }
+  const messages=Array.isArray(S.messages)?S.messages:[];
+  add(messages.length);
+  for(const m of messages){
+    if(!m||typeof m!=='object'){ add('missing'); continue; }
+    add(m.role);add(m.timestamp);add(m._ts);add(m._error);add(m._statusCard);
+    add(msgContent(m));
+    if(Array.isArray(m.content)){
+      add('content-array');
+      m.content.forEach(part=>{
+        if(!part||typeof part!=='object'){ add(part); return; }
+        add(part.type);add(part.id);add(part.name);add(part.text);add(part.content);
+      });
+    }
+    if(Array.isArray(m.tool_calls)){
+      add('message-tool-calls');add(m.tool_calls.length);
+      m.tool_calls.forEach(tc=>{add(tc&&tc.id);add(tc&&tc.name);add(tc&&tc.type);add(JSON.stringify(tc&&tc.function||{}));});
+    }
+    if(Array.isArray(m._partial_tool_calls)){
+      add('partial-tool-calls');add(m._partial_tool_calls.length);
+      m._partial_tool_calls.forEach(tc=>{add(tc&&tc.id);add(tc&&tc.name);add(tc&&tc.snippet);});
+    }
+    if(_messageHasReasoningPayload(m)) add(m.reasoning||m.thinking||m._reasoning||'reasoning');
+    if(Array.isArray(m.attachments)) m.attachments.forEach(a=>add(a&&typeof a==='object'?JSON.stringify(a):a));
+  }
+  const toolCalls=Array.isArray(S.toolCalls)?S.toolCalls:[];
+  add('settled-tool-calls');add(toolCalls.length);
+  toolCalls.forEach(tc=>{
+    if(!tc||typeof tc!=='object'){ add(tc); return; }
+    add(tc.tid);add(tc.id);add(tc.name);add(tc.done);add(tc.is_diff);add(tc.assistant_msg_idx);add(tc.snippet);add(JSON.stringify(tc.args||{}));
+  });
+  if(S.session){
+    add(S.session.message_count);add(S.session.updated_at);add(S.session.compression_anchor_visible_idx);
+    add(JSON.stringify(S.session.compression_anchor_message_key||null));
+    add(S.session.compression_anchor_summary||'');
+  }
+  return `${messages.length}:${toolCalls.length}:${hash.toString(16)}`;
 }
 
 function _clipCliToolSnippet(text, maxLen=20000){
@@ -4827,6 +6192,7 @@ function renderMessages(options){
   const msgCount=S.messages.length;
   if(sid!==_messageRenderWindowSid) _resetMessageRenderWindow(sid);
   const renderWindowSize=_currentMessageRenderWindowSize();
+  let cachedRenderSignature=null;
   const hasTransientTranscriptUi=!!(
     (window._compressionUi&&(!window._compressionUi.sessionId||window._compressionUi.sessionId===sid)) ||
     (window._handoffUi&&(!window._handoffUi.sessionId||window._handoffUi.sessionId===sid))
@@ -4841,15 +6207,16 @@ function renderMessages(options){
   // cross-channel handoff summaries; otherwise the cached transcript returns
   // before those cards can be inserted.
   if(sid&&sid!==_sessionHtmlCacheSid&&!INFLIGHT[sid]&&!hasTransientTranscriptUi){
+    const renderSignature=_messageRenderCacheSignature();
+    cachedRenderSignature=renderSignature;
     const cached=_sessionHtmlCache.get(sid);
-    if(cached&&cached.msgCount===msgCount&&cached.renderWindowSize===renderWindowSize){
+    if(cached&&cached.msgCount===msgCount&&cached.renderWindowSize===renderWindowSize&&cached.signature===renderSignature){
       inner.innerHTML=cached.html;
       _sessionHtmlCacheSid=sid;
       _wireMessageWindowLoadEarlierButton();
       if(typeof _applySessionNavigationPrefs==='function') _applySessionNavigationPrefs();
       _scrollAfterMessageRender(preserveScroll, scrollSnapshot);
-      requestAnimationFrame(()=>{highlightCode();addCopyButtons();loadDiffInline();loadCsvInline();loadExcalidrawInline();loadPdfInline();loadHtmlInline();renderMermaidBlocks();renderKatexBlocks();});
-      requestAnimationFrame(()=>{highlightCode();addCopyButtons();initTreeViews();loadPdfInline();loadHtmlInline();renderMermaidBlocks();renderKatexBlocks();});
+      requestAnimationFrame(()=>postProcessRenderedMessages(inner));
       if(typeof _initMediaPlaybackObserver==='function') _initMediaPlaybackObserver();
       if(typeof loadTodos==='function'&&document.getElementById('panelTodos')&&document.getElementById('panelTodos').classList.contains('active')){loadTodos();}
       return;
@@ -4884,7 +6251,10 @@ function renderMessages(options){
   $('emptyState').style.display=(vis.length||preservedCompressionTaskMessages.length)?'none':'';
   inner.innerHTML='';
   const compressionNode=compressionState?_compressionCardsNode(compressionState):null;
-  const referenceMessage=S.messages.find(m=>_isContextCompactionMessage(m));
+  const {message:referenceMessage, rawIdx:referenceMessageRawIdx}=_latestCompressionReferenceMessage(
+    S.messages,
+    sessionCompressionSummary
+  );
   const referenceText=referenceMessage
     ? msgContent(referenceMessage)||String(referenceMessage.content||'')
     : sessionCompressionSummary;
@@ -4892,15 +6262,29 @@ function renderMessages(options){
     ? (()=>{const row=document.createElement('div');row.innerHTML=`<div class="compression-turn"><div class="compression-turn-blocks">${_compressionReferenceCardHtml(referenceText,false)}${_preservedCompressionTaskListCardsHtml(preservedCompressionTaskMessages)}</div></div>`;return row.firstElementChild;})()
     : null;
   let preservedCompressionTaskCardsAttached=!!referenceNode;
-  const visWithIdx=[];
+  // Cache visWithIdx so expanding the render window (Load earlier) doesn't
+  // re-scan S.messages from scratch.  Invalidate only when the message array
+  // length changes — i.e. new messages arrived or session was truncated.
+  if(!_visWithIdxCache || _visWithIdxCacheLen !== S.messages.length){
+    const rebuilt=[];
+    let ri=0;
+    for(const m of S.messages){
+      if(!m||!m.role||m.role==='tool'){ri++;continue;}
+      if(_isPreservedCompressionTaskListMessage(m)){ri++;continue;}
+      const hasTc=Array.isArray(m.tool_calls)&&m.tool_calls.length>0;
+      const hasTu=Array.isArray(m.content)&&m.content.some(p=>p&&p.type==='tool_use');
+      if(msgContent(m)||m._statusCard||m.attachments?.length||(m.role==='assistant'&&(hasTc||hasTu||_messageHasReasoningPayload(m)))) rebuilt.push({m,rawIdx:ri});
+      ri++;
+    }
+    _visWithIdxCache=rebuilt;
+    _visWithIdxCacheLen=S.messages.length;
+  }
+  const visWithIdx=_visWithIdxCache;
   const preservedCompressionRawIdxs=[];
   let rawIdx=0;
   for(const m of S.messages){
     if(!m||!m.role||m.role==='tool'){rawIdx++;continue;}
     if(_isPreservedCompressionTaskListMessage(m)){preservedCompressionRawIdxs.push(rawIdx);rawIdx++;continue;}
-    const hasTc=Array.isArray(m.tool_calls)&&m.tool_calls.length>0;
-    const hasTu=Array.isArray(m.content)&&m.content.some(p=>p&&p.type==='tool_use');
-    if(msgContent(m)||m._statusCard||m.attachments?.length||(m.role==='assistant'&&(hasTc||hasTu||_messageHasReasoningPayload(m)))) visWithIdx.push({m,rawIdx});
     rawIdx++;
   }
   // Show a top affordance when earlier transcript content exists either in
@@ -4935,18 +6319,56 @@ function renderMessages(options){
       break;
     }
   }
-  const insertionAnchor=_compressionAnchorIndex(
-    renderVisWithIdx,
+  const insertionAnchorFull=_compressionAnchorIndex(
+    visWithIdx,
     compressionState ? compressionState.anchorMessageKey : sessionCompressionAnchorKey,
     compressionState
       ? (typeof compressionState.anchorVisibleIdx==='number' ? compressionState.anchorVisibleIdx : compressionState.anchorRawIdx)
       : sessionCompressionAnchor
   );
+  let insertionAnchor=null;
+  if(typeof insertionAnchorFull==='number'){
+    if(insertionAnchorFull<windowStart) insertionAnchor=renderVisWithIdx.length?0:null;
+    else if(insertionAnchorFull<windowStart+renderVisWithIdx.length) insertionAnchor=insertionAnchorFull-windowStart;
+    else insertionAnchor=renderVisWithIdx.length?renderVisWithIdx.length-1:null;
+  }
   let _prevSepKey=null;
   let currentAssistantTurn=null;
+  // Only build question→assistant mapping for the visible window, not the
+  // full visWithIdx.  The jump-to-question button is only rendered for
+  // assistant messages that appear in the current render window anyway.
+  const questionRawIdxByAssistantRawIdx=new Map();
+  // Seed lastQuestionRawIdx from hidden messages so the first visible
+  // assistant message still gets a valid jump target even when its
+  // corresponding user message sits just before the render window.
+  let lastQuestionRawIdx=-1;
+  for(let i=0;i<windowStart;i++){
+    const role=visWithIdx[i]?.m?.role;
+    if(role==='user') lastQuestionRawIdx=visWithIdx[i].rawIdx;
+  }
+  for(const entry of renderVisWithIdx){
+    const role=entry&&entry.m&&entry.m.role;
+    if(role==='user') lastQuestionRawIdx=entry.rawIdx;
+    else if(role==='assistant') questionRawIdxByAssistantRawIdx.set(entry.rawIdx,lastQuestionRawIdx);
+  }
   const assistantSegments=new Map();
   const assistantThinking=new Map();
   const userRows=new Map();
+  // Only collect tool-call assistant indices for messages that are actually
+  // rendered in the current window.  S.toolCalls can grow large in long turns,
+  // but we only need the ones whose assistant_msg_idx falls inside the visible
+  // range.
+  const toolCallAssistantIdxs=new Set();
+  if(Array.isArray(S.toolCalls)){
+    const renderedRawIdxs=new Set(renderVisWithIdx.map(e=>e.rawIdx));
+    for(const tc of S.toolCalls){
+      if(!tc) continue;
+      const idx=tc.assistant_msg_idx;
+      if(idx!==undefined && renderedRawIdxs.has(idx)){
+        toolCallAssistantIdxs.add(idx);
+      }
+    }
+  }
   // Windowed render loop replaces the legacy full loop:
   // for(let vi=0;vi<visWithIdx.length;vi++)
   for(let vi=0;vi<renderVisWithIdx.length;vi++){
@@ -4969,33 +6391,41 @@ function renderMessages(options){
       thinkingText=content.filter(p=>p&&(p.type==='thinking'||p.type==='reasoning')).map(p=>p.thinking||p.reasoning||p.text||'').join('\n');
       content=content.filter(p=>p&&p.type==='text').map(p=>p.text||p.content||'').join('\n');
     }
-    if(!thinkingText && m.reasoning) thinkingText=m.reasoning;
+    if(!thinkingText && (m.reasoning_content || m.reasoning)) thinkingText=m.reasoning_content || m.reasoning;
     if(!thinkingText && typeof content==='string'){
-      const thinkMatch=content.match(/<think>([\s\S]*?)<\/think>/);
+      const thinkMatch=content.match(/^\s*<think>([\s\S]*?)<\/think>\s*/);
       if(thinkMatch){
         thinkingText=thinkMatch[1].trim();
-        content=content.replace(/<think>[\s\S]*?<\/think>\s*/,'').trimStart();
+        content=content.replace(/^\s*<think>[\s\S]*?<\/think>\s*/,'').trimStart();
       }
       if(!thinkingText){
         // Historical name "gemmaMatch" refers to MiniMax <|channel>thought format.
-        const gemmaMatch=content.match(/<\|channel>thought\n([\s\S]*?)<channel\|>/);
+        const gemmaMatch=content.match(/^\s*<\|channel\|?>thought\n?([\s\S]*?)<channel\|>\s*/);
         if(gemmaMatch){
           thinkingText=gemmaMatch[1].trim();
-          content=content.replace(/<\|channel>thought\n[\s\S]*?<channel\|>\s*/,'').trimStart();
+          content=content.replace(/^\s*<\|channel\|?>thought\n?[\s\S]*?<channel\|>\s*/,'').trimStart();
         }
       }
       if(!thinkingText){
         // Gemma 4 uses asymmetric <|turn|>thinking\n...<turn|> delimiters.
-        const gemmaTurnMatch=content.match(/<\|turn\|>thinking\n([\s\S]*?)<turn\|>/);
+        const gemmaTurnMatch=content.match(/^\s*<\|turn\|>thinking\n([\s\S]*?)<turn\|>\s*/);
         if(gemmaTurnMatch){
           thinkingText=gemmaTurnMatch[1].trim();
-          content=content.replace(/<\|turn\|>thinking\n[\s\S]*?<turn\|>\s*/,'').trimStart();
+          content=content.replace(/^\s*<\|turn\|>thinking\n[\s\S]*?<turn\|>\s*/,'').trimStart();
         }
       }
     }
     const isUser=m.role==='user';
+    if(!isUser&&_isMarkerOnlyAssistantCompressionMessage(m)){
+      content='**Error:** No response received after context compression. Please retry.';
+    }
     const displayContent=isUser?_stripWorkspaceDisplayPrefix(content):content;
+    if(thinkingText&&!isUser){
+      thinkingText=_stripVisibleAssistantEchoFromThinking(thinkingText, displayContent);
+    }
     const isLastAssistant=!isUser&&vi===renderVisWithIdx.length-1;
+    const nextRendered=renderVisWithIdx[vi+1];
+    const isTurnFinalAssistant=!isUser&&(!nextRendered||!nextRendered.m||nextRendered.m.role!=='assistant');
     let filesHtml='';
     if(m.attachments&&m.attachments.length){
       // Static regression tests intentionally look for msg-media-img/msg-file-badge near this branch.
@@ -5008,9 +6438,10 @@ function renderMessages(options){
         return _renderAttachmentHtml(fname,fileUrl);
       }).join('')}</div>`;
     }
-    let bodyHtml = isUser ? _renderUserFencedBlocks(displayContent) : renderMd(_stripXmlToolCallsDisplay(String(displayContent)));
+    let bodyHtml = _getCachedRender(displayContent, isUser);
     if(!isUser&&m.provider_details){
-      bodyHtml += `<details class="provider-error-details"><summary>Provider details</summary><pre><code>${esc(String(m.provider_details))}</code></pre></details>`;
+      const summary=m.provider_details_label||'Provider details';
+      bodyHtml += `<details class="provider-error-details"><summary>${esc(String(summary))}</summary><pre><code>${esc(String(m.provider_details))}</code></pre></details>`;
     }
     const statusHtml = (!isUser&&m._statusCard) ? _statusCardHtml(m._statusCard) : '';
     const isEditableUser=isUser&&rawIdx===lastUserRawIdx;
@@ -5027,7 +6458,10 @@ function renderMessages(options){
     const tsTitle=tsVal?(_fmtSv?_fmtSv(new Date(tsVal*1000),{}):new Date(tsVal*1000).toLocaleString()):'';
     const tsTime=_formatMessageFooterTimestamp(tsVal);
     const timeHtml = tsTime ? `<span class="msg-time" title="${esc(tsTitle)}">${tsTime}</span>` : '';
-    const footHtml = `<div class="msg-foot">${timeHtml}<span class="msg-actions">${editBtn}${ttsBtn}${forkBtn}${copyBtn}${retryBtn}</span></div>`;
+    const questionJumpBtn = (!isUser&&!m._live&&isTurnFinalAssistant)
+      ? _questionJumpButtonHtml(questionRawIdxByAssistantRawIdx.get(rawIdx))
+      : '';
+    const footHtml = `<div class="msg-foot">${timeHtml}<span class="msg-actions">${editBtn}${ttsBtn}${forkBtn}${copyBtn}${retryBtn}</span>${questionJumpBtn}</div>`;
 
     if(_isContextCompactionMessage(m)){
       if(compressionState || referenceNode){
@@ -5047,6 +6481,7 @@ function renderMessages(options){
       currentAssistantTurn=null;
       const row=document.createElement('div');
       row.className='msg-row';
+      row.id=_userMessageDomId(rawIdx);
       row.dataset.msgIdx=rawIdx;
       row.dataset.role='user';
       row.dataset.rawText=String(displayContent).trim();
@@ -5114,6 +6549,7 @@ function renderMessages(options){
   }
   function _insertCompressionLikeNodeByRawIdx(node, rawIdx){
     if(!node) return;
+    if(rawIdx<firstRenderedRawIdx) return;
     if(!renderVisWithIdx.length){
       inner.appendChild(node);
       return;
@@ -5135,7 +6571,7 @@ function renderMessages(options){
       const turn=anchorSeg.closest('.assistant-turn');
       const blocks=_assistantTurnBlocks(turn);
       if(blocks){
-        blocks.appendChild(node);
+        blocks.insertBefore(node, anchorSeg);
         return;
       }
       const turnParent=turn && turn.parentElement;
@@ -5160,7 +6596,8 @@ function renderMessages(options){
   const handoffSummaryStates=_collectHandoffSummaryStates(S.messages);
 
   _insertCompressionLikeNode(compressionNode);
-  _insertCompressionLikeNode(referenceNode);
+  if(referenceNode&&referenceMessageRawIdx>=0) _insertCompressionLikeNodeByRawIdx(referenceNode, referenceMessageRawIdx);
+  else _insertCompressionLikeNode(referenceNode);
   _insertCompressionLikeNode(preservedOnlyNode, preservedOnlyAnchor);
   _insertCompressionLikeNode(handoffState?_handoffCardsNode(handoffState):null, renderVisWithIdx.length?renderVisWithIdx.length-1:null);
   for(const entry of handoffSummaryStates){
@@ -5178,11 +6615,12 @@ function renderMessages(options){
   // a display list from per-message tool_calls (OpenAI format) stored in each
   // assistant message. This covers the reload case described in issue #140.
   if(!S.busy && (!S.toolCalls||!S.toolCalls.length)){
-    // Pass 1: index tool outputs by tool_call_id / tool_use_id so the
+    // Index tool outputs by tool_call_id / tool_use_id so the
     // fallback-built cards carry their result snippet (not just the command).
     // Without this step CLI-origin sessions reload with empty tool cards.
     const resultsByTid={};
-    S.messages.forEach(m=>{
+    const fallbackToolSources=[];
+    S.messages.forEach((m,rawIdx)=>{
       if(!m) return;
       // OpenAI / Hermes CLI format: role=tool with tool_call_id
       if(m.role==='tool'){
@@ -5202,10 +6640,14 @@ function renderMessages(options){
           resultsByTid[tid]=_cliToolResultSnippet(raw);
         });
       }
+      if(m.role==='assistant'){
+        const hasTopLevelToolCalls=Array.isArray(m.tool_calls)&&m.tool_calls.length>0;
+        const hasContentToolUse=Array.isArray(m.content)&&m.content.some(p=>p&&typeof p==='object'&&p.type==='tool_use');
+        if(hasTopLevelToolCalls||hasContentToolUse) fallbackToolSources.push({m,rawIdx});
+      }
     });
     const derived=[];
-    S.messages.forEach((m,rawIdx)=>{
-      if(m.role!=='assistant') return;
+    fallbackToolSources.forEach(({m,rawIdx})=>{
       // OpenAI format: top-level tool_calls field on the assistant message
       (m.tool_calls||[]).forEach(tc=>{
         if(!tc||typeof tc!=='object') return;
@@ -5256,7 +6698,7 @@ function renderMessages(options){
     if(derived.length) S.toolCalls=derived;
   }
   if(!S.busy){
-    inner.querySelectorAll('.tool-call-group:not([data-compression-card]),.tool-card-row:not([data-compression-card])').forEach(el=>el.remove());
+    inner.querySelectorAll('.tool-call-group:not([data-compression-card]),.tool-card-row:not([data-compression-card]),.agent-activity-thinking:not([data-live-thinking="1"])').forEach(el=>el.remove());
     const byAssistant = {};
     for(const tc of (S.toolCalls||[])){
       const key = tc.assistant_msg_idx !== undefined ? tc.assistant_msg_idx : -1;
@@ -5277,14 +6719,16 @@ function renderMessages(options){
         }
         if(!anchorRow) continue;
         const anchorParent=anchorRow.parentElement;
-        const insertAfterNode = anchorInsertAfter.get(anchorRow) || anchorRow;
+        let insertAfterNode = anchorInsertAfter.get(anchorRow) || anchorRow;
         const group=ensureActivityGroup(anchorParent,{collapsed:true,anchor:insertAfterNode,activityKey:`assistant:${aIdx}`});
         const sourceMsg=S.messages[aIdx]||{};
         if(sourceMsg._turnDuration!==undefined) group.setAttribute('data-turn-duration', String(sourceMsg._turnDuration));
         const body=group&&group.querySelector('.tool-call-group-body');
         if(!body) continue;
         const thinkingText=assistantThinking.get(aIdx);
-        if(thinkingText) body.appendChild(_thinkingActivityNode(thinkingText));
+        if(thinkingText){
+          body.appendChild(_thinkingActivityNode(thinkingText, false));
+        }
         for(const tc of cards){
           body.appendChild(buildToolCard(tc));
         }
@@ -5350,7 +6794,7 @@ function renderMessages(options){
       const hasTurnUsage=!!msg._turnUsage;
       const compactActivityForMessage=isSimplifiedToolCalling()&&(
         assistantThinking.has(mi)||
-        (S.toolCalls||[]).some(tc=>tc&&(tc.assistant_msg_idx!==undefined?tc.assistant_msg_idx:-1)===mi)
+        toolCallAssistantIdxs.has(mi)
       );
       const durationText=compactActivityForMessage?'':_formatTurnDuration(msg._turnDuration);
       if(!hasTurnUsage&&!durationText&&!gatewayText&&!failoverText&&!modelWarningText) continue;
@@ -5392,6 +6836,8 @@ function renderMessages(options){
         const cost=msg._turnUsage.estimated_cost;
         let text=`${_fmtTokens(inTok)} in · ${_fmtTokens(outTok)} out`;
         if(cost) text+=` · ~$${cost<0.01?cost.toFixed(4):cost.toFixed(2)}`;
+        const cacheHitPct=msg._turnUsage.cache_hit_percent;
+        if(cacheHitPct!=null) text+=` · ${t('usage_cached_percent',cacheHitPct)}`;
         usage.textContent=text;
         fragments.push(usage);
       }
@@ -5406,8 +6852,7 @@ function renderMessages(options){
   // scrollIfPinned() respects _scrollPinned, so it's a no-op if user scrolled up.
   _scrollAfterMessageRender(preserveScroll, scrollSnapshot);
   // Apply syntax highlighting after DOM is built
-  requestAnimationFrame(()=>{highlightCode();addCopyButtons();loadDiffInline();loadCsvInline();loadExcalidrawInline();loadPdfInline();loadHtmlInline();renderMermaidBlocks();renderKatexBlocks();});
-  requestAnimationFrame(()=>{highlightCode();addCopyButtons();initTreeViews();loadPdfInline();loadHtmlInline();renderMermaidBlocks();renderKatexBlocks();}); 
+  requestAnimationFrame(()=>postProcessRenderedMessages(inner));
   // Refresh todo panel if it's currently open
   if(typeof loadTodos==='function' && document.getElementById('panelTodos') && document.getElementById('panelTodos').classList.contains('active')){
     loadTodos();
@@ -5416,11 +6861,12 @@ function renderMessages(options){
   if(typeof _applyMediaPlaybackPreferences==='function') _applyMediaPlaybackPreferences(inner);
   // Populate session cache so switching back here skips a full rebuild.
   _sessionHtmlCacheSid=sid;
-  if(sid&&!hasTransientTranscriptUi){
+  if(sid&&!INFLIGHT[sid]&&!hasTransientTranscriptUi){
     const _html=inner.innerHTML;
     // Only cache sessions with <300KB rendered HTML; evict oldest beyond 8 sessions.
     if(_html.length<300_000){
-      _sessionHtmlCache.set(sid,{html:_html,msgCount,renderWindowSize});
+      const renderSignature=cachedRenderSignature===null?_messageRenderCacheSignature():cachedRenderSignature;
+      _sessionHtmlCache.set(sid,{html:_html,msgCount,renderWindowSize,signature:renderSignature});
       if(_sessionHtmlCache.size>8){_sessionHtmlCache.delete(_sessionHtmlCache.keys().next().value);}
     }
   }
@@ -5510,22 +6956,50 @@ function _syncToolCallGroupSummary(group){
   const label=group.querySelector('.tool-call-group-label');
   const durationEl=group.querySelector('.tool-call-group-duration');
   if(label){
-    if(toolCount) label.textContent=`Activity: ${toolCount} tool${toolCount===1?'':'s'}`;
+    if(group.getAttribute('data-live-tool-call-group')==='1'){
+      label.textContent=toolCount?`Activity: ${toolCount} tool${toolCount===1?'':'s'}`:'Activity · Running';
+    }else if(toolCount) label.textContent=`Activity: ${toolCount} tool${toolCount===1?'':'s'}`;
     else label.textContent='Activity';
+    label.setAttribute('data-sweep-label', label.textContent);
   }
   if(durationEl){
     if(group.getAttribute('data-live-tool-call-group')==='1'){
       const activeText=_activityElapsedLabel(group);
+      const progressText=_activityLiveProgressLabel(group);
       if(activeText) group.setAttribute('data-active-turn-elapsed',activeText);
       else group.removeAttribute('data-active-turn-elapsed');
-      durationEl.textContent=activeText?`Working ${activeText}`:'';
-      durationEl.style.display=activeText?'':'none';
+      durationEl.textContent=[progressText, activeText].filter(Boolean).join(' · ');
+      durationEl.style.display=durationEl.textContent?'':'none';
     }else{
       const durationText=_formatTurnDuration(group.dataset.turnDuration);
       durationEl.textContent=durationText?`Done in ${durationText}`:'';
       durationEl.style.display=durationText?'':'none';
     }
   }
+}
+
+function _activityProgressLabelForToolName(name){
+  const key=String(name||'').toLowerCase().replace(/[^a-z0-9]+/g,'_');
+  if(!key) return 'Working';
+  if(key.includes('search')||key.includes('grep')) return 'Searching workspace';
+  if(key.includes('read')||key.includes('view')||key.includes('open')) return 'Reading files';
+  if(key.includes('write')||key.includes('patch')||key.includes('edit')) return 'Updating files';
+  if(key.includes('terminal')||key.includes('shell')||key.includes('command')||key.includes('process')) return 'Running command';
+  if(key.includes('web')||key.includes('fetch')||key.includes('curl')) return 'Checking web data';
+  if(key.includes('todo')||key.includes('plan')) return 'Planning next steps';
+  return 'Working';
+}
+
+function _activityLiveProgressLabel(group){
+  if(!group||group.getAttribute('data-live-tool-call-group')!=='1') return '';
+  const idleAge=_activityLastObservedAge(group);
+  if(idleAge!==null&&idleAge>=90) return `No recent activity for ${_formatActiveElapsedTimer(idleAge)}`;
+  const running=group.querySelector('.tool-card.tool-card-running .tool-card-name');
+  const latest=running || Array.from(group.querySelectorAll('.tool-card-name')).pop();
+  const waiting=group.querySelector('.agent-activity-status-waiting .agent-activity-status-label');
+  if(latest) return _activityProgressLabelForToolName(latest.textContent);
+  if(waiting&&waiting.textContent) return waiting.textContent;
+  return 'Starting agent';
 }
 
 // ── Live tool card helpers (called during SSE streaming) ──
@@ -5591,6 +7065,19 @@ function appendLiveToolCard(tc){
   const anchor=children.filter(el=>el.matches('[data-live-assistant="1"],.tool-call-group,.tool-card-row,.agent-activity-thinking')).pop();
   const group=ensureActivityGroup(inner,{live:true,collapsed:true,anchor,activityKey:_activityKeyForLiveTurn()});
   const body=group.querySelector('.tool-call-group-body');
+  const toolName=_toolDisplayName(tc);
+  const toolEventId=tid?`tool-${tid}`:`tool-${String(tc.name||'tool').replace(/[^a-z0-9_-]/gi,'_')}`;
+  const toolDone=tc.done!==false;
+  _appendActivityEvent(group,{
+    id:toolEventId,
+    kind:'tool',
+    label:toolDone?`Tool finished: ${toolName}`:`Running tool: ${toolName}`,
+    detail:tc.preview||tc.snippet||'',
+    status:toolDone?(tc.is_error?'error':'done'):'waiting',
+    ts:_activityNowSeconds(),
+  });
+  const waiting=body.querySelector('.agent-activity-status[data-activity-event-id="thinking-placeholder"] .agent-activity-status-label');
+  if(waiting&&!toolDone) waiting.textContent='Waiting on tool result';
   // Update existing card in place (tool_complete after tool_start)
   if(tid){
     const existing=body.querySelector(`.tool-card-row[data-live-tid="${CSS.escape(tid)}"]`);
@@ -5718,12 +7205,36 @@ async function regenerateResponse(btn) {
   } catch(e) { setStatus(t('regen_failed') + e.message); }
 }
 
+function postProcessRenderedMessages(container) {
+  highlightCode(container);
+  addCopyButtons(container);
+  loadDiffInline(container);
+  loadCsvInline(container);
+  loadExcalidrawInline(container);
+  loadPdfInline(container);
+  loadHtmlInline(container);
+  renderMermaidBlocks(container);
+  renderKatexBlocks(container);
+  initTreeViews(container);
+}
+
 function highlightCode(container) {
-  // Apply Prism.js syntax highlighting to all code blocks in container (or whole messages area)
-  if(typeof Prism === 'undefined' || !Prism.highlightAllUnder) return;
+  // Apply Prism.js syntax highlighting only to *new* code blocks.
+  // Previously every renderMessages() called Prism.highlightAllUnder() which
+  // re-scanned and re-highlighted every <pre> in the container — expensive in
+  // long sessions with dozens of code blocks.  Now we only touch blocks that
+  // don't already have the data-highlighted marker.
+  if(typeof Prism === 'undefined') return;
   const el = container || $('msgInner');
   if(!el) return;
-  Prism.highlightAllUnder(el);
+  // Prefer per-element highlight (avoids the full DOM walk of highlightAllUnder)
+  const blocks = el.querySelectorAll('pre code:not([data-highlighted])');
+  if(blocks.length === 0) return;
+  for(let i = 0; i < blocks.length; i++){
+    const block = blocks[i];
+    if(typeof Prism.highlightElement === 'function') Prism.highlightElement(block);
+    block.dataset.highlighted = '1';
+  }
 }
 
 // Lazy load js-yaml for YAML tree view support
@@ -5733,16 +7244,17 @@ function _loadJsyamlThen(cb){
   if(_jsyamlLoading){ setTimeout(()=>_loadJsyamlThen(cb),100); return; }
   _jsyamlLoading=true;
   const s=document.createElement('script');
-  s.src='https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.min.js';
-  s.integrity='sha384-8pLvVQkv7pCQqFk7AChLpdEe7gXz9h8GAb7cS0zVeJuKhxR5PU5aEET5pRpHZvxUorzdM';
+  s.src='static/vendor/js-yaml/4.1.0/js-yaml.min.js';
+  s.integrity='sha384-+pxiN6T7yvpryuJmE1gM9PX7yQit15auDb+ZwwvJOd/4be2Cie5/IuVXgQb/S9du';
   s.crossOrigin='anonymous';
   s.onload=()=>{ _jsyamlLoading=false; cb(); };
   s.onerror=()=>{ _jsyamlLoading=false; }; // CDN blocked, fall back to raw
   document.head.appendChild(s);
 }
 
-function initTreeViews(){
-  document.querySelectorAll('.code-tree-wrap:not([data-tree-init])').forEach(wrap=>{
+function initTreeViews(container){
+  const root=container||document;
+  root.querySelectorAll('.code-tree-wrap:not([data-tree-init])').forEach(wrap=>{
     const rawText=wrap.dataset.raw;
     const lang=wrap.dataset.lang;
     let parsed=null;
@@ -5899,9 +7411,10 @@ function addCopyButtons(container){
 let _mermaidLoading=false;
 let _mermaidReady=false;
 
-function loadDiffInline(){
+function loadDiffInline(container){
   const DIFF_MAX_SIZE=512*1024; // 512 KB cap for inline diff rendering
-  document.querySelectorAll('.diff-inline-load:not([data-loaded])').forEach(el=>{
+  const root=container||document;
+  root.querySelectorAll('.diff-inline-load:not([data-loaded])').forEach(el=>{
     el.setAttribute('data-loaded','1');
     const path=el.dataset.path;
     fetch('api/media?path='+encodeURIComponent(path))
@@ -5926,9 +7439,10 @@ function loadDiffInline(){
   });
 }
 
-function loadCsvInline(){
+function loadCsvInline(container){
   const CSV_MAX_SIZE=256*1024; // 256 KB cap for inline CSV rendering
-  document.querySelectorAll('.csv-inline-load:not([data-loaded])').forEach(el=>{
+  const root=container||document;
+  root.querySelectorAll('.csv-inline-load:not([data-loaded])').forEach(el=>{
     el.setAttribute('data-loaded','1');
     const path=el.dataset.path;
     fetch('api/media?path='+encodeURIComponent(path))
@@ -5961,9 +7475,10 @@ function loadCsvInline(){
   });
 }
 
-function loadExcalidrawInline(){
+function loadExcalidrawInline(container){
   const EXCALIDRAW_MAX_SIZE=512*1024; // 512 KB cap
-  document.querySelectorAll('.excalidraw-inline-load:not([data-loaded])').forEach(el=>{
+  const root=container||document;
+  root.querySelectorAll('.excalidraw-inline-load:not([data-loaded])').forEach(el=>{
     el.setAttribute('data-loaded','1');
     const path=el.dataset.path;
     fetch('api/media?path='+encodeURIComponent(path))
@@ -6087,9 +7602,10 @@ function _renderExcalidrawCanvases(){
 // the full buffer is received — ideally the server would enforce it before
 // streaming (out of scope for this client-side PR).
 let _pdfjsReady=false, _pdfjsLoading=false;
-function loadPdfInline(){
+function loadPdfInline(container){
   const PDF_MAX_SIZE=4*1024*1024; // 4 MB cap for inline PDF preview
-  document.querySelectorAll('.pdf-preview-load:not([data-loaded])').forEach(el=>{
+  const root=container||document;
+  root.querySelectorAll('.pdf-preview-load:not([data-loaded])').forEach(el=>{
     el.setAttribute('data-loaded','1');
     const path=el.dataset.path;
     const fname=path.split('/').pop()||path;
@@ -6161,9 +7677,10 @@ function loadPdfInline(){
 }
 
 // ── HTML inline preview (sandboxed iframe) ─────────────────────────────────
-function loadHtmlInline(){
+function loadHtmlInline(container){
   const HTML_MAX_SIZE=256*1024; // 256 KB cap for inline HTML preview
-  document.querySelectorAll('.html-preview-load:not([data-loaded])').forEach(el=>{
+  const root=container||document;
+  root.querySelectorAll('.html-preview-load:not([data-loaded])').forEach(el=>{
     el.setAttribute('data-loaded','1');
     const path=el.dataset.path;
     const fname=path.split('/').pop()||path;
@@ -6186,8 +7703,9 @@ function loadHtmlInline(){
   });
 }
 
-function renderMermaidBlocks(){
-  const blocks=document.querySelectorAll('.mermaid-block:not([data-rendered])');
+function renderMermaidBlocks(container){
+  const root=container||document;
+  const blocks=root.querySelectorAll('.mermaid-block:not([data-rendered])');
   if(!blocks.length) return;
   if(!_mermaidReady){
     if(!_mermaidLoading){
@@ -6236,14 +7754,18 @@ function renderMermaidBlocks(){
 let _katexLoading=false;
 let _katexReady=false;
 
-function renderKatexBlocks(){
-  const blocks=document.querySelectorAll('.katex-block:not([data-rendered]),.katex-inline:not([data-rendered])');
+function renderKatexBlocks(container){
+  const root=container||document;
+  const blocks=root.querySelectorAll(
+    '.katex-block:not([data-rendered]),.katex-inline:not([data-rendered]),'+
+    'equation-block:not([data-rendered]),equation-inline:not([data-rendered])'
+  );
   if(!blocks.length) return;
   if(!_katexReady){
     if(!_katexLoading){
       _katexLoading=true;
       const script=document.createElement('script');
-      script.src='https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js';
+      script.src='static/vendor/katex/0.16.22/katex.min.js';
       script.integrity='sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6';
       script.crossOrigin='anonymous';
       script.onload=()=>{
@@ -6259,7 +7781,8 @@ function renderKatexBlocks(){
   blocks.forEach(el=>{
     el.dataset.rendered='true';
     const src=el.textContent||'';
-    const displayMode=el.dataset.katex==='display';
+    const tagName=(el.tagName||'').toLowerCase();
+    const displayMode=el.dataset.katex==='display'||tagName==='equation-block';
     try{
       katex.render(src,el,{
         displayMode,
@@ -6280,6 +7803,20 @@ function _thinkingMarkup(text=''){
   return (clean&&String(clean).trim())
     ? `<div class="thinking-card${openClass}"><div class="thinking-card-header" onclick="this.parentElement.classList.toggle('open')"><span class="thinking-card-icon">${li('lightbulb',14)}</span><span class="thinking-card-label">${t('thinking')}</span><span class="thinking-card-toggle">${li('chevron-right',12)}</span></div><div class="thinking-card-body"><pre>${esc(String(clean).trim())}</pre></div></div>`
     : `<div class="thinking"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>`;
+}
+function _renderThinkingInto(row,text=''){
+  if(!row) return;
+  const clean=_sanitizeThinkingDisplayText(text);
+  if(!clean){
+    row.innerHTML=_thinkingMarkup(text);
+    return;
+  }
+  const pre=row.querySelector('.thinking-card-body pre');
+  if(pre){
+    pre.textContent=clean;
+    return;
+  }
+  row.innerHTML=_thinkingMarkup(text);
 }
 function finalizeThinkingCard(){
   // Guard: only finalize thinking card if we're looking at the session that started it.
@@ -6322,16 +7859,17 @@ function finalizeThinkingCard(){
       const summary=group.querySelector('.tool-call-group-summary');
       if(summary) summary.setAttribute('aria-expanded','false');
     }
-    const active=group.querySelector('.agent-activity-thinking[data-thinking-active="1"]');
+    const active=turn.querySelector('.agent-activity-thinking[data-thinking-active="1"]');
     if(active) active.removeAttribute('data-thinking-active');
     _syncToolCallGroupSummary(group);
   }
 }
-function appendThinking(text=''){
+function appendThinking(text='', options){
   // Guard: ignore if session was switched during an async SSE stream.
   // The old stream's reasoning events can still fire after switch;
   // without this check they would pollute the new session's DOM.
-  if(!S.session||!S.activeStreamId) return;
+  const allowPendingPlaceholder=!!(options&&options.pending===true);
+  if(!S.session||(!S.activeStreamId&&!allowPendingPlaceholder)) return;
   $('emptyState').style.display='none';
   let turn=$('liveAssistantTurn');
   if(!turn){
@@ -6361,8 +7899,10 @@ function appendThinking(text=''){
       if(anchor) anchor.insertAdjacentElement('afterend', row);
       else blocks.appendChild(row);
     }
-    row.className=(text&&String(text).trim())?'assistant-segment thinking-card-row':'assistant-segment';
-    row.innerHTML=_thinkingMarkup(text);
+    const clean=_sanitizeThinkingDisplayText(text);
+    const hasClean=!!String(clean||'').trim();
+    row.className=hasClean?'assistant-segment thinking-card-row':'assistant-segment';
+    _renderThinkingInto(row,text);
     scrollIfPinned();
     // Auto-scroll the thinking card body to bottom if the user is watching
     // (scroll pinned). If the user scrolled up to read history, leave it alone.
@@ -6372,31 +7912,49 @@ function appendThinking(text=''){
     }
     return;
   }
-  if(!String(text||'').trim()){
-    scrollIfPinned();
-    return;
-  }
+  const thinkingText=String(text||'').trim()||'Thinking…';
+  const cleanThinking=_sanitizeThinkingDisplayText(thinkingText);
   const allChildren=Array.from(blocks.children);
   const anchor=allChildren.filter(el=>
     el.id!=='toolRunningRow' &&
-    el.matches('[data-live-assistant="1"],.tool-call-group,.tool-card-row,.agent-activity-thinking')
+    el.matches('[data-live-assistant="1"],.tool-call-group,.tool-card-row')
   ).pop();
   const group=ensureActivityGroup(blocks,{live:true,collapsed:true,anchor,activityKey:_activityKeyForLiveTurn()});
   const body=group&&group.querySelector('.tool-call-group-body');
   if(!body) return;
+  if(!cleanThinking||cleanThinking==='Thinking…'){
+    const label=body.querySelector('.tool-card.tool-card-running')?'Waiting on tool result':'Waiting on model';
+    const detail=body.querySelector('.tool-card-row')
+      ? 'The agent is running; tool results and response text will appear here.'
+      : 'No tool activity has been reported yet.';
+    _appendActivityEvent(group,{id:'thinking-placeholder',kind:'waiting',label,detail,status:'waiting',ts:_activityNowSeconds()});
+    const active=body.querySelector('.agent-activity-thinking[data-thinking-active="1"]');
+    if(active) active.removeAttribute('data-thinking-active');
+    _syncToolCallGroupSummary(group);
+    scrollIfPinned();
+    return;
+  }
+  const placeholder=body.querySelector('.agent-activity-status[data-activity-event-id="thinking-placeholder"]');
+  if(placeholder) placeholder.remove();
   let row=body.querySelector('.agent-activity-thinking[data-thinking-active="1"]');
   if(!row){
-    row=document.createElement('div');
-    row.className='agent-activity-thinking';
-    row.setAttribute('data-thinking-active','1');
-    body.insertBefore(row, body.firstChild);
+    const thinkingCards=Array.from(body.querySelectorAll('.agent-activity-thinking'));
+    row=thinkingCards.pop()||null;
+    if(row) row.setAttribute('data-thinking-active','1');
   }
-  row.innerHTML=_thinkingMarkup(text);
+  if(!row){
+    row=_thinkingActivityNode(thinkingText, false);
+    row.setAttribute('data-thinking-active','1');
+    body.appendChild(row);
+  }else{
+    _renderThinkingInto(row,thinkingText);
+  }
+  _activityMarkObserved(group);
   _syncToolCallGroupSummary(group);
   scrollIfPinned();
   if(_scrollPinned){
-    const thinkingBody=row&&row.querySelector('.thinking-card-body');
-    if(thinkingBody) thinkingBody.scrollTop=thinkingBody.scrollHeight;
+    const body=row&&row.querySelector('.thinking-card-body');
+    if(body) body.scrollTop=body.scrollHeight;
   }
 }
 function updateThinking(text=''){appendThinking(text);}
@@ -6706,6 +8264,12 @@ function _showWorkspaceRootContextMenu(e){
     catch(err){showToast(t('reveal_failed')+(err.message||err));}
   }));
 
+  menu.appendChild(_workspaceContextMenuItem(t('open_in_vscode'),async()=>{
+    menu.remove();
+    try{await api('/api/file/open-vscode',{method:'POST',body:JSON.stringify({session_id:S.session.session_id,path:'.'})});}
+    catch(err){showToast(t('open_in_vscode_failed')+(err.message||err));}
+  }));
+
   menu.appendChild(_workspaceContextMenuItem(t('copy_file_path'),async()=>{
     menu.remove();
     try{
@@ -6761,6 +8325,13 @@ function _renderTreeItems(container, entries, depth){
       const isExpanded=S._expandedDirs.has(item.path);
       arrow.textContent=isExpanded?'\u25BE':'\u25B8';
       el.appendChild(arrow);
+    }else{
+      // Keep file icons aligned with sibling directories that occupy this
+      // slot with the expand/collapse toggle. #2554
+      const spacer=document.createElement('span');
+      spacer.className='file-tree-toggle-placeholder';
+      spacer.setAttribute('aria-hidden','true');
+      el.appendChild(spacer);
     }
 
     // Icon
@@ -6944,6 +8515,15 @@ function _showFileContextMenu(e, item){
   revealItem.onclick=async()=>{menu.remove();try{await api('/api/file/reveal',{method:'POST',body:JSON.stringify({session_id:S.session.session_id,path:item.path})});}catch(err){showToast(t('reveal_failed')+(err.message||err));}};
   menu.appendChild(revealItem);
 
+  // Open in VS Code (#2735)
+  const vscodeItem=document.createElement('div');
+  vscodeItem.textContent=t('open_in_vscode');
+  vscodeItem.style.cssText='padding:7px 14px;cursor:pointer;font-size:13px;color:var(--text);';
+  vscodeItem.onmouseenter=()=>vscodeItem.style.background='var(--hover-bg)';
+  vscodeItem.onmouseleave=()=>vscodeItem.style.background='';
+  vscodeItem.onclick=async()=>{menu.remove();try{await api('/api/file/open-vscode',{method:'POST',body:JSON.stringify({session_id:S.session.session_id,path:item.path})});}catch(err){showToast(t('open_in_vscode_failed')+(err.message||err));}};
+  menu.appendChild(vscodeItem);
+
   // Copy file path — resolves the absolute on-disk path on the server (so the
   // user gets the full /home/.../workspace/foo.py rather than the relative
   // path the file tree shows) and writes it to the OS clipboard. Useful for
@@ -6983,6 +8563,23 @@ function _showFileContextMenu(e, item){
     }
   };
   menu.appendChild(copyPathItem);
+
+  // Download as zip — only for directories. Streams the folder contents
+  // through /api/folder/download which builds the zip on the fly.
+  if(item.type==='dir'){
+    const dlItem=document.createElement('div');
+    dlItem.textContent=t('download_folder');
+    dlItem.style.cssText='padding:7px 14px;cursor:pointer;font-size:13px;color:var(--text);';
+    dlItem.onmouseenter=()=>dlItem.style.background='var(--hover-bg)';
+    dlItem.onmouseleave=()=>dlItem.style.background='';
+    dlItem.onclick=()=>{
+      menu.remove();
+      const url='/api/folder/download?session_id='+encodeURIComponent(S.session.session_id)
+              + '&path='+encodeURIComponent(item.path||'');
+      window.location.href=url;
+    };
+    menu.appendChild(dlItem);
+  }
 
   // Divider + Delete
   const sep=document.createElement('hr');

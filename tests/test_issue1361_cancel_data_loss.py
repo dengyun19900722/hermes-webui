@@ -25,6 +25,7 @@ import api.config as config
 import api.models as models
 import api.streaming as streaming
 from api.models import Session
+from api.run_journal import append_run_event
 from api.streaming import cancel_stream
 
 REPO_ROOT = pathlib.Path(__file__).parent.parent.resolve()
@@ -95,6 +96,7 @@ def _make_session(session_id="cancel_sid_1361",
 
 def _setup_cancel_state(session_id, stream_id="stream_1361"):
     """Wire up STREAMS/CANCEL_FLAGS/AGENT_INSTANCES for cancel_stream()."""
+    models.SESSIONS[session_id].active_stream_id = stream_id
     config.STREAMS[stream_id] = queue.Queue()
     config.CANCEL_FLAGS[stream_id] = threading.Event()
     mock_agent = Mock()
@@ -390,14 +392,60 @@ def test_stale_stream_cleanup_materializes_pending_turn_before_clearing_state():
     assert cleared is True
     assert s.active_stream_id is None
     assert s.pending_user_message is None
-    assert s.messages[-1]["role"] == "user"
-    assert s.messages[-1]["content"] == "please make the GUI fully usable"
-    assert s.messages[-1]["timestamp"] == 1778187755
-    assert s.messages[-1]["attachments"] == [{"name": "visible-state.png"}]
+    assert s.messages[-2]["role"] == "user"
+    assert s.messages[-2]["content"] == "please make the GUI fully usable"
+    assert s.messages[-2]["timestamp"] == 1778187755
+    assert s.messages[-2]["attachments"] == [{"name": "visible-state.png"}]
+    assert s.messages[-1]["role"] == "assistant"
+    assert s.messages[-1].get("_error") is True
+    assert s.messages[-1].get("type") == "interrupted"
 
     reloaded = models.get_session(sid, metadata_only=False)
-    assert reloaded.messages[-1]["role"] == "user"
-    assert reloaded.messages[-1]["content"] == "please make the GUI fully usable"
+    assert reloaded.messages[-2]["role"] == "user"
+    assert reloaded.messages[-2]["content"] == "please make the GUI fully usable"
+    assert reloaded.messages[-1]["role"] == "assistant"
+    assert reloaded.messages[-1].get("type") == "interrupted"
+
+
+def test_stale_stream_cleanup_recovers_journaled_visible_output():
+    """The /api/session stale cleanup path can run before a full chat reload;
+    it must preserve journaled partial output instead of only clearing runtime
+    flags."""
+    from api.routes import _clear_stale_stream_state
+
+    sid = "test_pending_error_d4_journal"
+    s = _make_session(
+        session_id=sid,
+        pending_msg="please check maintainer activity",
+        messages=[{"role": "assistant", "content": "previous answer"}],
+    )
+    append_run_event(
+        sid,
+        "stream_1361",
+        "token",
+        {"text": "I will check GitHub first."},
+    )
+    append_run_event(
+        sid,
+        "stream_1361",
+        "tool",
+        {"name": "terminal", "preview": "gh issue view 2423", "args": {"command": "gh issue view 2423"}},
+    )
+    append_run_event(
+        sid,
+        "stream_1361",
+        "tool_complete",
+        {"name": "terminal", "duration": 0.4, "is_error": False},
+    )
+
+    cleared = _clear_stale_stream_state(s)
+
+    assert cleared is True
+    assert any("I will check GitHub first." in (m.get("content") or "") for m in s.messages)
+    assert s.tool_calls
+    assert s.tool_calls[0]["name"] == "terminal"
+    assert s.messages[-1].get("type") == "interrupted"
+    assert "partial output above was recovered" in s.messages[-1]["content"]
 
 
 # ── Structural guard: pin call sites of the materialize helper at error branches ──
@@ -441,3 +489,116 @@ def test_materialize_helper_called_immediately_before_error_path_clears():
         f"found {sites_with_helper}. PR #1760 / #1361 regression — re-wire the "
         f"helper at the error-branch clear sites in api/streaming.py."
     )
+
+
+
+def test_cancel_copy_uses_configured_bot_name(monkeypatch):
+    """Cancellation copy should use the configured assistant display name."""
+    import api.streaming as streaming
+
+    monkeypatch.setattr(streaming, 'load_settings', lambda: {'bot_name': 'Obryn'})
+
+    assert streaming._cancelled_turn_hint() == (
+        'The run was cancelled by the user before Obryn finished. '
+        'No provider failure occurred.'
+    )
+    assert 'before Obryn finished' in streaming._cancelled_turn_content()
+    assert streaming._classify_provider_error('Task cancelled by user')['hint'] == (
+        'The run was cancelled by the user before Obryn finished. '
+        'No provider failure occurred.'
+    )
+
+
+def test_cancel_copy_uses_profile_name_for_non_default_profile(monkeypatch):
+    """Persisted cancellation copy should use profile names outside literal default."""
+    import api.streaming as streaming
+
+    monkeypatch.setattr(streaming, 'load_settings', lambda: {'bot_name': 'Obryn'})
+
+    session = type('Session', (), {'profile': 'research'})()
+    name = streaming._preferred_agent_display_name_for_session(session)
+    assert name == 'Research'
+    assert 'before Research finished' in streaming._cancelled_turn_content(agent_name=name)
+
+
+def test_cancel_copy_falls_back_to_hermes_for_blank_bot_name(monkeypatch):
+    """Blank or missing bot_name should not leak old persona copy."""
+    import api.streaming as streaming
+
+    monkeypatch.setattr(streaming, 'load_settings', lambda: {'bot_name': '   '})
+
+    assert streaming._cancelled_turn_hint() == (
+        'The run was cancelled by the user before Hermes finished. '
+        'No provider failure occurred.'
+    )
+
+
+class TestCancelStreamIdempotentWithWorkerFinalizer:
+    """The worker and explicit cancel endpoint can both finalize the same turn."""
+
+    def test_cancel_stream_does_not_duplicate_existing_worker_cancel_marker(self):
+        sid = "test_1361_idempotent"
+        stream_id = "stream_idempotent"
+        _make_session(
+            session_id=sid,
+            messages=[
+                {'role': 'user', 'content': 'Help me debug this', 'timestamp': 100},
+                {'role': 'assistant', 'content': '**Task cancelled:** Task cancelled.\n\n*The run was cancelled by the user before Hermes finished. No provider failure occurred.*', '_error': True, 'timestamp': 101},
+            ],
+        )
+        _setup_cancel_state(sid, stream_id)
+        config.STREAM_PARTIAL_TEXT[stream_id] = "partial text before cancel"
+
+        cancel_stream(stream_id)
+
+        msgs = models.SESSIONS[sid].messages
+        cancel_markers = [
+            m for m in msgs
+            if isinstance(m, dict)
+            and m.get('role') == 'assistant'
+            and 'task cancelled' in str(m.get('content') or '').lower()
+        ]
+        partial_idx = next(
+            i for i, m in enumerate(msgs)
+            if isinstance(m, dict) and m.get('_partial') and m.get('content') == 'partial text before cancel'
+        )
+        marker_idx = next(i for i, m in enumerate(msgs) if m in cancel_markers)
+
+        assert len(cancel_markers) == 1
+        assert partial_idx < marker_idx
+
+    def test_late_cancel_after_worker_finalized_does_not_add_cancel_marker(self):
+        sid = "test_1361_late_done"
+        stream_id = "stream_late_done"
+        s = Session(
+            session_id=sid,
+            title="Done Session",
+            messages=[
+                {'role': 'user', 'content': 'finish normally', 'timestamp': 100},
+                {'role': 'assistant', 'content': 'done normally', 'timestamp': 101},
+            ],
+        )
+        s.active_stream_id = None
+        s.pending_user_message = None
+        s.pending_attachments = []
+        s.pending_started_at = None
+        s.save()
+        models.SESSIONS[sid] = s
+
+        q = queue.Queue()
+        config.STREAMS[stream_id] = q
+        config.CANCEL_FLAGS[stream_id] = threading.Event()
+        mock_agent = Mock()
+        mock_agent.session_id = sid
+        mock_agent.interrupt = Mock()
+        config.AGENT_INSTANCES[stream_id] = mock_agent
+        config.STREAM_PARTIAL_TEXT[stream_id] = 'stale partial snapshot'
+
+        assert cancel_stream(stream_id) is True
+
+        msgs = models.SESSIONS[sid].messages
+        assert msgs == [
+            {'role': 'user', 'content': 'finish normally', 'timestamp': 100},
+            {'role': 'assistant', 'content': 'done normally', 'timestamp': 101},
+        ]
+        assert q.empty(), "late cancel must not emit a terminal cancel event after done"

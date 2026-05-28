@@ -11,8 +11,14 @@ import os
 import re
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable
+
+try:  # pragma: no cover - fcntl is unavailable on Windows.
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover
+    _fcntl = None
 
 TURN_JOURNAL_DIR_NAME = "_turn_journal"
 _TERMINAL_EVENTS = {"completed", "interrupted"}
@@ -35,6 +41,26 @@ def _journal_path(session_id: str, session_dir: Path | None = None) -> Path:
 
 def _make_turn_id() -> str:
     return f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{uuid.uuid4().hex[:12]}"
+
+
+@contextmanager
+def _journal_file_lock(file_obj):
+    """Serialize multi-process journal writes when advisory locks exist.
+
+    ``O_APPEND`` keeps normal same-process appends simple, but a long JSONL event
+    can exceed POSIX's small atomic-write boundary.  On Unix, take an advisory
+    lock around the single event write+fsync so two WebUI worker processes cannot
+    interleave large submitted-message payloads into corrupted JSONL.  Platforms
+    without ``fcntl`` keep the previous best-effort append behavior.
+    """
+    if _fcntl is None:
+        yield
+        return
+    _fcntl.flock(file_obj.fileno(), _fcntl.LOCK_EX)
+    try:
+        yield
+    finally:
+        _fcntl.flock(file_obj.fileno(), _fcntl.LOCK_UN)
 
 
 def append_turn_journal_event(
@@ -64,9 +90,10 @@ def append_turn_journal_event(
     line = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
     fd = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
     with os.fdopen(fd, "a", encoding="utf-8") as fh:
-        fh.write(line)
-        fh.flush()
-        os.fsync(fh.fileno())
+        with _journal_file_lock(fh):
+            fh.write(line)
+            fh.flush()
+            os.fsync(fh.fileno())
     try:
         dir_fd = os.open(path.parent, os.O_DIRECTORY)
         try:
@@ -102,20 +129,43 @@ def read_turn_journal(session_id: str, *, session_dir: Path | None = None) -> di
     return {"session_id": str(session_id), "events": events, "malformed": malformed}
 
 
-def derive_turn_journal_states(events: Iterable[dict]) -> dict[str, dict]:
-    """Return the latest event per ``turn_id``."""
+def derive_turn_journal_states(events: Iterable[dict]) -> tuple[dict[str, dict], list[dict]]:
+    '''Return the latest event per ``turn_id`` and any terminal-collision entries.
+
+    The first element is the latest event per turn_id (same overwrite-by-timestamp
+    behaviour as before).  The second element is a list of collision records, one
+    per turn_id that had more than one terminal event.  Each collision record
+    contains ``turn_id`` and the ``events`` list (in ascending created_at order).
+
+    A collision means the same logical turn recorded both ``completed`` and
+    ``interrupted`` terminal events -- the derived state still picks the latest
+    by timestamp, but callers can now detect and audit the double-terminal
+    situation explicitly rather than having it silently collapse.
+    '''
     states: dict[str, dict] = {}
+    # Collect all terminal events per turn_id to detect collisions
+    terminal_events: dict[str, list[dict]] = {}
     for event in events:
         if not isinstance(event, dict):
             continue
-        turn_id = str(event.get("turn_id") or "").strip()
+        turn_id = str(event.get('turn_id') or '').strip()
         if not turn_id:
             continue
+        # Track terminal events for collision detection
+        if is_terminal_turn_event(event):
+            terminal_events.setdefault(turn_id, []).append(event)
+        # Existing latest-by-timestamp derivation
         previous = states.get(turn_id)
-        if previous is None or float(event.get("created_at") or 0) >= float(previous.get("created_at") or 0):
+        if previous is None or float(event.get('created_at') or 0) >= float(previous.get('created_at') or 0):
             states[turn_id] = event
-    return states
 
+    # Build collision list: turn_ids with more than one terminal event
+    collisions = [
+        {'turn_id': tid, 'events': sorted(evts, key=lambda e: float(e.get('created_at') or 0))}
+        for tid, evts in terminal_events.items()
+        if len(evts) > 1
+    ]
+    return states, collisions
 
 def _latest_turn_id_for_stream(events: Iterable[dict], stream_id: str) -> str | None:
     stream = str(stream_id or "").strip()

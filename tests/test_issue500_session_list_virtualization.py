@@ -111,7 +111,9 @@ def test_session_list_render_path_uses_virtual_spacers_and_scroll_rerender():
     assert "_sessionVirtualSpacer" in render_body
     assert "spacer.dataset.virtualSpacer=where||'gap'" in js
     assert "list.addEventListener('scroll', _scheduleSessionVirtualizedRender" in js
-    assert "requestAnimationFrame(()=>{_sessionVirtualScrollRaf=0;renderSessionListFromCache();})" in js
+    assert "requestAnimationFrame(()=>{" in js
+    assert "_sessionVirtualScrollRaf=0;" in js
+    assert "renderSessionListFromCache();" in js
     assert "const listScrollTopBeforeRender=list.scrollTop||0" in render_body
     assert "scrollTop:listScrollTopBeforeRender" in render_body
     assert "list.scrollTop=listScrollTopBeforeRender" in render_body
@@ -136,3 +138,55 @@ def test_session_list_only_moves_to_active_when_active_row_is_not_visible():
     assert before_idx < visible_idx < move_idx < final_idx < anchor_idx
     assert "activeIndex:-1" in render_body[before_idx:visible_idx]
     assert "activeIndex:shouldAnchorActive?activeIndex:-1" not in render_body
+
+
+def test_session_list_resyncs_when_browser_clamps_virtual_scroll_restore():
+    """If a hidden/reflowed sidebar rejects restored scrollTop, re-render the visible window."""
+    js = SESSIONS_JS_PATH.read_text(encoding="utf-8")
+    render_start = js.index("function renderSessionListFromCache()")
+    render_end = js.index("async function _handleActiveSessionStorageEvent", render_start)
+    render_body = js[render_start:render_end]
+
+    assert "_resyncSessionVirtualWindowAfterRender(list, listScrollTopBeforeRender, virtualWindow);" in render_body
+
+    source = _extract_func_script(js) + """
+let renderCount = 0;
+let rafCount = 0;
+let _renamingSid = null;
+const SESSION_VIRTUAL_ROW_HEIGHT = 52;
+function requestAnimationFrame(cb){ rafCount += 1; cb(); return rafCount; }
+function cancelAnimationFrame(_id){}
+function renderSessionListFromCache(){ renderCount += 1; }
+const makeHelper = new Function(
+  'requestAnimationFrame',
+  'cancelAnimationFrame',
+  'renderSessionListFromCache',
+  `let _sessionVirtualResyncRaf = 0;
+   let _renamingSid = null;
+   const SESSION_VIRTUAL_ROW_HEIGHT = 52;
+   ${extractFunc('_resyncSessionVirtualWindowAfterRender')}
+   return _resyncSessionVirtualWindowAfterRender;`
+);
+const _resyncSessionVirtualWindowAfterRender = makeHelper(
+  requestAnimationFrame,
+  cancelAnimationFrame,
+  renderSessionListFromCache
+);
+
+_resyncSessionVirtualWindowAfterRender(
+  {scrollTop: 0},
+  52 * 10,
+  {virtualized: true, itemHeight: 52}
+);
+const afterClamp = renderCount;
+_resyncSessionVirtualWindowAfterRender(
+  {scrollTop: 52 * 10},
+  52 * 10,
+  {virtualized: true, itemHeight: 52}
+);
+console.log(JSON.stringify({afterClamp, final: renderCount, rafCount}));
+"""
+    metrics = json.loads(_run_node(source))
+    assert metrics["afterClamp"] == 1
+    assert metrics["final"] == 1
+    assert metrics["rafCount"] == 2

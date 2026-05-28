@@ -68,7 +68,7 @@ What makes it different from other agentic tools:
   the results back into its own memory
 - **Self-hosted** — your conversations, your memory, your hardware
 
-**vs. the field** *(landscape is actively shifting — see [HERMES.md](HERMES.md) for the full breakdown)*:
+**vs. the field** *(landscape is actively shifting — see [docs/why-hermes.md](docs/why-hermes.md) for the full breakdown)*:
 
 | | OpenClaw | Claude Code | Codex CLI | OpenCode | Hermes |
 |---|---|---|---|---|---|
@@ -89,7 +89,7 @@ with memory, cron, and messaging. The key differences: Hermes writes and saves i
 automatically as a core behavior (OpenClaw's skill system centers on a community marketplace);
 Hermes is more stable across updates (OpenClaw has documented release regressions and ClawHub
 has had security incidents involving malicious skills); and Hermes runs natively in the Python
-ecosystem. See [HERMES.md](HERMES.md) for the full side-by-side.
+ecosystem. See [docs/why-hermes.md](docs/why-hermes.md) for the full side-by-side.
 
 ---
 
@@ -121,6 +121,73 @@ For self-hosted VM or homelab installs, `ctl.sh` wraps the common daemon lifecyc
 
 `ctl.sh start` runs the bootstrap in foreground/no-browser mode behind the daemon wrapper, writes logs to `~/.hermes/webui.log`, and respects `.env` plus inline overrides such as `HERMES_WEBUI_HOST=0.0.0.0 ./ctl.sh start`.
 
+### Optional session recall prefill
+
+WebUI can attach ephemeral prefill messages to new browser-originated
+agent turns. This is useful when a deployment already has a local recall or
+router script for Joplin, Obsidian, Notion, llm-wiki, or another third-party
+notes source and wants browser chat to know where durable context lives.
+
+Prefer a compact router-style prefill (for example, "Joplin has the durable
+project context; use the available notes/search tools before answering
+detail-dependent questions") instead of dumping the full note corpus into every
+new browser session. The prefill should point the agent toward retrieval; the
+notes/search tools should provide the specific facts on demand.
+
+Static JSON remains supported through `prefill_messages_file` or
+`HERMES_PREFILL_MESSAGES_FILE`. For dynamic recall, opt in explicitly with a
+WebUI-specific script hook:
+
+```yaml
+webui_prefill_messages_script:
+  - python3
+  - /path/to/notes_recall.py
+webui_prefill_messages_script_timeout: 5
+```
+
+or:
+
+```bash
+HERMES_WEBUI_PREFILL_MESSAGES_SCRIPT="python3 /path/to/notes_recall.py" \
+HERMES_WEBUI_PREFILL_MESSAGES_SCRIPT_TIMEOUT=5 \
+./ctl.sh restart
+```
+
+The script may print either an OpenAI-style JSON message list, a JSON object with
+a `messages` list, or plain text; plain text is wrapped as one `user` prefill
+message so dynamic recall text becomes ordinary context instead of an extra
+system instruction. If the hook must provide system-level guidance, emit JSON
+messages with an explicit `role: "system"` entry instead. Script output is capped
+at 256 KiB before parsing. The browser only receives a compact status event
+(`source`, `label`, message count, and redacted errors), never the prefill
+message bodies.
+
+### Optional Gateway-backed browser chat
+
+By default, browser chat runs through WebUI's in-process legacy runtime. Advanced
+self-hosted deployments can opt into routing new browser turns through a running
+Hermes Gateway API server while preserving the existing WebUI `/api/chat/start`
+and `/api/chat/stream` browser contract:
+
+```bash
+HERMES_WEBUI_CHAT_BACKEND=gateway \
+HERMES_WEBUI_GATEWAY_BASE_URL=http://127.0.0.1:8642 \
+HERMES_WEBUI_GATEWAY_API_KEY=... \
+./ctl.sh restart
+```
+
+`HERMES_WEBUI_CHAT_BACKEND` is intentionally strict: only `gateway`,
+`api_server`, or `api-server` enable the bridge. Generic truthy values such as
+`1` or `true` are ignored so existing deployments do not change execution
+ownership accidentally. If `HERMES_WEBUI_GATEWAY_API_KEY` is omitted, WebUI falls
+back to `API_SERVER_KEY` when present.
+
+The bridge is best used by operators who already run Hermes Gateway/API Server
+locally and want browser-originated chat to use the same runtime/tool path as
+messaging surfaces. Attachments, cancellation, approvals, and clarify prompts
+still follow WebUI's current compatibility path and may not match every messaging
+surface until the runtime-adapter migration is complete.
+
 The bootstrap will:
 
 1. Detect Hermes Agent and, if missing, attempt the official installer (`curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash`).
@@ -131,10 +198,18 @@ The bootstrap will:
 
 > Native Windows is not supported for this bootstrap yet. Use Linux, macOS, or WSL2.
 > For Windows / WSL auto-start at login, see [`docs/wsl-autostart.md`](docs/wsl-autostart.md).
-> A community-maintained native Windows guide is tracked in [#1952](https://github.com/nesquena/hermes-webui/issues/1952).
+
+A community-maintained native Windows setup is documented at [@markwang2658/hermes-windows-native-guide](https://github.com/markwang2658/hermes-windows-native-guide) (companion setup repo: [@markwang2658/hermes-windows-native](https://github.com/markwang2658/hermes-windows-native)). Notes from the community report in [#1952](https://github.com/nesquena/hermes-webui/issues/1952):
+
+- **Memory:** community-measured ~330 MB native vs ~1080 MB with WSL2+Docker (varies by configuration).
+- **What works:** chat, workspace browser, session management, all themes.
+- **Known limitations:** some POSIX-style file paths surface in the workspace browser; bash-assuming agent tools may not work natively.
+- **Native Windows setup:** install Python 3.11+, then from the hermes-agent root in PowerShell: `python -m venv venv` → `pip install -r requirements.txt` → `pwsh .\start.ps1` (it auto-discovers `venv\Scripts\python.exe`).
+- **WSL2 relationship:** not a prerequisite — a WSL2-built venv (`venv/bin/python`, ELF) isn't invokable by native Windows Python, so use the native setup above. WSL2 stays useful as a parallel install if you want the full `bootstrap.py` + Linux runtime.
 
 If provider setup is still incomplete after install, the onboarding wizard will point you to finish it with `hermes model` instead of trying to replicate the full CLI setup in-browser.
 For a step-by-step walkthrough of the wizard, provider choices, local model server Base URLs, and safe re-runs, see [`docs/onboarding.md`](docs/onboarding.md).
+If an AI assistant is helping with install, reinstall, bootstrap, provider setup, or first-run support, have it read [`docs/onboarding-agent-checklist.md`](docs/onboarding-agent-checklist.md) before running commands or inspecting logs.
 
 ---
 
@@ -207,6 +282,8 @@ docker compose -f docker-compose.three-container.yml up -d
 Both compose files use **named Docker volumes** by default, which solves the UID/GID problem by construction. If you need bind mounts to share an existing host directory, see [`docs/docker.md`](docs/docker.md) for the full migration recipe.
 
 > **Known limitation (#681)**: in the two-container setup, tools triggered from the WebUI run in the **WebUI container**, not the agent container. If you need git/node/etc. on the WebUI's filesystem, either use the single-container setup, extend the WebUI Dockerfile, or use the community [all-in-one image](https://github.com/sunnysktsang/hermes-suite).
+>
+> **Source boundary note (#2453)**: the multi-container setup mounts `hermes-agent-src` read-only into the WebUI by default. This prevents WebUI-side source rewrites but is still an implementation-coupling bridge, not a stable Agent API boundary. See [`docs/rfcs/agent-source-boundary.md`](docs/rfcs/agent-source-boundary.md) for the current source/API decoupling inventory.
 
 ### Common failure modes
 
@@ -231,9 +308,9 @@ For the deep dive on each of these, see [`docs/docker.md`](docs/docker.md).
 
 | Thing | How it finds it |
 |---|---|
-| Hermes agent dir | `HERMES_WEBUI_AGENT_DIR` env, then `~/.hermes/hermes-agent`, then sibling `../hermes-agent` |
+| Hermes agent dir | `HERMES_WEBUI_AGENT_DIR` env, then `$HERMES_HOME/hermes-agent` (Windows default `%LOCALAPPDATA%\hermes\hermes-agent`, POSIX default `~/.hermes/hermes-agent`), then sibling `../hermes-agent` |
 | Python executable | Agent venv first, then `.venv` in this repo, then system `python3` |
-| State directory | `HERMES_WEBUI_STATE_DIR` env, then `~/.hermes/webui` |
+| State directory | `HERMES_WEBUI_STATE_DIR` env, then `$HERMES_HOME/webui` (Windows default `%LOCALAPPDATA%\hermes\webui`, POSIX default `~/.hermes/webui`) |
 | Default workspace | `HERMES_WEBUI_DEFAULT_WORKSPACE` env, then `~/workspace`, then state dir |
 | Port | `HERMES_WEBUI_PORT` env or first argument, default `8787` |
 
@@ -265,15 +342,16 @@ Full list of environment variables:
 | `HERMES_WEBUI_PYTHON` | auto-discovered | Python executable |
 | `HERMES_WEBUI_HOST` | `127.0.0.1` | Bind address (`0.0.0.0` for all IPv4, `::` for all IPv6, `::1` for IPv6 loopback) |
 | `HERMES_WEBUI_PORT` | `8787` | Port |
-| `HERMES_WEBUI_STATE_DIR` | `~/.hermes/webui` | Where sessions and state are stored |
+| `HERMES_WEBUI_STATE_DIR` | `$HERMES_HOME/webui` (Windows default `%LOCALAPPDATA%\hermes\webui`, POSIX default `~/.hermes/webui`) | Where sessions and state are stored |
 | `HERMES_WEBUI_DEFAULT_WORKSPACE` | `~/workspace` | Default workspace |
-| `HERMES_WEBUI_DEFAULT_MODEL` | `openai/gpt-5.4-mini` | Default model |
+| `HERMES_WEBUI_DEFAULT_MODEL` | *(provider default)* | Optional model override; leave unset to use the active Hermes provider default |
 | `HERMES_WEBUI_PASSWORD` | *(unset)* | Set to enable password authentication |
+| `HERMES_WEBUI_CSP_CONNECT_EXTRA` | *(unset)* | Optional space-separated `http(s)://` or `ws(s)://` origins to append to the report-only CSP `connect-src` directive for reverse-proxy or tunnel deployments |
 | `HERMES_WEBUI_EXTENSION_DIR` | *(unset)* | Optional local directory served at `/extensions/`; must point to an existing directory before extension injection is enabled |
 | `HERMES_WEBUI_EXTENSION_SCRIPT_URLS` | *(unset)* | Optional comma-separated same-origin script URLs to inject; see [WebUI Extensions](docs/EXTENSIONS.md) |
 | `HERMES_WEBUI_EXTENSION_STYLESHEET_URLS` | *(unset)* | Optional comma-separated same-origin stylesheet URLs to inject; see [WebUI Extensions](docs/EXTENSIONS.md) |
-| `HERMES_HOME` | `~/.hermes` | Base directory for Hermes state (affects all paths) |
-| `HERMES_CONFIG_PATH` | `~/.hermes/config.yaml` | Path to Hermes config file |
+| `HERMES_HOME` | Windows: `%LOCALAPPDATA%\hermes`; POSIX: `~/.hermes` | Base directory for Hermes state (affects all paths) |
+| `HERMES_CONFIG_PATH` | `$HERMES_HOME/config.yaml` | Path to Hermes config file |
 
 ---
 
@@ -327,6 +405,22 @@ That's it. Traffic is encrypted end-to-end by WireGuard, and password auth
 protects the UI at the application level. You can add it to your home screen
 for an app-like experience.
 
+### Community field report: ARM64 Android via AVF
+
+A community report in [#2364](https://github.com/nesquena/hermes-webui/issues/2364)
+documents Hermes Agent + WebUI running on a mid-range ARM64 Android phone inside
+a Debian 12 VM via Android Virtualization Framework (AVF). The reported setup
+used a Xiaomi Redmi Note 13 Pro 4G, 3.8 GiB RAM allocated to the VM, 8 visible
+CPU cores, Chrome on Android at `localhost:8787`, and cloud-hosted inference.
+
+This is not an official support baseline or provider/model benchmark, but it is
+a useful compatibility signal for mobile ARM64 experiments: the WebUI rendered
+smoothly in Chrome, ARM64 Debian worked for the agent stack, and the total local
+footprint was about 1.7 GB. Practical caveats from the report: first install can
+take longer when dependencies compile from source, Android browser tabs may
+reload when switching apps, and disabling battery optimization for the terminal
+or VM host may be needed for longer-running sessions.
+
 > **Tip:** If using Docker, set `HERMES_WEBUI_HOST=0.0.0.0` in your
 > `docker-compose.yml` environment (already the default) and set
 > `HERMES_WEBUI_PASSWORD`.
@@ -367,9 +461,9 @@ Or using the agent venv explicitly:
 /path/to/hermes-agent/venv/bin/python -m pytest tests/ -v
 ```
 
-Tests run against an isolated server on port 8788 with a separate state directory.
-Production data and real cron jobs are never touched. Current count: **3309 tests**
-across 100+ test files.
+Tests run against an isolated server with a separate state directory.
+Production data and real cron jobs are never touched. Current snapshot:
+**5303 tests collected** across **488 test files**.
 
 ---
 
@@ -388,7 +482,7 @@ across 100+ test files.
 - Thinking/reasoning display -- collapsible gold-themed cards for Claude extended thinking and o3 reasoning blocks
 - Approval card for dangerous shell commands (allow once / session / always / deny)
 - SSE auto-reconnect on network blips (SSH tunnel resilience)
-- File attachments persist across page reloads
+- File attachments persist across page reloads and are stored outside the active workspace by default (`~/.hermes/webui/attachments/<session_id>/`, or `HERMES_WEBUI_ATTACHMENT_DIR/<session_id>/` when configured)
 - Message timestamps (HH:MM next to each message, full date on hover)
 - Code block copy button with "Copied!" feedback
 - Syntax highlighting via Prism.js (Python, JS, bash, JSON, SQL, and more)
@@ -414,6 +508,7 @@ across 100+ test files.
 - Directory tree with expand/collapse (single-click toggles, double-click navigates)
 - Breadcrumb navigation with clickable path segments
 - Preview text, code, Markdown (rendered), and images inline
+- Chat links using `workspace://path/to/file` open files in the right-side preview pane
 - Edit, create, delete, and rename files; create folders
 - Binary file download (auto-detected from server)
 - File preview auto-closes on directory navigation (with unsaved-edit guard)
@@ -441,6 +536,8 @@ across 100+ test files.
 ### Authentication and security
 - Optional password auth -- off by default, zero friction for localhost
 - Enable via `HERMES_WEBUI_PASSWORD` env var or Settings panel
+- Optional passkeys/WebAuthn -- register from Settings -> System after signing in with a password; the login page only shows passkey sign-in after at least one passkey exists
+- After registering at least one passkey, Settings -> System can remove the password and keep passkey-only sign-in enabled. Password auth remains the bootstrap/recovery path until you choose to go passwordless; passkeys are same-origin and stored locally in the WebUI state directory
 - Signed HMAC HTTP-only cookie with 24h TTL
 - Minimal dark-themed login page at `/login`
 - Security headers on all responses (X-Content-Type-Options, X-Frame-Options, Referrer-Policy)
@@ -448,10 +545,13 @@ across 100+ test files.
 - CDN resources pinned with SRI integrity hashes
 
 ### Themes
-- 7 built-in themes: Dark (default), Light, Slate, Solarized Dark, Monokai, Nord, OLED
-- Switch via Settings panel dropdown (instant live preview) or `/theme` command
+- Appearance is split into two axes: Theme (`system`, `dark`, `light`) and Skin
+  (`default`, `ares`, `mono`, `slate`, `poseidon`, `sisyphus`, `charizard`,
+  `sienna`, `catppuccin`, `nous`, `geist-contrast` / Geist Contrast)
+- Switch via Settings -> Appearance (instant live preview) or `/theme <theme-or-skin>`
 - Persists across reloads (server-side in settings.json + localStorage for flicker-free loading)
-- Custom themes: define a `:root[data-theme="name"]` CSS block and it works — see [THEMES.md](THEMES.md)
+- Skins use `data-skin` plus CSS variables; dark mode resolves through the
+  `.dark` class, not a `data-theme` custom-theme axis — see [THEMES.md](THEMES.md)
 
 ### Settings and configuration
 - **Hermes Control Center** (sidebar launcher button) -- Conversation tab (export/import/clear), Preferences tab (model, send key, theme, language, all toggles), System tab (version, password)
@@ -491,33 +591,33 @@ across 100+ test files.
 ## Architecture
 
 ```
-server.py               HTTP routing shell + auth middleware (~154 lines)
+server.py               HTTP routing shell + auth middleware (~446 lines)
 api/
-  auth.py               Optional password authentication, signed cookies (~201 lines)
-  config.py             Discovery, globals, model detection, reloadable config (~1110 lines)
-  helpers.py            HTTP helpers, security headers (~175 lines)
-  models.py             Session model + CRUD + CLI bridge (~377 lines)
-  onboarding.py         First-run onboarding wizard, OAuth provider support (~507 lines)
-  profiles.py           Profile state management, hermes_cli wrapper (~411 lines)
-  routes.py             All GET + POST route handlers (~2250 lines)
-  state_sync.py         /insights sync — message_count to state.db (~113 lines)
-  streaming.py          SSE engine, run_agent, cancel support (~660 lines)
-  updates.py            Self-update check and release notes (~257 lines)
-  upload.py             Multipart parser, file upload handler (~82 lines)
-  workspace.py          File ops, workspace helpers, git detection (~288 lines)
+  auth.py               Optional password authentication, signed cookies (~366 lines)
+  config.py             Discovery, globals, model detection, reloadable config (~4139 lines)
+  helpers.py            HTTP helpers, security headers (~302 lines)
+  models.py             Session model + CRUD + CLI bridge (~1927 lines)
+  onboarding.py         First-run onboarding wizard, OAuth provider support (~1002 lines)
+  profiles.py           Profile state management, hermes_cli wrapper (~1056 lines)
+  routes.py             All GET + POST route handlers (~9772 lines)
+  state_sync.py         /insights sync — message_count to state.db (~118 lines)
+  streaming.py          SSE engine, run_agent, cancel support (~4420 lines)
+  updates.py            Self-update check and release notes (~545 lines)
+  upload.py             Multipart parser, file upload handler (~284 lines)
+  workspace.py          File ops, workspace helpers, git detection (~810 lines)
 static/
-  index.html            HTML template (~600 lines)
-  style.css             All CSS incl. mobile responsive, themes (~1050 lines)
-  ui.js                 DOM helpers, renderMd, tool cards, context indicator (~1740 lines)
-  workspace.js          File preview, file ops, git badge (~286 lines)
-  sessions.js           Session CRUD, collapsible groups, search, reload recovery (~800 lines)
-  messages.js           send(), SSE handlers, live streaming, session recovery (~655 lines)
-  panels.js             Cron, skills, memory, profiles, settings (~1438 lines)
-  commands.js           Slash command autocomplete (~267 lines)
-  boot.js               Mobile nav, voice input, boot IIFE (~524 lines)
+  index.html            HTML template (~1323 lines)
+  style.css             All CSS incl. mobile responsive, themes (~3767 lines)
+  ui.js                 DOM helpers, renderMd, tool cards, context indicator (~7216 lines)
+  workspace.js          File preview, file ops, git badge (~369 lines)
+  sessions.js           Session CRUD, collapsible groups, search, reload recovery (~3517 lines)
+  messages.js           send(), SSE handlers, live streaming, session recovery (~2301 lines)
+  panels.js             Cron, skills, memory, profiles, settings (~6480 lines)
+  commands.js           Slash command autocomplete (~1302 lines)
+  boot.js               Mobile nav, voice input, boot IIFE (~1607 lines)
 tests/
-  conftest.py           Isolated test server (port 8788)
-  61 test files          961 test functions
+  conftest.py           Isolated test server/state fixtures
+  488 test files         5303 tests collected
 Dockerfile              python:3.12-slim container image
 docker-compose.yml      Compose with named volume and optional auth
 .github/workflows/      CI: multi-arch Docker build + GitHub Release on tag
@@ -530,58 +630,69 @@ State lives outside the repo at `~/.hermes/webui/` by default
 
 ## Docs
 
-- `HERMES.md` -- why Hermes, mental model, and detailed comparison to Claude Code / Codex / OpenCode / Cursor
+- `docs/why-hermes.md` -- why Hermes, mental model, and detailed comparison to Claude Code / Codex / OpenCode / Cursor
 - `ROADMAP.md` -- feature roadmap and sprint history
 - `ARCHITECTURE.md` -- system design, all API endpoints, implementation notes
 - `TESTING.md` -- manual browser test plan and automated coverage reference
 - `CHANGELOG.md` -- release notes per sprint
 - `SPRINTS.md` -- forward sprint plan with CLI + Claude parity targets
 - `THEMES.md` -- theme system documentation, custom theme guide
+- `docs/CONTRACTS.md` -- project contract/RFC/design index for contributors and agents
+- `docs/UIUX-GUIDE.md` -- UI/UX principles sourced from existing design docs and visual inventories
+- `docs/docker.md` -- Docker compose setup, common failures, and bind-mount migration
+- `docs/supervisor.md` -- launchd, systemd, supervisord, runit, and s6 process-supervisor setup
 - `docs/onboarding.md` -- first-run wizard, provider setup, local model server Base URLs, and safe re-runs
+- `docs/onboarding-agent-checklist.md` -- safety rules, evidence commands, and pass/fail checks for assistant-led install or reinstall support
 - `docs/troubleshooting.md` -- diagnostic flows for common failures (e.g. "AIAgent not available")
+- `docs/wsl-autostart.md` -- WSL2 auto-start at Windows login
+- `docs/EXTENSIONS.md` -- administrator-controlled WebUI extension injection
+- `docs/rfcs/README.md` -- RFC index for larger architecture and durability proposals
 
 ## Contributors
 
 Hermes WebUI is built with help from the open-source community. Every PR — whether merged directly, absorbed into a batch release, or salvaged from a larger proposal — shapes the project, and we're grateful to everyone who has taken the time to contribute.
 
-**130 contributors have shipped code that landed in a release tag** as of v0.51.44. The full credit roll lives in [`CONTRIBUTORS.md`](CONTRIBUTORS.md). The highlights:
+**137 contributors have shipped code that landed in a release tag** as of v0.51.58. The full credit roll lives in [`CONTRIBUTORS.md`](CONTRIBUTORS.md). The highlights:
 
 ### Top contributors (by PR count, including absorbed/batch-released work)
 
 | # | Contributor | PRs | First → latest release |
 |---|---|---:|---|
-| 1 | [@franksong2702](https://github.com/franksong2702) | 92 | `v0.49.3` → `v0.51.44` |
-| 2 | [@Michaelyklam](https://github.com/Michaelyklam) | 81 | `v0.50.240` → `v0.51.40` |
-| 3 | [@bergeouss](https://github.com/bergeouss) | 61 | `v0.48.0` → `v0.51.18` |
-| 4 | [@ai-ag2026](https://github.com/ai-ag2026) | 49 | `v0.50.279` → `v0.51.44` |
-| 5 | [@dso2ng](https://github.com/dso2ng) | 21 | `v0.50.227` → `v0.51.37` |
-| 6 | [@jasonjcwu](https://github.com/jasonjcwu) | 13 | `v0.50.227` → `v0.51.43` |
-| 7 | [@aronprins](https://github.com/aronprins) | 10 | `v0.44.0` → `v0.50.233` |
-| 8 | [@JKJameson](https://github.com/JKJameson) | 10 | `v0.50.233` → `v0.51.31` |
-| 9 | [@ccqqlo](https://github.com/ccqqlo) | 9 | `v0.44.0` → `v0.50.270` |
-| 10 | [@24601](https://github.com/24601) | 8 | `v0.50.233` → `v0.51.5` |
+| 1 | [@franksong2702](https://github.com/franksong2702) | 117 | `v0.49.3` → `v0.51.58` |
+| 2 | [@Michaelyklam](https://github.com/Michaelyklam) | 92 | `v0.50.240` → `v0.51.57` |
+| 3 | [@bergeouss](https://github.com/bergeouss) | 62 | `v0.48.0` → `v0.51.46` |
+| 4 | [@ai-ag2026](https://github.com/ai-ag2026) | 55 | `v0.50.279` → `v0.51.47` |
+| 5 | [@dso2ng](https://github.com/dso2ng) | 23 | `v0.50.227` → `v0.51.51` |
+| 6 | [@jasonjcwu](https://github.com/jasonjcwu) | 16 | `v0.50.227` → `v0.51.55` |
+| 7 | [@Jordan-SkyLF](https://github.com/Jordan-SkyLF) | 12 | `v0.50.18` → `v0.51.58` |
+| 8 | [@aronprins](https://github.com/aronprins) | 10 | `v0.44.0` → `v0.50.233` |
+| 9 | [@JKJameson](https://github.com/JKJameson) | 10 | `v0.50.233` → `v0.51.31` |
+| 10 | [@starship-s](https://github.com/starship-s) | 10 | `v0.50.128` → `v0.51.58` |
 
-See [`CONTRIBUTORS.md`](CONTRIBUTORS.md) for the full ranked list of all 130 contributors, including everyone with one or two PRs and the special-thanks roll for design and architectural contributions.
+See [`CONTRIBUTORS.md`](CONTRIBUTORS.md) for the full ranked list of all 137 contributors, including everyone with one or two PRs and the special-thanks roll for design and architectural contributions.
 
 ### Notable contributions
 
-**[@franksong2702](https://github.com/franksong2702)** — Most prolific external contributor (92 PRs, `v0.49.3` → `v0.51.44`)
-Across the longest tenure of any external contributor: the session title guard (#301), breadcrumb workspace navigation (#302), embedded workspace terminal (#1099), worktree-backed session creation (#2053), onboarding documentation (#2052), composer footer container queries, streaming-session sidebar exemption (#1327), session sidecar repair, cron output preservation (#1295), profile default workspace persistence, and a long tail of polish across mobile/responsive, the session sidebar, and the workspace state machine.
+**[@franksong2702](https://github.com/franksong2702)** — Most prolific external contributor (117 PRs, `v0.49.3` → `v0.51.58`)
+Across the longest tenure of any external contributor: the session title guard (#301), breadcrumb workspace navigation (#302), embedded workspace terminal (#1099), worktree-backed session creation (#2053), onboarding documentation (#2052), composer footer container queries, streaming-session sidebar exemption (#1327), session sidecar repair, cron output preservation (#1295), profile default workspace persistence, manual `/compress` async start/status endpoints (#2128), worktree status surface (#2109) + guarded remove (#2156) for the lifecycle umbrella #2057, session post-render dedup (#2166), native-WebUI fast path (#2170), tail-window response trim (#2171), stale-stream guard extension (#2158), CSP report collector (#2160), and a long tail of polish across mobile/responsive, the session sidebar, and the workspace state machine.
 
-**[@Michaelyklam](https://github.com/Michaelyklam)** — Most prolific contributor of recent releases (81 PRs, `v0.50.240` → `v0.51.40`)
-Production Docker hardening (#1921, drops sudo-capable staging user), profile-scoped skills endpoints (#1903), gateway PID resolution under profile-scoped HERMES_HOME (#1901), profile-aware AIAgent cache (#1898/#1904), backslash LaTeX delimiters (#1848), Codex quota error surfacing (#1770), shell-route HTML 503 (#1836), stale Kanban client recovery (#1828), context auto-compression toast lifetime (#1988), `/goal` command (#1866), Kanban detail-view scrolling (#1916), CLI session tool metadata preservation (#1778), Traditional Chinese kanban locale backfill (#1979).
+**[@Michaelyklam](https://github.com/Michaelyklam)** — Most prolific contributor of recent releases (92 PRs, `v0.50.240` → `v0.51.57`)
+Production Docker hardening (#1921, drops sudo-capable staging user), profile-scoped skills endpoints (#1903), gateway PID resolution under profile-scoped HERMES_HOME (#1901), profile-aware AIAgent cache (#1898/#1904), backslash LaTeX delimiters (#1848), Codex quota error surfacing (#1770), shell-route HTML 503 (#1836), stale Kanban client recovery (#1828), context auto-compression toast lifetime (#1988), `/goal` command (#1866), Kanban detail-view scrolling (#1916), CLI session tool metadata preservation (#1778), Traditional Chinese kanban locale backfill (#1979), v0.51.51 mobile Insights bucketing/layout (#2120/#2121), Hermes run adapter RFC (#2105 for #1925), fork-from-here absolute index (#2198 for #2184), opencode-go custom-provider overlap routing (#2204 for #1894).
 
-**[@bergeouss](https://github.com/bergeouss)** — Provider management UI + Docker hardening (61 PRs, `v0.48.0` → `v0.51.18`)
+**[@bergeouss](https://github.com/bergeouss)** — Provider management UI + Docker hardening (62 PRs, `v0.48.0` → `v0.51.46`)
 Provider management UI for adding/editing custom providers from Settings, OAuth provider status detection (#1552), two-container Docker setup, profile isolation hardening (per-profile `.env` secrets), the bulk of what users see when they touch Settings → Providers, Reveal-in-Finder context menu (#1551), gateway status card (#1552), auto-assign session to active project filter (#1550), "What's new?" link in update banner (#1549), OpenRouter free-tier live fetch (#1548), credential pool 401 self-heal (#1553), inline provider chip + group model count in model picker (#1644).
 
-**[@ai-ag2026](https://github.com/ai-ag2026)** — Session recovery + audit infrastructure (49 PRs, `v0.50.279` → `v0.51.44`)
-Autonomous-AI contributor (Hermes Agent-driven) focused on durability: `state.db`-backed sidecar reconciliation (#2041), orphan `.json.bak` recovery on startup (#2035), read-only session recovery audit endpoints (#2036, #2040), active run lifecycle in `/health` (#2039), crash-safe turn-journal RFC at `docs/rfcs/turn-journal.md` (#2042), fork-session compression lineage isolation (#2014).
+**[@ai-ag2026](https://github.com/ai-ag2026)** — Session recovery + audit infrastructure (55 PRs, `v0.50.279` → `v0.51.47`)
+Autonomous-AI contributor (Hermes Agent-driven) focused on durability: `state.db`-backed sidecar reconciliation (#2041), orphan `.json.bak` recovery on startup (#2035), read-only session recovery audit endpoints (#2036, #2040), active run lifecycle in `/health` (#2039), crash-safe turn-journal RFC at `docs/rfcs/turn-journal.md` (#2042), append-only turn-journal helper (#2059), lifecycle events layer (#2062), `Content-Security-Policy-Report-Only` header (#2084), per-cron toast toggle (#2100), fork-session compression lineage isolation (#2014).
 
-**[@dso2ng](https://github.com/dso2ng)** — Session lineage + diagnostics (21 PRs, `v0.50.227` → `v0.51.37`)
-`/api/session/lineage-report/<sid>` endpoint for bounded session graph diagnostics (#2012), stale Mermaid render error cleanup (#1337), and a long tail of frontend reliability fixes around session loading.
+**[@dso2ng](https://github.com/dso2ng)** — Session lineage + diagnostics (23 PRs, `v0.50.227` → `v0.51.51`)
+`/api/session/lineage-report/<sid>` endpoint for bounded session graph diagnostics (#2012), stale Mermaid render error cleanup (#1337), `session_source="fork"` continuation-chain isolation (#2063), lazy lineage-report fetch on sidebar badge expand (#2130), and a long tail of frontend reliability fixes around session loading.
 
-**[@jasonjcwu](https://github.com/jasonjcwu)** — Composer + transcript polish (13 PRs, `v0.50.227` → `v0.51.43`)
-Sidebar collapse via active-rail click (#2054, fuses #1884 + #1924), composer chip lightbox (#1758), title fixes for tool-heavy first turns, and a string of frontend polish fixes.
+**[@jasonjcwu](https://github.com/jasonjcwu)** — Composer + transcript polish (16 PRs, `v0.50.227` → `v0.51.55`)
+Sidebar collapse via active-rail click (#2054, fuses #1884 + #1924), composer chip lightbox (#1758), title fixes for tool-heavy first turns, silent compress-status during session switch (#2185), concurrent-send loss fix (#2186), in-transcript steer message badges (#2187), and a string of frontend polish fixes.
+
+**[@Jordan-SkyLF](https://github.com/Jordan-SkyLF)** — Live streaming + UX polish (12 PRs, `v0.50.18` → `v0.51.58`)
+Original sprint of workspace fallback resolution, live reasoning cards (#366, #367, #394–#397), then a recent burst: manual "Refresh usage" button on the Provider quota card (#2150), cancelled-turn status classification (#2151), Firefox sidebar scroll stabilization (#2200), early provisional session titles (#2202), target-aware "What's new?" update-banner links (#2207), and MCP tools overflow fix in Settings (#2210).
 
 **[@aronprins](https://github.com/aronprins)** — `v0.50.0` UI overhaul (PR #242, plus 9 follow-ups)
 The biggest single contribution to the project: a complete UI redesign that moved model/profile/workspace controls into the composer footer, replaced the gear-icon settings panel with the Hermes Control Center (tabbed modal), removed the activity bar in favor of inline composer status, redesigned the session list with a `⋯` action dropdown, and added the workspace panel state machine. Plus chat transcript redesign (#587), sidebar declutter (#584), three-column layout refactor (#899), light/dark theme + accent skins (#627), and shared `confirm()`/`prompt()` dialog replacement (PR #251 extracted from #242).
@@ -589,8 +700,14 @@ The biggest single contribution to the project: a complete UI redesign that move
 **[@iRonin](https://github.com/iRonin)** — Security hardening sprint (PRs #196–#204)
 Six consecutive, focused security PRs: session memory leak fix (expired token pruning), CSP + Permissions-Policy headers, 30-second slow-client connection timeout, optional HTTPS/TLS support via environment variables, upstream branch tracking fix for self-update, and CLI session support in the file-browser API. The kind of focused, high-quality security work that makes a self-hosted tool trustworthy.
 
-**[@Jordan-SkyLF](https://github.com/Jordan-SkyLF)** — Live streaming + session recovery (PRs #366, #367, #394–#397)
-Six interlocking improvements: workspace fallback resolution, live reasoning cards that upgrade the generic thinking spinner to a real-time reasoning display, durable session state recovery via `localStorage` so in-flight tool cards survive a page reload, plus relative time labels and imported-session timestamp preservation.
+**[@lucasrc](https://github.com/lucasrc)** — Auth-hardening trilogy (PRs #2191, #2192, #2193)
+Three coordinated security PRs that all landed in v0.51.57: thread-safe login rate limiter with PBKDF2 key separation, password-hash cache invalidation on Settings save, and the full 64-char HMAC-SHA256 session signature with a backwards-compatible migration bridge. The kind of cleanly-decomposed security work that's reviewable as three independent pieces.
+
+**[@LumenYoung](https://github.com/LumenYoung)** — Streaming hot-path correctness (4 PRs, `v0.51.47` → `v0.51.55`)
+The original stale-stream writeback guard (#2136 — the bug class the next two releases extended), gateway-state alive-null classification (#2075), compression-banner anchor alignment (#2182), and context-progress ring auto-refresh on compression complete (#2188). Each PR opened a small surgical fix in one of the most fragile subsystems in the codebase.
+
+**[@dobby-d-elf](https://github.com/dobby-d-elf)** — Frontend reliability + motion polish (6 PRs, `v0.51.38` → `v0.51.58`)
+Workspace fallback on deleted directories (#2138), iPhone PWA bottom-scroll fix (#2143), the new "Activity: X tools" composer footer shimmer animation (#2203), and follow-up animation tuning (#2212).
 
 **[@JKJameson](https://github.com/JKJameson)** — Composer + session polish (10 PRs)
 Persistent composer draft per session (#1956), and a long tail of polish across the composer and session sidebar.

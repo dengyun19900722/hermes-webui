@@ -128,8 +128,13 @@ class TestCheckProviderMismatch:
         src = _read("static/ui.js")
         idx = src.find("function _checkProviderMismatch")
         block = src[idx:idx + 800]
-        assert "openrouter" in block.lower(), (
+        assert "_providerSkipsModelMismatchWarning(ap)" in block, (
             "_checkProviderMismatch must skip the check for openrouter"
+        )
+        helper_idx = src.find("function _providerSkipsModelMismatchWarning")
+        helper = src[helper_idx:helper_idx + 350]
+        assert "openrouter" in helper.lower(), (
+            "_providerSkipsModelMismatchWarning must skip OpenRouter"
         )
 
     def test_skips_check_for_custom(self):
@@ -137,8 +142,28 @@ class TestCheckProviderMismatch:
         src = _read("static/ui.js")
         idx = src.find("function _checkProviderMismatch")
         block = src[idx:idx + 800]
-        assert "custom" in block.lower(), (
+        assert "_providerSkipsModelMismatchWarning(ap)" in block, (
             "_checkProviderMismatch must skip the check for custom provider"
+        )
+        helper_idx = src.find("function _providerSkipsModelMismatchWarning")
+        helper = src[helper_idx:helper_idx + 350]
+        assert "p==='custom'" in helper, (
+            "_providerSkipsModelMismatchWarning must skip bare custom providers"
+        )
+
+    def test_skips_check_for_named_custom_provider(self):
+        """Named custom providers are aggregators too — skip the warning."""
+        src = _read("static/ui.js")
+        idx = src.find("function _checkProviderMismatch")
+        block = src[idx:idx + 800]
+        assert "_providerSkipsModelMismatchWarning(ap)" in block, (
+            "_checkProviderMismatch must skip named custom providers like custom:zenmux"
+        )
+        helper_idx = src.find("function _providerSkipsModelMismatchWarning")
+        assert helper_idx != -1, "named custom provider skip helper must exist"
+        helper = src[helper_idx:helper_idx + 350]
+        assert "p.startsWith('custom:')" in helper, (
+            "named custom providers must be treated like custom aggregators"
         )
 
     def test_active_provider_stored_on_model_load(self):
@@ -495,6 +520,31 @@ def test_non_openrouter_slash_model_provider_context_stays_unqualified():
     )
 
     assert runtime_model == "anthropic/claude-sonnet-4.6"
+
+
+def test_cursor_acp_slash_model_always_gets_provider_hint():
+    """ACP subprocess models with '/' must not fall through to config default."""
+    import api.config as config
+
+    old_cfg = dict(config.cfg)
+    config.cfg["model"] = {
+        "provider": "openai-codex",
+        "default": "gpt-5.5",
+    }
+    try:
+        runtime_model = config.model_with_provider_context(
+            "cursor/composer-2.5",
+            "cursor-acp",
+        )
+        model, provider, base_url = config.resolve_model_provider(runtime_model)
+    finally:
+        config.cfg.clear()
+        config.cfg.update(old_cfg)
+
+    assert runtime_model == "@cursor-acp:cursor/composer-2.5"
+    assert model == "cursor/composer-2.5"
+    assert provider == "cursor-acp"
+    assert base_url is None
 
 
 def test_api_session_new_persists_model_provider_context():
@@ -1086,7 +1136,9 @@ class TestModelSwitchToast:
         # Find the onchange block
         idx = src.find("modelSelect').onchange")
         assert idx != -1, "modelSelect.onchange not found in boot.js"
-        block = src[idx:idx + 1100]
+        end = src.find("$('msg').addEventListener", idx)
+        assert end != -1, "modelSelect.onchange block terminator not found in boot.js"
+        block = src[idx:end]
         assert "model_scope_toast" in block, (
             "modelSelect.onchange must show that the selected model applies to this conversation"
         )
@@ -1146,10 +1198,13 @@ class TestFrontendModelProviderState:
         assert "_modelStateForSelect" in src
         assert "model_provider:modelState.model_provider||null" in src
 
-    def test_new_session_sends_model_provider(self):
+    def test_new_session_carries_visible_picker_model_into_create_request(self):
         src = _read("static/sessions.js")
-        assert "_modelStateForSelect(modelSel,selectedDefaultModel)" in src
-        assert "model_provider:newModelState.model_provider||null" in src
+        start = src.index("async function newSession(")
+        body = src[start:src.index("const data=await api('/api/session/new'", start)]
+        assert "profile:S.activeProfile||'default'" in body
+        assert "reqBody.model=newModelState.model" in body
+        assert "reqBody.model_provider=newModelState.model_provider||null" in body
 
     def test_ui_has_json_model_state_storage(self):
         src = _read("static/ui.js")
@@ -1157,6 +1212,37 @@ class TestFrontendModelProviderState:
         assert "function _writePersistedModelState" in src
         assert "_providerQualifiedModelValueForSelect(sel, modelId)" in src
         assert "return _modelStateForSelect(sel,modelId).model" in src
+
+    def test_named_custom_live_models_keep_provider_prefix(self):
+        """Live models from custom:* providers should keep explicit provider context."""
+        src = _read("static/ui.js")
+        idx = src.find("function _addLiveModelsToSelect")
+        assert idx != -1, "_addLiveModelsToSelect must exist"
+        block = src[idx:idx + 2200]
+        assert "_isNamedCustomActiveProvider=_ap.startsWith('custom:')" in block, (
+            "named custom providers must be recognized during live model hydration"
+        )
+        assert "_providerLower=String(provider||'').toLowerCase()" in block
+        assert "_providerLower===_ap||_isNamedCustomActiveProvider&&_providerLower===_ap" in block, (
+            "custom:* live model fetches must qualify added model IDs with @custom:name:"
+        )
+
+    def test_named_custom_missing_dropdown_model_does_not_persist_fallback(self):
+        """syncTopbar must not overwrite custom:* selections just because the static picker lacks them."""
+        src = _read("static/ui.js")
+        helper_idx = src.find("function _providerDefersMissingModelFallback")
+        assert helper_idx != -1, "custom-provider missing-model fallback helper must exist"
+        helper = src[helper_idx:helper_idx + 500]
+        assert "p.startsWith('custom:')" in helper, (
+            "named custom providers can route vendor-prefixed models outside the static catalog"
+        )
+        idx = src.find("function syncTopbar")
+        assert idx != -1, "syncTopbar must exist"
+        block = src[idx:idx + 5200]
+        assert "missingModelIsRoutable=_providerDefersMissingModelFallback" in block
+        assert "liveStillPending||missingModelIsRoutable" in block, (
+            "syncTopbar must preserve routable custom:* selections instead of forcing fallback persistence"
+        )
 
 
 def test_unknown_prefix_model_passes_through_unchanged(monkeypatch):

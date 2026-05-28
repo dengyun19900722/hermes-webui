@@ -499,7 +499,7 @@ def audit_session_recovery(session_dir: Path, state_db_path: Path | None = None)
 
     for session_id in iter_turn_journal_session_ids(session_dir):
         journal = read_turn_journal(session_id, session_dir=session_dir)
-        states = derive_turn_journal_states(journal.get('events') or [])
+        states, _ = derive_turn_journal_states(journal.get('events') or [])
         live_path = session_dir / f"{session_id}.json"
         live_messages = _msg_count(live_path)
         existing_user_messages: set[str] = set()
@@ -619,12 +619,13 @@ def recover_all_sessions_on_startup(
             "If you weren't expecting this, check the session list for missing "
             "messages — see #1558.", restored, scanned,
         )
-        if rebuild_index:
-            try:
-                from api.models import _write_session_index
+    if rebuild_index:
+        try:
+            from api.models import SESSION_INDEX_FILE, _write_session_index
+            if restored or not SESSION_INDEX_FILE.exists():
                 _write_session_index(updates=None)
-            except Exception as exc:
-                logger.warning("recover_all_sessions_on_startup: index rebuild failed: %s", exc)
+        except Exception as exc:
+            logger.warning("recover_all_sessions_on_startup: index rebuild failed: %s", exc)
     return {
         "scanned": scanned,
         "restored": restored,

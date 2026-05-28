@@ -326,12 +326,65 @@ async function cmdModel(args){
   if(!args){showToast(t('model_usage'));return;}
   const sel=$('modelSelect');
   if(!sel)return;
-  const q=args.toLowerCase();
-  // Fuzzy match: find first option whose label or value contains the query
-  let match=null;
-  for(const opt of sel.options){
-    if(opt.value.toLowerCase().includes(q)||opt.textContent.toLowerCase().includes(q)){
-      match=opt.value;break;
+  let q=args.toLowerCase();
+  // Resolve alias before fuzzy matching the dropdown.
+  // Fetch /api/models which now includes an "aliases" key.
+  try {
+    const resp=await fetch('/api/models');
+    if(resp.ok){
+      const data=await resp.json();
+      const aliases=data.aliases||{};
+      for(const [alias,modelId] of Object.entries(aliases)){
+        if(alias.toLowerCase()===q){
+          q=modelId.toLowerCase(); // resolve alias to real model id e.g. "deepseek/deepseek-v4-flash"
+          break;
+        }
+      }
+    }
+  } catch(_){/* non-critical, fall through to fuzzy match */}
+  // First: try exact match within active provider's optgroup.
+  // Use _findModelInDropdown (ui.js) which supports preferredProviderId.
+  const preferred=(S&&S.session&&S.session.model_provider)||window._activeProvider||null;
+  let match=(typeof _findModelInDropdown==='function')?_findModelInDropdown(q,sel,preferred):null;
+  // Fallback: fuzzy match across all options
+  if(!match){
+    for(const opt of sel.options){
+      if(opt.value.toLowerCase().includes(q)||opt.textContent.toLowerCase().includes(q)){
+        match=opt.value;break;
+      }
+    }
+  }
+  // Fallback: if q has provider/ prefix (e.g. "deepseek/deepseek-v4-flash"),
+  // try the bare model name (which is how options appear for the active provider)
+  if(!match && q.includes('/')){
+    const bare=q.slice(q.lastIndexOf('/')+1);
+    for(const opt of sel.options){
+      if(opt.value.toLowerCase().includes(bare)||opt.textContent.toLowerCase().includes(bare)){
+        match=opt.value;break;
+      }
+    }
+    // Cross-provider fallback: if still no match, the model is from a
+    // different provider not in the dropdown. Call /api/session/update directly.
+    if(!match && S&&S.session&&S.session.session_id){
+      const provider=q.slice(0,q.indexOf('/'));
+      try{
+        const resp=await fetch('/api/session/update',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            session_id:S.session.session_id,
+            model:q,
+            model_provider:provider,
+          }),
+        });
+        if(resp.ok){
+          S.session.model=q;
+          S.session.model_provider=provider;
+          if(typeof syncTopbar==='function') syncTopbar();
+          showToast(t('switched_to')+q);
+          return;
+        }
+      }catch(_){/* fall through to "no model match" */}
     }
   }
   if(!match){showToast(t('no_model_match')+`"${args}"`);return;}
@@ -382,6 +435,134 @@ async function cmdNew(){
   showToast(t('new_session'));
 }
 
+function _manualCompressionVisibleMessages(){
+  return (S.messages||[]).filter(m=>{
+    if(!m||!m.role||m.role==='tool') return false;
+    if(m.role==='assistant'){
+      const hasTc=Array.isArray(m.tool_calls)&&m.tool_calls.length>0;
+      const hasTu=Array.isArray(m.content)&&m.content.some(p=>p&&p.type==='tool_use');
+      if(hasTc||hasTu|| (typeof _messageHasReasoningPayload==='function' && _messageHasReasoningPayload(m))) return true;
+    }
+    return typeof msgContent==='function' ? !!msgContent(m) || !!m.attachments?.length : !!m.content || !!m.attachments?.length;
+  });
+}
+
+function _manualCompressionSleep(ms){
+  return new Promise(resolve=>setTimeout(resolve, ms));
+}
+
+async function _pollManualCompressionResult(sid){
+  let delay=700;
+  while(true){
+    const data=await api(`/api/session/compress/status?session_id=${encodeURIComponent(sid)}`);
+    if(data&&data.status==='done') return data;
+    if(data&&data.status==='error'){
+      const err=new Error(data.error||'Compression failed');
+      err.status=data.error_status||400;
+      throw err;
+    }
+    if(data&&data.status==='idle') throw new Error('Compression job is no longer available');
+    await _manualCompressionSleep(delay);
+    delay=Math.min(2000, delay+300);
+  }
+}
+
+async function _applyManualCompressionResult(data, focusTopic, visibleCount, commandText){
+  if(data&&data.session){
+    const currentSid=S.session&&S.session.session_id;
+    if(data.session.session_id&&data.session.session_id!==currentSid){
+      await loadSession(data.session.session_id);
+    }else{
+      S.session=data.session;
+      S.messages=data.session.messages||[];
+      S.toolCalls=data.session.tool_calls||[];
+      clearLiveToolCards();
+      try{localStorage.setItem('hermes-webui-session',S.session.session_id);}catch(_){}
+      if(typeof _setActiveSessionUrl==='function') _setActiveSessionUrl(S.session.session_id);
+      syncTopbar();
+      renderMessages();
+      await renderSessionList();
+      updateQueueBadge(S.session.session_id);
+    }
+  }
+  const summary=data&&data.summary;
+  if(typeof setCompressionUi==='function'&&S.session){
+    const referenceMsg=(S.messages||[]).find(m=>typeof _isContextCompactionMessage==='function'&&_isContextCompactionMessage(m));
+    const messageRef=referenceMsg?msgContent(referenceMsg)||String(referenceMsg.content||''):'';
+    const summaryRef=summary&&typeof summary.reference_message==='string' ? String(summary.reference_message||'').trim() : '';
+    // Prefer the persisted compaction handoff when it already exists in session state.
+    // The short summary fallback is only for environments where that message is unavailable.
+    const referenceText=messageRef || summaryRef;
+    const effectiveFocus=(data&&data.focus_topic)||focusTopic||'';
+    setCompressionUi({
+      sessionId:S.session.session_id,
+      phase:'done',
+      focusTopic:effectiveFocus,
+      commandText:effectiveFocus?`/compress ${effectiveFocus}`:(commandText||'/compress'),
+      beforeCount:visibleCount,
+      summary:summary||null,
+      referenceText,
+      anchorVisibleIdx: data?.session?.compression_anchor_visible_idx,
+      anchorMessageKey: data?.session?.compression_anchor_message_key||null,
+    });
+  }
+  if(typeof setComposerStatus==='function') setComposerStatus('');
+  renderMessages();
+  if(typeof _setCompressionSessionLock==='function') _setCompressionSessionLock(null);
+}
+
+async function resumeManualCompressionForSession(sid){
+  if(!sid) return;
+  try{
+    const status=await api(`/api/session/compress/status?session_id=${encodeURIComponent(sid)}`);
+    if(!status||status.status!=='running') return;
+    const visibleMessages=_manualCompressionVisibleMessages();
+    const visibleCount=visibleMessages.length;
+    const anchorMessageKey=_compressionAnchorMessageKey(visibleMessages[visibleMessages.length-1]||null);
+    if(typeof setBusy==='function') setBusy(true);
+    if(typeof setComposerStatus==='function') setComposerStatus(t('compressing'));
+    if(typeof setCompressionUi==='function'){
+      setCompressionUi({
+        sessionId:sid,
+        phase:'running',
+        focusTopic:status.focus_topic||'',
+        commandText:status.focus_topic?`/compress ${status.focus_topic}`:'/compress',
+        beforeCount:visibleCount,
+        anchorVisibleIdx:Math.max(0, visibleCount-1),
+        anchorMessageKey,
+      });
+    }
+    renderMessages();
+    const done=await _pollManualCompressionResult(sid);
+    if(!S.session||S.session.session_id!==sid) return;
+    await _applyManualCompressionResult(done, status.focus_topic||'', visibleCount, status.focus_topic?`/compress ${status.focus_topic}`:'/compress');
+  }catch(e){
+    // No active compression job or transient server error — not a real failure.
+    // 404: route missed or session gone; 5xx: backend exception during status check.
+    if(e&&(!e.status||e.status===404||e.status>=500)) return;
+    if(S.session&&S.session.session_id===sid&&typeof setCompressionUi==='function'){
+      const visibleMessages=_manualCompressionVisibleMessages();
+      setCompressionUi({
+        sessionId:sid,
+        phase:'error',
+        focusTopic:'',
+        commandText:'/compress',
+        beforeCount:visibleMessages.length,
+        errorText:`Compression failed: ${e.message}`,
+        anchorVisibleIdx:Math.max(0, visibleMessages.length-1),
+        anchorMessageKey:null,
+      });
+      renderMessages();
+    }
+  }finally{
+    if(S.session&&S.session.session_id===sid){
+      if(typeof _setCompressionSessionLock==='function') _setCompressionSessionLock(null);
+      if(typeof setBusy==='function') setBusy(false);
+      if(typeof setComposerStatus==='function') setComposerStatus('');
+    }
+  }
+}
+
 async function _runManualCompression(focusTopic){
   if(!S.session){showToast(t('no_active_session'));return;}
   let visibleCount=0;
@@ -410,15 +591,7 @@ async function _runManualCompression(focusTopic){
     if(typeof setBusy==='function') setBusy(true);
     const body={session_id:sid};
     if(focusTopic) body.focus_topic=focusTopic;
-    const visibleMessages=(S.messages||[]).filter(m=>{
-      if(!m||!m.role||m.role==='tool') return false;
-      if(m.role==='assistant'){
-        const hasTc=Array.isArray(m.tool_calls)&&m.tool_calls.length>0;
-        const hasTu=Array.isArray(m.content)&&m.content.some(p=>p&&p.type==='tool_use');
-        if(hasTc||hasTu|| (typeof _messageHasReasoningPayload==='function' && _messageHasReasoningPayload(m))) return true;
-      }
-      return typeof msgContent==='function' ? !!msgContent(m) || !!m.attachments?.length : !!m.content || !!m.attachments?.length;
-    });
+    const visibleMessages=_manualCompressionVisibleMessages();
     visibleCount=visibleMessages.length;
     const anchorVisibleIdx=Math.max(0, visibleCount - 1);
     const anchorMessageKey=_compressionAnchorMessageKey(visibleMessages[visibleMessages.length-1]||null);
@@ -436,48 +609,14 @@ async function _runManualCompression(focusTopic){
     }
     if(typeof setComposerStatus==='function') setComposerStatus(t('compressing'));
     renderMessages();
-    const data=await api('/api/session/compress',{method:'POST',body:JSON.stringify(body)});
-    if(data&&data.session){
-      const currentSid=S.session&&S.session.session_id;
-      if(data.session.session_id&&data.session.session_id!==currentSid){
-        await loadSession(data.session.session_id);
-      }else{
-        S.session=data.session;
-        S.messages=data.session.messages||[];
-        S.toolCalls=data.session.tool_calls||[];
-        clearLiveToolCards();
-        localStorage.setItem('hermes-webui-session',S.session.session_id);
-        if(typeof _setActiveSessionUrl==='function') _setActiveSessionUrl(S.session.session_id);
-        syncTopbar();
-        renderMessages();
-        await renderSessionList();
-        updateQueueBadge(S.session.session_id);
-      }
+    const started=await api('/api/session/compress/start',{method:'POST',body:JSON.stringify(body)});
+    if(started&&started.status==='error'){
+      const err=new Error(started.error||'Compression failed');
+      err.status=started.error_status||400;
+      throw err;
     }
-    const summary=data&&data.summary;
-    if(typeof setCompressionUi==='function'&&S.session){
-      const referenceMsg=(S.messages||[]).find(m=>typeof _isContextCompactionMessage==='function'&&_isContextCompactionMessage(m));
-      const messageRef=referenceMsg?msgContent(referenceMsg)||String(referenceMsg.content||''):'';
-      const summaryRef=summary&&typeof summary.reference_message==='string' ? String(summary.reference_message||'').trim() : '';
-      // Prefer the persisted compaction handoff when it already exists in session state.
-      // The short summary fallback is only for environments where that message is unavailable.
-      const referenceText=messageRef || summaryRef;
-      const effectiveFocus=(data&&data.focus_topic)||focusTopic||'';
-      setCompressionUi({
-        sessionId:S.session.session_id,
-        phase:'done',
-        focusTopic:effectiveFocus,
-        commandText:effectiveFocus?`/compress ${effectiveFocus}`:'/compress',
-        beforeCount:visibleCount,
-        summary:summary||null,
-        referenceText,
-        anchorVisibleIdx: data?.session?.compression_anchor_visible_idx,
-        anchorMessageKey: data?.session?.compression_anchor_message_key||null,
-      });
-    }
-    if(typeof setComposerStatus==='function') setComposerStatus('');
-    renderMessages();
-    if(typeof _setCompressionSessionLock==='function') _setCompressionSessionLock(null);
+    const data=(started&&started.status==='done')?started:await _pollManualCompressionResult(sid);
+    await _applyManualCompressionResult(data, focusTopic, visibleCount, commandText);
   }catch(e){
     if(typeof setCompressionUi==='function'){
       const currentSid=S.session&&S.session.session_id;
@@ -525,7 +664,7 @@ async function cmdUsage(){
 
 async function cmdTheme(args){
   const themes=['system','dark','light'];
-  const skins=(_SKINS||[]).map(s=>s.name.toLowerCase());
+  const skins=(_SKINS||[]).map(s=>(s.value||s.name).toLowerCase());
   const legacyThemes=Object.keys(_LEGACY_THEME_MAP||{});
   const val=(args||'').toLowerCase().trim();
   // Check if it's a theme
@@ -792,6 +931,26 @@ async function cmdSteer(args){
  * @param {boolean} explicitSteer - True if the user explicitly invoked /steer
  *   (vs the busy-mode auto-fallback). Affects toast wording only.
  */
+function _showSteerIndicator(text){
+  const inner=document.getElementById('msgInner');
+  if(!inner) return;
+  // Remove any existing steer indicator
+  const old=inner.querySelector('.steer-indicator');
+  if(old) old.remove();
+  const el=document.createElement('div');
+  el.className='steer-indicator';
+  const badge=document.createElement('span');
+  badge.className='steer-badge';
+  badge.textContent='Steer';
+  const body=document.createElement('span');
+  body.className='steer-body';
+  body.textContent=text.length>120?text.slice(0,117)+'…':text;
+  el.appendChild(badge);
+  el.appendChild(body);
+  inner.appendChild(el);
+  if(typeof scrollToBottom==='function') scrollToBottom();
+}
+
 async function _trySteer(msg, explicitSteer){
   let result=null;
   try{
@@ -804,6 +963,11 @@ async function _trySteer(msg, explicitSteer){
     result={accepted:false, fallback:'network_error'};
   }
   if(result&&result.accepted){
+    // Show a transient steer indicator in the chat (NOT in S.messages — it must
+    // survive the done event's S.messages=d.session.messages replacement).
+    // The indicator self-removes when the turn completes (done/cancel/error
+    // all call renderMessages which rebuilds msgInner).
+    _showSteerIndicator(msg);
     showToast(t('cmd_steer_delivered'),2500);
     return;
   }
@@ -977,7 +1141,8 @@ function cmdReasoning(args){
   }
   if(!arg){
     // Status — read from the same config.yaml keys the CLI uses.
-    api('/api/reasoning').then(function(st){showToast(_fmtStatus(st));})
+    const q=(typeof _reasoningEffortQuery==='function')?_reasoningEffortQuery():'';
+    api('/api/reasoning'+q).then(function(st){showToast(_fmtStatus(st));})
       .catch(function(){showToast(BRAIN+' /reasoning — status unavailable');});
     return true;
   }
@@ -1004,7 +1169,7 @@ function cmdReasoning(args){
       .then(function(st){
         const eff=(st && st.reasoning_effort)||arg;
         showToast(BRAIN+' Reasoning effort: '+eff+' (saved; applies to next turn)');
-        if(typeof _applyReasoningChip==='function') _applyReasoningChip(eff);
+        if(typeof _applyReasoningChip==='function') _applyReasoningChip(eff, st||{});
       })
       .catch(function(e){
         showToast(BRAIN+' Failed to set effort: '+(e && e.message ? e.message : arg));
@@ -1069,18 +1234,36 @@ async function cmdBranch(args){
 
 // ── Fork from a specific message point ──
 // Called from the "Fork from here" button on message hover actions.
+// msgIdx is 1-based within the currently loaded tail window (rawIdx+1).
+// When the session is truncated (_oldestIdx > 0), msgIdx alone would be
+// a local-window count, but the backend expects an absolute message count
+// from the beginning of the full transcript.  We capture the absolute
+// count (_oldestIdx + msgIdx) BEFORE awaiting _ensureAllMessagesLoaded,
+// which resets _oldestIdx to 0 after its wholesale replace.  See #2184.
 async function forkFromMessage(msgIdx){
   if(!S.session||S.busy)return;
+  const initialSid = S.session.session_id;
+  // Capture the absolute keep_count before any async work that may
+  // reset _oldestIdx.  _oldestIdx is 0 when the full transcript is
+  // already loaded, so short/already-full sessions send msgIdx unchanged.
+  const absoluteKeepCount = _oldestIdx + msgIdx;
+  // Ensure the full transcript is loaded so the forked session renders
+  // correctly and subsequent operations see the complete history.
+  if(typeof _ensureAllMessagesLoaded==='function'){
+    await _ensureAllMessagesLoaded();
+  }
+  if(!S.session || S.session.session_id !== initialSid) return;
   try{
     const data=await api('/api/session/branch',{
       method:'POST',
       body:JSON.stringify({
-        session_id:S.session.session_id,
-        keep_count:msgIdx,
+        session_id:initialSid,
+        keep_count:absoluteKeepCount,
       }),
     });
     if(data&&data.session_id){
       await loadSession(data.session_id);
+      if(typeof _ensureAllMessagesLoaded==='function') await _ensureAllMessagesLoaded();
       if(typeof renderSessionList==='function') await renderSessionList();
       showToast(t('branch_forked'));
     }

@@ -1,5 +1,36 @@
 """
 Shared helpers for session compression anchor metadata.
+
+Manual compression anchoring versus automatic compression paths
+===============================================================
+
+When ``auto_compression=True`` is passed to ``visible_messages_for_anchor()``,
+the function accepts a broader set of message content types (including
+provider-style ``input_text`` / ``output_text`` parts) and metadata markers
+(``reasoning``, ``thinking``, etc.) from any non-tool role. This enables the
+streaming auto-compression path to determine which messages should anchor
+compression UI metadata without being limited to the legacy manual-compression
+rules.
+
+When ``auto_compression=False`` (the default), the function applies the
+historical manual-compression rules: only plain ``text`` content parts from
+non-assistant roles are counted.
+
+Why this module exists
+======================
+
+Compression anchoring needs to identify which messages in a session transcript
+are semantically significant enough to seed the compression UI metadata (e.g.,
+message count, token budget display). The original implementation hard-coded
+these rules in multiple places. This module consolidates the logic so that:
+
+1. Manual compression anchoring (CLI/legacy path) uses the stricter ruleset.
+2. Automatic compression (streaming/agent path) can leverage the relaxed ruleset
+   when it knows it is handling provider-style messages.
+
+Callers specify ``auto_compression=True`` when the messages may originate from
+an automatic/compression-aware pipeline, and ``False`` (default) for manual
+compression contexts.
 """
 
 
@@ -22,6 +53,29 @@ def _content_has_part_type(content, part_types):
     )
 
 
+def is_context_compression_marker(message):
+    """Return true for synthetic compression/reference cards, not user turns."""
+    if not isinstance(message, dict):
+        return False
+    role = message.get("role")
+    if not role or role == "tool":
+        return False
+    text = _content_text(
+        message.get("content", ""),
+        part_types={"text", "input_text", "output_text"},
+    ).lower().lstrip()
+    return (
+        text.startswith("[context compaction")
+        or text.startswith("context compaction")
+        or text.startswith("[your active task list was preserved across context compression]")
+    )
+
+
+def _is_context_compression_marker(message):
+    """Backward-compatible alias for callers that have not switched yet."""
+    return is_context_compression_marker(message)
+
+
 def visible_messages_for_anchor(messages, *, auto_compression: bool = False):
     """Return transcript messages that can anchor compression UI metadata.
 
@@ -38,6 +92,8 @@ def visible_messages_for_anchor(messages, *, auto_compression: bool = False):
             continue
         role = message.get("role")
         if not role or role == "tool":
+            continue
+        if _is_context_compression_marker(message):
             continue
 
         content = message.get("content", "")
