@@ -5263,6 +5263,14 @@ def handle_post(handler, parsed) -> bool:
         from api.obsidian_notes import handle_notes_upload
 
         return handle_notes_upload(handler)
+    if parsed.path == "/api/notes/assets":
+        from api.obsidian_notes import handle_notes_asset_upload
+
+        return handle_notes_asset_upload(handler)
+    if parsed.path == "/api/notes/import":
+        from api.obsidian_notes import handle_notes_import
+
+        return handle_notes_import(handler)
 
     if parsed.path == "/api/transcribe":
         return handle_transcribe(handler)
@@ -6973,21 +6981,6 @@ def handle_post(handler, parsed) -> bool:
     return False  # 404
 
 
-def handle_put(handler, parsed) -> bool:
-    """Handle all PUT routes. Returns True if handled, False for 404."""
-    if not _check_csrf(handler):
-        return j(handler, {"error": "Cross-origin request rejected"}, status=403)
-    body = read_body(handler)
-    if parsed.path.startswith("/api/notes"):
-        from api.obsidian_notes import handle_notes_put
-
-        result = handle_notes_put(handler, parsed, body)
-        if result is False:
-            return bad(handler, f"unknown notes endpoint: PUT {parsed.path}", status=404)
-        return True
-    return False
-
-
 def handle_patch(handler, parsed) -> bool:
     """Handle all PATCH routes. Returns True if handled, False for 404."""
     if not _check_csrf(handler):
@@ -7036,6 +7029,13 @@ def handle_put(handler, parsed) -> bool:
     if not _check_csrf(handler):
         return j(handler, {"error": "Cross-origin request rejected"}, status=403)
     body = read_body(handler)
+    if parsed.path.startswith("/api/notes"):
+        from api.obsidian_notes import handle_notes_put
+
+        result = handle_notes_put(handler, parsed, body)
+        if result is False:
+            return bad(handler, f"unknown notes endpoint: PUT {parsed.path}", status=404)
+        return True
     if parsed.path.startswith("/api/mcp/servers/"):
         name = parsed.path[len("/api/mcp/servers/"):]
         return _handle_mcp_server_update(handler, name, body)

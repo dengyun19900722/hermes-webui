@@ -42,12 +42,9 @@ from api.compression_anchor import is_context_compression_marker, visible_messag
 from api.metering import meter
 from api.run_journal import RunJournalWriter
 from api.turn_journal import append_turn_journal_event_for_stream
-<<<<<<< HEAD
-from api import audit as _audit
-=======
 from api.usage import prompt_cache_hit_percent
 from api.models import get_state_db_session_messages, reconciled_state_db_messages_for_session
->>>>>>> 5528e2c5792e8c2f6510ccc130884a8d6da49f63
+from api import audit as _audit
 
 # Global lock for os.environ writes. Per-session locks (_agent_lock) prevent
 # concurrent runs of the SAME session, but two DIFFERENT sessions can still
@@ -3801,7 +3798,6 @@ def _run_agent_streaming(
         # TD1: set thread-local env context so concurrent sessions don't clobber globals
         # Check for pre-flight cancel (user cancelled before agent even started)
         if cancel_event.is_set():
-<<<<<<< HEAD
             _audit.write(
                 category="chat", action="chat:cancel",
                 session_id=session_id, outcome="cancelled",
@@ -3809,10 +3805,6 @@ def _run_agent_streaming(
                 question=msg_text,
                 metadata={'reason': 'pre-flight', 'stream_id': stream_id},
             )
-=======
-            with _agent_lock:
-                _finalize_cancelled_turn(s, ephemeral=ephemeral, message='Task cancelled before start.')
->>>>>>> 5528e2c5792e8c2f6510ccc130884a8d6da49f63
             put('cancel', {'message': 'Cancelled before start'})
             return
 
@@ -4712,7 +4704,6 @@ def _run_agent_streaming(
                         agent.interrupt("Cancelled before start")
                     except Exception:
                         logger.debug("Failed to interrupt agent before start")
-<<<<<<< HEAD
                     _audit.write(
                         category="chat", action="chat:cancel",
                         session_id=session_id, outcome="cancelled",
@@ -4720,10 +4711,6 @@ def _run_agent_streaming(
                         question=msg_text,
                         metadata={'reason': 'init-cancelled', 'stream_id': stream_id},
                     )
-=======
-                    with _agent_lock:
-                        _finalize_cancelled_turn(s, ephemeral=ephemeral, message='Task cancelled before start.')
->>>>>>> 5528e2c5792e8c2f6510ccc130884a8d6da49f63
                     put('cancel', {'message': 'Cancelled by user'})
                     return
 
@@ -4892,6 +4879,7 @@ def _run_agent_streaming(
                     question=msg_text,
                     metadata={'ephemeral': True, 'answer_len': len(_answer)},
                 )
+
                 put('done', {
                     'session': {'session_id': session_id, 'messages': result.get('messages', [])},
                     'usage': {'input_tokens': 0, 'output_tokens': 0},

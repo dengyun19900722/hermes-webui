@@ -8,6 +8,7 @@ let _knowledgeMode = 'empty'; // empty | read | create | edit
 let _knowledgeDirty = false;
 let _knowledgeActiveDir = '.';
 let _knowledgeActivePath = '';
+let _knowledgeEditorTocTimer = null;
 
 function _knowledgeExpandedKey(){
   return 'hermes-webui-knowledge-expanded';
@@ -52,6 +53,108 @@ function _knowledgeFormatTime(ts){
   const d=new Date(Number(ts)*1000);
   if(Number.isNaN(d.getTime())) return '';
   return d.toLocaleString();
+}
+
+function _knowledgeStripInlineMarkdown(text){
+  return String(text||'')
+    .replace(/!\[([^\]]*)\]\([^\)]*\)/g,'$1')
+    .replace(/\[([^\]]+)\]\([^\)]*\)/g,'$1')
+    .replace(/`([^`]+)`/g,'$1')
+    .replace(/[*_~#<>]/g,'')
+    .trim();
+}
+
+function _knowledgeExtractHeadings(markdown){
+  const lines=String(markdown||'').split(/\r?\n/);
+  const headings=[];
+  let fenced=false;
+  for(let i=0;i<lines.length;i++){
+    const line=lines[i]||'';
+    if(/^\s*(```|~~~)/.test(line)){
+      fenced=!fenced;
+      continue;
+    }
+    if(fenced) continue;
+    const m=line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
+    if(!m) continue;
+    const text=_knowledgeStripInlineMarkdown(m[2]);
+    if(!text) continue;
+    headings.push({level:m[1].length,text,line:i,id:'knowledge-heading-'+headings.length});
+  }
+  return headings;
+}
+
+function _knowledgeRenderToc(mount, headings, onJump){
+  if(!mount) return;
+  const items=Array.isArray(headings)?headings:[];
+  if(!items.length){
+    mount.innerHTML='<div class="knowledge-toc-empty">无标题</div>';
+    return;
+  }
+  mount.innerHTML='';
+  for(const h of items){
+    const btn=document.createElement('button');
+    btn.type='button';
+    btn.className='knowledge-toc-item level-'+h.level;
+    btn.textContent=h.text;
+    btn.onclick=()=>onJump&&onJump(h);
+    mount.appendChild(btn);
+  }
+}
+
+function _knowledgeAssignHeadingIds(contentEl, headings){
+  if(!contentEl) return;
+  const nodes=contentEl.querySelectorAll('h1,h2,h3,h4,h5,h6');
+  headings.forEach((h,idx)=>{
+    const el=nodes[idx];
+    if(el) el.id=h.id;
+  });
+}
+
+function _knowledgeNormalizeVaultPath(parts){
+  const out=[];
+  for(const raw of parts){
+    const part=String(raw||'').trim();
+    if(!part||part==='.') continue;
+    if(part==='..') out.pop();
+    else out.push(part);
+  }
+  return out.join('/');
+}
+
+function _knowledgeResolveMediaMarkdown(markdown, notePath){
+  const baseParts=String(notePath||'').split('/').slice(0,-1);
+  return String(markdown||'').replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g,(all,alt,url)=>{
+    const raw=String(url||'').trim();
+    if(!raw || /^(https?:\/\/|api\/notes\/media\?|data:|mailto:|tel:|#)/i.test(raw)) return all;
+    const resolved=_knowledgeNormalizeVaultPath([...baseParts, ...raw.split('/')]);
+    if(!resolved) return all;
+    return `![${alt}](api/notes/media?path=${encodeURIComponent(resolved)})`;
+  });
+}
+
+function _knowledgeRefreshEditorToc(){
+  const textarea=$('knowledgeFormContent');
+  const toc=$('knowledgeEditorTocList');
+  if(!textarea||!toc) return;
+  const headings=_knowledgeExtractHeadings(textarea.value||'');
+  _knowledgeRenderToc(toc, headings, h=>_knowledgeScrollTextareaToLine(textarea,h.line));
+}
+
+function _knowledgeQueueEditorTocRefresh(){
+  if(_knowledgeEditorTocTimer) clearTimeout(_knowledgeEditorTocTimer);
+  _knowledgeEditorTocTimer=setTimeout(_knowledgeRefreshEditorToc, 80);
+}
+
+function _knowledgeScrollTextareaToLine(textarea, line){
+  if(!textarea) return;
+  const lines=textarea.value.split(/\n/);
+  let pos=0;
+  for(let i=0;i<line&&i<lines.length;i++) pos += lines[i].length + 1;
+  textarea.focus();
+  textarea.setSelectionRange(pos, pos + (lines[line]||'').length);
+  const lh=parseFloat(getComputedStyle(textarea).lineHeight)||20;
+  textarea.scrollTop=Math.max(0,(line-2)*lh);
 }
 
 function _knowledgeSetHeaderButtons(mode){
@@ -113,7 +216,22 @@ function _knowledgeRenderNoteContent(note){
   }
   if(body){
     body.style.display='';
-    body.innerHTML=`<div class="main-view-content knowledge-note-content">${renderMd(note.content||'')}</div>`;
+    const headings=_knowledgeExtractHeadings(note.content||'');
+    const rendered=renderMd(_knowledgeResolveMediaMarkdown(note.content||'', note.path||''));
+    body.innerHTML=`
+      <div class="knowledge-detail-layout">
+        <div class="main-view-content knowledge-note-content">${rendered}</div>
+        <aside class="knowledge-toc" aria-label="Headings">
+          <div class="knowledge-toc-title">目录</div>
+          <div class="knowledge-toc-list" id="knowledgeReadTocList"></div>
+        </aside>
+      </div>`;
+    const contentEl=body.querySelector('.knowledge-note-content');
+    _knowledgeAssignHeadingIds(contentEl, headings);
+    _knowledgeRenderToc(body.querySelector('#knowledgeReadTocList'), headings, h=>{
+      const target=document.getElementById(h.id);
+      if(target) target.scrollIntoView({block:'start',behavior:'smooth'});
+    });
     requestAnimationFrame(()=>{ if(typeof renderKatexBlocks==='function') renderKatexBlocks(); });
   }
   if(empty) empty.style.display='none';
@@ -138,8 +256,8 @@ function _knowledgeRenderForm({mode, note, content, title, category}){
   const currentBody = content != null ? content : (note && note.content) || '';
   body.style.display='';
   body.innerHTML = `
-    <div class="main-view-content">
-      <form class="detail-form" onsubmit="event.preventDefault(); saveKnowledgeNote();">
+    <div class="main-view-content knowledge-editor-shell">
+      <form class="detail-form knowledge-editor-form" onsubmit="event.preventDefault(); saveKnowledgeNote();">
         <div class="knowledge-form-grid">
           <div class="detail-form-row">
             <label for="knowledgeFormTitle">标题</label>
@@ -152,17 +270,30 @@ function _knowledgeRenderForm({mode, note, content, title, category}){
           </div>
         </div>
         <div class="detail-form-row" style="margin-top:12px">
-          <label for="knowledgeFormContent">正文</label>
+          <div class="knowledge-editor-label-row">
+            <label for="knowledgeFormContent">正文</label>
+            <button type="button" class="knowledge-inline-tool" onclick="openKnowledgeImageUpload()" title="插入图片">${li('image-plus', 13)}<span>图片</span></button>
+          </div>
           <textarea id="knowledgeFormContent" class="knowledge-edit-textarea" rows="22" spellcheck="false">${esc(currentBody)}</textarea>
         </div>
         <div id="knowledgeFormError" class="detail-form-error" style="display:none"></div>
       </form>
+      <aside class="knowledge-toc knowledge-editor-toc" aria-label="Headings">
+        <div class="knowledge-toc-title">目录</div>
+        <div class="knowledge-toc-list" id="knowledgeEditorTocList"></div>
+      </aside>
     </div>`;
   if(empty) empty.style.display='none';
   _knowledgeMode=mode;
   _knowledgeDirty=(mode==='create' || mode==='edit');
   _knowledgeSetHeaderButtons(mode);
   const focusEl = mode==='edit' ? $('knowledgeFormContent') : $('knowledgeFormTitle');
+  const textarea=$('knowledgeFormContent');
+  if(textarea){
+    textarea.addEventListener('input',()=>{ _knowledgeDirty=true; _knowledgeQueueEditorTocRefresh(); });
+    textarea.addEventListener('paste', _knowledgeHandleEditorPaste);
+    _knowledgeRefreshEditorToc();
+  }
   if(focusEl) focusEl.focus();
 }
 
@@ -204,6 +335,11 @@ function _knowledgeRenderNodes(nodes, depth, mount){
         <span class="knowledge-chevron">${li('chevron-right', 12)}</span>
         <span class="knowledge-row-icon">${li('folder', 14)}</span>
         <span class="knowledge-row-text">${esc(node.name || node.path || 'vault')}</span>
+        <span class="knowledge-row-actions">
+          <button type="button" title="新建子目录" aria-label="新建子目录" data-action="mkdir">${li('folder-plus', 12)}</button>
+          <button type="button" title="重命名目录" aria-label="重命名目录" data-action="rename">${li('pencil', 12)}</button>
+          <button type="button" title="删除目录" aria-label="删除目录" data-action="delete">${li('trash-2', 12)}</button>
+        </span>
       `;
       row.onclick = () => {
         if(nodePath){
@@ -214,6 +350,18 @@ function _knowledgeRenderNodes(nodes, depth, mount){
           _renderKnowledgeTree();
         }
       };
+      row.querySelector('[data-action="mkdir"]')?.addEventListener('click', e=>{
+        e.stopPropagation();
+        createKnowledgeDirectory(nodePath);
+      });
+      row.querySelector('[data-action="rename"]')?.addEventListener('click', e=>{
+        e.stopPropagation();
+        if(nodePath) renameKnowledgeDirectory(nodePath);
+      });
+      row.querySelector('[data-action="delete"]')?.addEventListener('click', e=>{
+        e.stopPropagation();
+        if(nodePath) deleteKnowledgeDirectory(nodePath);
+      });
       mount.appendChild(row);
       const childrenWrap=document.createElement('div');
       childrenWrap.style.display = expanded || !nodePath ? '' : 'none';
@@ -471,6 +619,89 @@ async function saveKnowledgeNote(){
   }
 }
 
+function _knowledgeEditorTargetDir(){
+  const categoryEl=$('knowledgeFormCategory');
+  const category=(categoryEl&&categoryEl.value||_knowledgeActiveDir||'.').trim();
+  return category && category!=='.' ? category : '';
+}
+
+function _knowledgeInsertIntoTextarea(textarea, snippet){
+  if(!textarea||!snippet) return;
+  const start=textarea.selectionStart||0;
+  const end=textarea.selectionEnd||start;
+  const value=textarea.value||'';
+  const before=value.slice(0,start);
+  const after=value.slice(end);
+  const needsBefore=before && !before.endsWith('\n') ? '\n' : '';
+  const needsAfter=after && !after.startsWith('\n') ? '\n' : '';
+  const insert=needsBefore + snippet + needsAfter;
+  textarea.value=before + insert + after;
+  const cursor=(before + insert).length;
+  textarea.focus();
+  textarea.setSelectionRange(cursor,cursor);
+  _knowledgeDirty=true;
+  _knowledgeQueueEditorTocRefresh();
+}
+
+async function _knowledgeUploadImageFile(file){
+  if(!file) return null;
+  const fd=new FormData();
+  fd.append('file', file, file.name || 'image.png');
+  if(_knowledgeMode==='edit' && _knowledgeCurrentNote && _knowledgeCurrentNote.path){
+    fd.append('note_path', _knowledgeCurrentNote.path);
+  }else{
+    fd.append('target_dir', _knowledgeEditorTargetDir());
+  }
+  return api('/api/notes/assets',{method:'POST',body:fd,headers:{}});
+}
+
+async function _knowledgeHandleEditorPaste(event){
+  const items=event.clipboardData && event.clipboardData.items;
+  if(!items) return;
+  const files=[];
+  for(const item of items){
+    if(item.kind==='file' && /^image\//i.test(item.type||'')){
+      const file=item.getAsFile();
+      if(file) files.push(file);
+    }
+  }
+  if(!files.length) return;
+  event.preventDefault();
+  const textarea=$('knowledgeFormContent');
+  try{
+    for(const file of files){
+      const uploaded=await _knowledgeUploadImageFile(file);
+      _knowledgeInsertIntoTextarea(textarea, uploaded && uploaded.markdown);
+    }
+    showToast('图片已插入');
+  }catch(e){
+    showToast('图片插入失败：' + e.message);
+  }
+}
+
+async function openKnowledgeImageUpload(){
+  const textarea=$('knowledgeFormContent');
+  if(!textarea) return;
+  const input=document.createElement('input');
+  input.type='file';
+  input.accept='image/png,image/jpeg,image/gif,image/webp';
+  input.multiple=true;
+  input.onchange=async()=>{
+    const files=Array.from(input.files||[]);
+    if(!files.length) return;
+    try{
+      for(const file of files){
+        const uploaded=await _knowledgeUploadImageFile(file);
+        _knowledgeInsertIntoTextarea(textarea, uploaded && uploaded.markdown);
+      }
+      showToast('图片已插入');
+    }catch(e){
+      showToast('图片上传失败：' + e.message);
+    }
+  };
+  input.click();
+}
+
 async function deleteCurrentKnowledgeNote(){
   if(!_knowledgeCurrentNote) return;
   const ok=await showConfirmDialog({
@@ -492,6 +723,116 @@ async function deleteCurrentKnowledgeNote(){
     _knowledgeSetEmptyState('选择一个笔记', '从左侧知识库目录选择笔记，或新建一条 Markdown 笔记。');
   }catch(e){
     showToast('删除失败：' + e.message);
+  }
+}
+
+function _knowledgeNormalizeDirectoryParent(parent){
+  const value=String(parent||'').trim();
+  return value && value!=='.' ? value : '';
+}
+
+function createRootKnowledgeDirectory(){
+  return createKnowledgeDirectory('');
+}
+
+async function createKnowledgeDirectory(parent=''){
+  const normalizedParent=_knowledgeNormalizeDirectoryParent(parent);
+  const base=normalizedParent || '根目录';
+  const name=await showPromptDialog({
+    title:'新建目录',
+    message:`在 ${base} 下创建目录`,
+    placeholder:'目录名称',
+    confirmLabel:'创建',
+  });
+  if(!name) return;
+  try{
+    const data=await api('/api/notes/directories',{method:'POST',body:JSON.stringify({parent:normalizedParent,name})});
+    if(data && data.path) _knowledgeExpanded.add(normalizedParent || data.path);
+    _saveKnowledgeExpanded();
+    showToast('目录已创建');
+    await loadKnowledgeNotes(true);
+  }catch(e){
+    showToast('创建目录失败：' + e.message);
+  }
+}
+
+async function renameKnowledgeDirectory(path){
+  const current=String(path||'').split('/').pop()||'';
+  const name=await showPromptDialog({
+    title:'重命名目录',
+    message:path,
+    value:current,
+    placeholder:'目录名称',
+    confirmLabel:'重命名',
+  });
+  if(!name || name===current) return;
+  try{
+    const previousNotePath=_knowledgeCurrentNote && _knowledgeCurrentNote.path ? _knowledgeCurrentNote.path : '';
+    const data=await api('/api/notes/directories',{method:'PUT',body:JSON.stringify({path,name})});
+    showToast('目录已重命名');
+    if(data && data.path) _knowledgeExpanded.add(data.path);
+    _saveKnowledgeExpanded();
+    await loadKnowledgeNotes(true);
+    if(data && data.path && previousNotePath && previousNotePath.startsWith(path + '/')){
+      await openKnowledgeNote(data.path + previousNotePath.slice(path.length), null, {silent:true});
+    }
+  }catch(e){
+    showToast('重命名目录失败：' + e.message);
+  }
+}
+
+async function deleteKnowledgeDirectory(path){
+  if(!path) return;
+  const ok=await showConfirmDialog({
+    title:'删除目录',
+    message:`删除目录「${path}」？如果目录非空，将先尝试安全删除。`,
+    confirmLabel:'删除',
+    cancelLabel:'取消',
+    danger:true,
+    focusCancel:true,
+  });
+  if(!ok) return;
+  try{
+    await api('/api/notes/directories',{method:'DELETE',body:JSON.stringify({path,recursive:false})});
+    showToast('目录已删除');
+    _knowledgeExpanded.delete(path);
+    _saveKnowledgeExpanded();
+    await loadKnowledgeNotes(true);
+    if(_knowledgeCurrentNote && _knowledgeCurrentNote.path && _knowledgeCurrentNote.path.startsWith(path + '/')){
+      _knowledgeCurrentNote=null;
+      _knowledgeActivePath='';
+      _saveKnowledgeLastNote('');
+      _knowledgeSetEmptyState('选择一个笔记', '从左侧知识库目录选择笔记，或新建一条 Markdown 笔记。');
+    }
+  }catch(e){
+    if(!/not empty|非空|不为空/i.test(e.message||'')){
+      showToast('删除目录失败：' + e.message);
+      return;
+    }
+    const recursive=await showConfirmDialog({
+      title:'目录非空',
+      message:`「${path}」包含文件或子目录，是否递归删除？此操作不可恢复。`,
+      confirmLabel:'递归删除',
+      cancelLabel:'取消',
+      danger:true,
+      focusCancel:true,
+    });
+    if(!recursive) return;
+    try{
+      await api('/api/notes/directories',{method:'DELETE',body:JSON.stringify({path,recursive:true})});
+      showToast('目录已删除');
+      _knowledgeExpanded.delete(path);
+      _saveKnowledgeExpanded();
+      await loadKnowledgeNotes(true);
+      if(_knowledgeCurrentNote && _knowledgeCurrentNote.path && _knowledgeCurrentNote.path.startsWith(path + '/')){
+        _knowledgeCurrentNote=null;
+        _knowledgeActivePath='';
+        _saveKnowledgeLastNote('');
+        _knowledgeSetEmptyState('选择一个笔记', '从左侧知识库目录选择笔记，或新建一条 Markdown 笔记。');
+      }
+    }catch(err){
+      showToast('删除目录失败：' + err.message);
+    }
   }
 }
 
@@ -526,6 +867,29 @@ async function openKnowledgeUpload(){
       await loadKnowledgeNotes(true);
     }catch(e){
       showToast('上传失败：' + e.message);
+    }
+  };
+  input.click();
+}
+
+async function openKnowledgeOfficeImport(){
+  const input=document.createElement('input');
+  input.type='file';
+  input.accept='.docx,.xlsx,.pptx,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation';
+  input.multiple=false;
+  input.onchange=async()=>{
+    const file=input.files && input.files[0];
+    if(!file) return;
+    try{
+      const fd=new FormData();
+      fd.append('file', file, file.name);
+      fd.append('target_dir', _knowledgeActiveDir && _knowledgeActiveDir !== '.' ? _knowledgeActiveDir : '');
+      const data=await api('/api/notes/import',{method:'POST',body:fd,headers:{}});
+      showToast('Office 文档已导入');
+      await loadKnowledgeNotes(true);
+      if(data && data.path) await openKnowledgeNote(data.path,null,{silent:true});
+    }catch(e){
+      showToast('Office 导入失败：' + e.message);
     }
   };
   input.click();

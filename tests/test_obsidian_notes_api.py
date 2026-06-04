@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import io
+import sys
+import types
 from pathlib import Path
 from urllib.parse import quote, urlparse
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 class _DownloadHandler:
@@ -51,6 +55,64 @@ def test_filesystem_crud_roundtrip(tmp_path, monkeypatch):
     deleted = notes.delete_note(created["path"])
     assert deleted["ok"] is True
     assert not (tmp_path / "vault" / created["path"]).exists()
+
+
+def test_directory_crud_and_assets_are_sandboxed(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_OBSIDIAN_VAULT_DIR", str(tmp_path / "vault"))
+    from api import obsidian_notes as notes
+
+    root_dir = notes.create_directory("", "一级目录")
+    assert root_dir["path"] == "一级目录"
+    assert (tmp_path / "vault" / "一级目录").is_dir()
+
+    child_dir = notes.create_directory(root_dir["path"], "子目录")
+    assert child_dir["path"] == "一级目录/子目录"
+    assert (tmp_path / "vault" / "一级目录" / "子目录").is_dir()
+
+    created_dir = notes.create_directory("01-故障知识库", "数据库")
+    assert created_dir["path"] == "01-故障知识库/数据库"
+
+    renamed = notes.rename_directory(created_dir["path"], "MySQL")
+    assert renamed["path"] == "01-故障知识库/MySQL"
+
+    created = notes.create_note("慢查询", renamed["path"], "# 慢查询")
+    with pytest.raises(FileExistsError):
+        notes.delete_directory(renamed["path"], recursive=False)
+
+    asset = notes.upload_asset("截图.png", b"\x89PNG\r\n\x1a\n", note_path=created["path"])
+    assert "_attachments/" in asset["path"]
+    assert asset["markdown"].startswith("![")
+
+    tree = notes.notes_tree()
+    assert "_attachments" not in repr(tree["tree"])
+
+    handler = _DownloadHandler()
+    assert notes.send_note_media(handler, asset["path"]) is True
+    assert handler.status == 200
+    assert handler.headers["Content-Type"] == "image/png"
+    assert handler.wfile.getvalue().startswith(b"\x89PNG")
+
+    deleted = notes.delete_directory(renamed["path"], recursive=True)
+    assert deleted["ok"] is True
+    assert not (tmp_path / "vault" / renamed["path"]).exists()
+
+
+def test_office_import_uses_optional_converter(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_OBSIDIAN_VAULT_DIR", str(tmp_path / "vault"))
+    from api import obsidian_notes as notes
+
+    class FakeMarkItDown:
+        def convert(self, path):
+            assert path.endswith(".docx")
+            return types.SimpleNamespace(text_content="## 导入内容\n\n正文")
+
+    monkeypatch.setitem(sys.modules, "markitdown", types.SimpleNamespace(MarkItDown=FakeMarkItDown))
+
+    imported = notes.import_office_document("巡检报告.docx", b"fake", target_dir="02-运维手册")
+    assert imported["path"].startswith("02-运维手册/")
+    assert imported["imported_from"] == "巡检报告.docx"
+    assert imported["content"].startswith("# 巡检报告")
+    assert "## 导入内容" in imported["content"]
 
 
 def test_default_vault_root_uses_global_workspace_obsidian(tmp_path, monkeypatch):
@@ -112,6 +174,18 @@ def test_route_get_post_put_delete_cover_notes_endpoints(tmp_path, monkeypatch):
         assert routes.handle_post(handler, urlparse("/api/notes/upload")) is True
         upload_mock.assert_called_once()
 
+    with patch("api.routes._check_csrf", return_value=True), \
+         patch("api.routes.read_body", side_effect=AssertionError("read_body should not run for asset upload")), \
+         patch("api.obsidian_notes.handle_notes_asset_upload", return_value=True) as asset_mock:
+        assert routes.handle_post(handler, urlparse("/api/notes/assets")) is True
+        asset_mock.assert_called_once()
+
+    with patch("api.routes._check_csrf", return_value=True), \
+         patch("api.routes.read_body", side_effect=AssertionError("read_body should not run for office import")), \
+         patch("api.obsidian_notes.handle_notes_import", return_value=True) as import_mock:
+        assert routes.handle_post(handler, urlparse("/api/notes/import")) is True
+        import_mock.assert_called_once()
+
     captured.clear()
     body = {"path": created["path"], "content": "# 修改后的内容"}
     with patch("api.obsidian_notes.j", side_effect=fake_j), \
@@ -131,6 +205,7 @@ def test_route_get_post_put_delete_cover_notes_endpoints(tmp_path, monkeypatch):
 def test_static_wiring_includes_knowledge_panel():
     html = Path("static/index.html").read_text(encoding="utf-8")
     js = Path("static/panels.js").read_text(encoding="utf-8")
+    notes_js = Path("static/obsidian_notes.js").read_text(encoding="utf-8")
     css = Path("static/style.css").read_text(encoding="utf-8")
 
     assert 'data-panel="knowledge"' in html
@@ -142,4 +217,13 @@ def test_static_wiring_includes_knowledge_panel():
     assert 'id="knowledgeDetailBody"' in html
     assert "static/obsidian_notes.js" in html
     assert "loadKnowledgeNotes" in js
+    assert 'onclick="createRootKnowledgeDirectory()"' in html
+    assert "function createRootKnowledgeDirectory" in notes_js
+    assert "createKnowledgeDirectory" in notes_js
+    assert "createKnowledgeDirectory(nodePath)" in notes_js
+    assert "openKnowledgeOfficeImport" in notes_js
+    assert "/api/notes/assets" in notes_js
+    assert "knowledge-toc" in css
+    assert ".knowledge-note-content img" in css
+    assert "width:100%" in css
     assert "showing-knowledge" in css

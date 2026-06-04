@@ -292,7 +292,7 @@ class Handler(BaseHTTPRequestHandler):
             forwarded_for = (self.headers.get('X-Forwarded-For') or '').split(',')[0].strip() or None
         except Exception:
             forwarded_for = None
-        record = json.dumps({
+        record_data = {
             'ts': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
             'remote': remote,
             'method': getattr(self, 'command', None) or '-',
@@ -302,7 +302,7 @@ class Handler(BaseHTTPRequestHandler):
         }
         if forwarded_for:
             record_data['forwarded_for'] = forwarded_for
-        record = _json.dumps(record_data)
+        record = json.dumps(record_data)
         print(f'[webui] {record}', flush=True)
 
         # Write audit entry if audit is enabled and directory is configured.
