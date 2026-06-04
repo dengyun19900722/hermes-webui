@@ -7408,8 +7408,26 @@ function addCopyButtons(container){
   });
 }
 
-let _mermaidLoading=false;
 let _mermaidReady=false;
+
+function _initMermaidIfAvailable(){
+  if(_mermaidReady) return true;
+  if(typeof mermaid==='undefined') return false;
+  mermaid.initialize({startOnLoad:false,theme:document.documentElement.classList.contains('dark')?'dark':'default',themeVariables:{
+    fontFamily:'inherit',fontSize:'14px',
+    primaryColor:'#4a6fa5',primaryTextColor:'#e2e8f0',lineColor:'#718096',
+    secondaryColor:'#2d3748',tertiaryColor:'#1a202c',primaryBorderColor:'#4a5568',
+  }});
+  _mermaidReady=true;
+  return true;
+}
+
+function _renderMermaidUnavailable(block){
+  const code=block.textContent||'';
+  block.dataset.rendered='true';
+  block.classList.remove('mermaid-block');
+  block.innerHTML=`<div class="pre-header">mermaid</div><pre><code class="language-mermaid">${esc(code)}</code></pre>`;
+}
 
 function loadDiffInline(container){
   const DIFF_MAX_SIZE=512*1024; // 512 KB cap for inline diff rendering
@@ -7596,12 +7614,9 @@ function _renderExcalidrawCanvases(){
 }
 
 // ── PDF inline preview (first page) ────────────────────────────────────────
-// NOTE: PDF.js is loaded from CDN (jsdelivr). Offline/air-gapped deployments
-// will not get inline previews; the 15 s fallback timeout degrades to a
-// download link in that case. The 4 MB size cap is checked client-side after
-// the full buffer is received — ideally the server would enforce it before
-// streaming (out of scope for this client-side PR).
-let _pdfjsReady=false, _pdfjsLoading=false;
+// PDF.js is optional. Offline deployments should not attempt public CDN loads;
+// when no local PDF.js bundle has been injected, fall back to a download link.
+let _pdfjsReady=!!window._pdfjsLib, _pdfjsLoading=false;
 function loadPdfInline(container){
   const PDF_MAX_SIZE=4*1024*1024; // 4 MB cap for inline PDF preview
   const root=container||document;
@@ -7646,30 +7661,18 @@ function loadPdfInline(container){
           el.outerHTML=`<div class="pdf-preview-fallback"><a class="msg-media-link" href="${dlUrl}" download="${esc(fname)}">📎 ${esc(fname)}</a><br><span style="color:var(--muted);font-size:12px">${t('pdf_error')}</span></div>`;
         });
     };
+    const showPdfFallback=()=>{
+      const dlUrl='api/media?path='+encodeURIComponent(path)+'&download=1';
+      if(el.parentNode){
+        el.outerHTML=`<div class="pdf-preview-fallback"><a class="msg-media-link" href="${dlUrl}" download="${esc(fname)}">📎 ${esc(fname)}</a><br><span style="color:var(--muted);font-size:12px">${t('pdf_error')}</span></div>`;
+      }
+    };
     if(_pdfjsReady){
       loadPdf(window._pdfjsLib);
     } else if(!_pdfjsLoading){
       _pdfjsLoading=true;
-      const s=document.createElement('script');
-      s.src='https://cdn.jsdelivr.net/npm/pdfjs-dist@4.9.155/build/pdf.min.mjs';
-      s.type='module';
-      s.textContent=`
-        import * as pdfjsLib from '${s.src}';
-        pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@4.9.155/build/pdf.worker.min.mjs';
-        window._pdfjsLib=pdfjsLib;
-        window._pdfjsReady=true;
-        window.dispatchEvent(new Event('pdfjs-ready'));
-      `;
-      document.head.appendChild(s);
+      showPdfFallback();
       window.addEventListener('pdfjs-ready',()=>{ _pdfjsReady=true; loadPdf(window._pdfjsLib); },{once:true});
-      setTimeout(()=>{
-        if(!_pdfjsReady){
-          const dlUrl='api/media?path='+encodeURIComponent(path)+'&download=1';
-          if(el.parentNode){
-            el.outerHTML=`<div class="pdf-preview-fallback"><a class="msg-media-link" href="${dlUrl}" download="${esc(fname)}">📎 ${esc(fname)}</a><br><span style="color:var(--muted);font-size:12px">${t('pdf_error')}</span></div>`;
-          }
-        }
-      },15000);
     } else {
       window.addEventListener('pdfjs-ready',()=>{ loadPdf(window._pdfjsLib); },{once:true});
     }
@@ -7707,26 +7710,8 @@ function renderMermaidBlocks(container){
   const root=container||document;
   const blocks=root.querySelectorAll('.mermaid-block:not([data-rendered])');
   if(!blocks.length) return;
-  if(!_mermaidReady){
-    if(!_mermaidLoading){
-      _mermaidLoading=true;
-      const script=document.createElement('script');
-      script.src='https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.min.js';
-      script.integrity='sha384-R63zfMfSwJF4xCR11wXii+QUsbiBIdiDzDbtxia72oGWfkT7WHJfmD/I/eeHPJyT';
-      script.crossOrigin='anonymous';
-      script.onload=()=>{
-        if(typeof mermaid!=='undefined'){
-          mermaid.initialize({startOnLoad:false,theme:document.documentElement.classList.contains('dark')?'dark':'default',themeVariables:{
-            fontFamily:'inherit',fontSize:'14px',
-            primaryColor:'#4a6fa5',primaryTextColor:'#e2e8f0',lineColor:'#718096',
-            secondaryColor:'#2d3748',tertiaryColor:'#1a202c',primaryBorderColor:'#4a5568',
-          }});
-          _mermaidReady=true;
-          renderMermaidBlocks();
-        }
-      };
-      document.head.appendChild(script);
-    }
+  if(!_initMermaidIfAvailable()){
+    blocks.forEach(_renderMermaidUnavailable);
     return;
   }
   blocks.forEach(async(block)=>{

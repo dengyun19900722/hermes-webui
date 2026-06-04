@@ -87,22 +87,16 @@ class TestBootJsThemeColorSync:
         assert "setAttribute('content',bg)" in src
         assert "removeAttribute('media')" in src
 
-    def test_set_resolved_theme_calls_sync_in_both_branches(self):
-        """_setResolvedTheme has two exit paths:
-            1. Early return when the Prism stylesheet is absent (onboarding pages,
-               error pages, etc.).
-            2. Normal completion after possibly toggling the Prism stylesheet href.
-        Both paths must update the meta tag — otherwise the Mac chrome would lag
-        the page on those paths.
-        """
+    def test_set_resolved_theme_calls_sync_without_external_stylesheet(self):
+        """_setResolvedTheme must update the meta tag without touching CDN CSS."""
         src = BOOT.read_text(encoding="utf-8")
-        # Path 1 — the early return must call the sync first.
-        assert "if(!link){ _syncThemeColorMeta(); return; }" in src
-        # Path 2 — the trailing call must follow the link-href update.
-        assert (
-            "if(link.href!==want){ link.integrity=''; link.href=want; }\n"
-            "  _syncThemeColorMeta();"
-        ) in src
+        start = src.find("function _setResolvedTheme")
+        assert start != -1
+        end = src.find("function _applyTheme", start)
+        block = src[start:end]
+        assert "_syncThemeColorMeta();" in block
+        assert "prism-theme" not in block
+        assert "cdn.jsdelivr.net" not in block
 
     def test_apply_skin_calls_sync(self):
         """Switching skin (Default → Sienna → Sisyphus, etc.) recomputes --bg and

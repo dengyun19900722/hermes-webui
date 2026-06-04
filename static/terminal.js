@@ -127,7 +127,7 @@ function _ensureXterm(){
   if(!surface)return null;
   if(TERMINAL_UI.term)return TERMINAL_UI.term;
   if(!_xtermReady()){
-    surface.textContent='Terminal library failed to load. Check network access to cdn.jsdelivr.net.';
+    surface.textContent='Terminal frontend assets are not bundled for offline deployment. Vendor xterm locally to enable the terminal.';
     return null;
   }
   const term=new window.Terminal({

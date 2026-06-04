@@ -38,8 +38,9 @@ def test_handler_adds_content_security_policy_report_only(monkeypatch):
 def test_csp_report_only_keeps_legacy_inline_allowances_for_current_ui():
     policy = Handler.csp_report_only_policy()
 
-    assert "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net" in policy
-    assert "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net" in policy
+    assert "script-src 'self' 'unsafe-inline'" in policy
+    assert "style-src 'self' 'unsafe-inline'" in policy
+    assert "https://cdn.jsdelivr.net" not in policy
     # unsafe-eval was dropped after Opus stage-339 verification — no production
     # JS uses eval(), new Function(), or string-form setTimeout/setInterval.
     assert "'unsafe-eval'" not in policy
@@ -132,6 +133,8 @@ def test_server_bypasses_auth_for_csp_report(monkeypatch):
     handler = Handler.__new__(Handler)
     handler.path = "/api/csp-report"
     handler.command = "POST"
+    handler.headers = {}
+    handler.client_address = ("127.0.0.1", 12345)
     handler._req_t0 = 0
 
     def fail_auth(_handler, _parsed):

@@ -1381,14 +1381,6 @@ function _syncThemeColorMeta(){
 
 function _setResolvedTheme(isDark){
   document.documentElement.classList.toggle('dark',!!isDark);
-  const link=document.getElementById('prism-theme');
-  if(!link){ _syncThemeColorMeta(); return; }
-  const want=isDark
-    ?'https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css'
-    :'https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism.min.css';
-  // No SRI integrity on theme CSS — jsdelivr edge nodes serve different
-  // digests for the same pinned version, causing intermittent blocking (#1100).
-  if(link.href!==want){ link.integrity=''; link.href=want; }
   _syncThemeColorMeta();
 }
 
