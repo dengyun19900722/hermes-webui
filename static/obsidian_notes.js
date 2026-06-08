@@ -221,7 +221,7 @@ function _knowledgeRenderNoteContent(note){
     body.innerHTML=`
       <div class="knowledge-detail-layout">
         <div class="main-view-content knowledge-note-content">${rendered}</div>
-        <aside class="knowledge-toc" aria-label="Headings">
+        <aside class="knowledge-toc" aria-label="目录">
           <div class="knowledge-toc-title">目录</div>
           <div class="knowledge-toc-list" id="knowledgeReadTocList"></div>
         </aside>
@@ -278,7 +278,7 @@ function _knowledgeRenderForm({mode, note, content, title, category}){
         </div>
         <div id="knowledgeFormError" class="detail-form-error" style="display:none"></div>
       </form>
-      <aside class="knowledge-toc knowledge-editor-toc" aria-label="Headings">
+      <aside class="knowledge-toc knowledge-editor-toc" aria-label="目录">
         <div class="knowledge-toc-title">目录</div>
         <div class="knowledge-toc-list" id="knowledgeEditorTocList"></div>
       </aside>

@@ -206,6 +206,7 @@ def test_static_wiring_includes_knowledge_panel():
     html = Path("static/index.html").read_text(encoding="utf-8")
     js = Path("static/panels.js").read_text(encoding="utf-8")
     notes_js = Path("static/obsidian_notes.js").read_text(encoding="utf-8")
+    icons_js = Path("static/icons.js").read_text(encoding="utf-8")
     css = Path("static/style.css").read_text(encoding="utf-8")
 
     assert 'data-panel="knowledge"' in html
@@ -218,12 +219,20 @@ def test_static_wiring_includes_knowledge_panel():
     assert "static/obsidian_notes.js" in html
     assert "loadKnowledgeNotes" in js
     assert 'onclick="createRootKnowledgeDirectory()"' in html
+    assert 'data-tooltip="新建一级目录"' in html
+    assert 'data-tooltip="新建笔记"' in html
+    assert 'data-tooltip="上传 Markdown"' in html
+    assert 'data-tooltip="导入 Office 文档"' in html
+    assert 'placeholder="搜索笔记..."' in html
     assert "function createRootKnowledgeDirectory" in notes_js
     assert "createKnowledgeDirectory" in notes_js
     assert "createKnowledgeDirectory(nodePath)" in notes_js
+    assert "'folder-plus'" in icons_js
     assert "openKnowledgeOfficeImport" in notes_js
     assert "/api/notes/assets" in notes_js
     assert "knowledge-toc" in css
+    assert ".knowledge-row-actions{margin-left:auto;display:inline-flex" in css
+    assert 'button[data-action="mkdir"]' in css
     assert ".knowledge-note-content img" in css
     assert "width:100%" in css
     assert "showing-knowledge" in css

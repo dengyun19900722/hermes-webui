@@ -1180,10 +1180,13 @@
   .knowledge-tree-row.expanded .knowledge-chevron{transform:rotate(90deg);}
   .knowledge-tree-row .knowledge-row-icon{width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;opacity:.82;}
   .knowledge-tree-row .knowledge-row-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  .knowledge-row-actions{margin-left:auto;display:none;align-items:center;gap:2px;flex-shrink:0;}
-  .knowledge-tree-row:hover .knowledge-row-actions{display:inline-flex;}
-  .knowledge-row-actions button{width:22px;height:22px;border:0;border-radius:6px;background:transparent;color:inherit;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;opacity:.82;padding:0;}
-  .knowledge-row-actions button:hover{background:var(--hover-bg);opacity:1;}
+  .knowledge-row-actions{margin-left:auto;display:inline-flex;align-items:center;gap:3px;flex-shrink:0;opacity:.72;}
+  .knowledge-tree-row:hover .knowledge-row-actions,.knowledge-tree-row.active .knowledge-row-actions,.knowledge-tree-row:focus-within .knowledge-row-actions{opacity:1;}
+  .knowledge-row-actions button{width:24px;height:24px;border:1px solid transparent;border-radius:6px;background:var(--surface-subtle);color:var(--muted);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;opacity:1;padding:0;transition:background .12s,border-color .12s,color .12s;}
+  .knowledge-row-actions button:hover{background:var(--hover-bg);border-color:var(--border2);color:var(--text);}
+  .knowledge-row-actions button[data-action="mkdir"]{background:var(--accent-bg);border-color:var(--accent-bg-strong);color:var(--accent-text);}
+  .knowledge-row-actions button[data-action="mkdir"]:hover{background:var(--accent-bg-strong);border-color:var(--accent);color:var(--accent-text);}
+  .knowledge-row-actions button[data-action="delete"]:hover{background:rgba(198,40,40,.08);border-color:rgba(198,40,40,.18);color:var(--error);}
   .knowledge-tree-empty,.knowledge-error{padding:12px;color:var(--muted);font-size:12px;line-height:1.5;}
   .knowledge-error{color:var(--accent);}
   .knowledge-detail-meta{font-size:11px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:min(70vw,760px);}
