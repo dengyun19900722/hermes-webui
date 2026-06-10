@@ -122,14 +122,125 @@ function _knowledgeNormalizeVaultPath(parts){
   return out.join('/');
 }
 
-function _knowledgeResolveMediaMarkdown(markdown, notePath){
+function _knowledgePathWithoutQueryFragment(path){
+  return String(path||'').split('#',1)[0].split('?',1)[0];
+}
+
+function _knowledgeDecodeLinkPath(path){
+  const clean=_knowledgePathWithoutQueryFragment(path).replace(/\\/g,'/');
+  try{
+    return decodeURIComponent(clean);
+  }catch(e){
+    try{ return decodeURI(clean); }catch(_){ return clean; }
+  }
+}
+
+function _knowledgeMarkdownDestination(inner){
+  const text=String(inner||'').trim();
+  if(text.startsWith('<')){
+    const end=text.indexOf('>');
+    if(end>0) return text.slice(1,end).trim();
+  }
+  const titled=text.match(/^(.*?)(\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))$/);
+  return (titled ? titled[1] : text).trim();
+}
+
+function _knowledgeIsExternalMediaDestination(destination){
+  const raw=String(destination||'').trim();
+  if(!raw || raw.startsWith('#') || raw.startsWith('//')) return true;
+  if(/^(api\/notes\/media\?|\/api\/notes\/media\?|data:|mailto:|tel:)/i.test(raw)) return true;
+  return /^[a-z][a-z0-9+.-]*:/i.test(raw);
+}
+
+function _knowledgeImageAltFromPath(path){
+  const clean=_knowledgeDecodeLinkPath(path);
+  const name=(clean.split('/').pop()||'image').replace(/\.(png|jpe?g|gif|webp)$/i,'');
+  return name || 'image';
+}
+
+function _knowledgeEncodeMediaPath(path){
+  return encodeURIComponent(String(path||'')).replace(/[!'()*]/g,c=>'%'+c.charCodeAt(0).toString(16).toUpperCase());
+}
+
+function _knowledgeResolveImagePath(destination, notePath){
+  const raw=String(destination||'').trim();
+  if(_knowledgeIsExternalMediaDestination(raw)) return '';
+  const clean=_knowledgeDecodeLinkPath(raw);
+  if(!/\.(png|jpe?g|gif|webp)$/i.test(clean)) return '';
   const baseParts=String(notePath||'').split('/').slice(0,-1);
-  return String(markdown||'').replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g,(all,alt,url)=>{
-    const raw=String(url||'').trim();
-    if(!raw || /^(https?:\/\/|api\/notes\/media\?|data:|mailto:|tel:|#)/i.test(raw)) return all;
-    const resolved=_knowledgeNormalizeVaultPath([...baseParts, ...raw.split('/')]);
-    if(!resolved) return all;
-    return `![${alt}](api/notes/media?path=${encodeURIComponent(resolved)})`;
+  const rooted=clean.startsWith('/');
+  return _knowledgeNormalizeVaultPath([...(rooted?[]:baseParts), ...clean.split('/')]);
+}
+
+function _knowledgeImageHtml(alt, resolvedPath){
+  const path=String(resolvedPath||'').trim();
+  if(!path) return '';
+  const label=String(alt||'').trim() || _knowledgeImageAltFromPath(path);
+  const safeAlt=label.replace(/[\u0000-\u001f"'&<>*_`[\]()~]/g,' ').trim() || 'image';
+  const url='api/notes/media?path='+_knowledgeEncodeMediaPath(path);
+  return '<img class="msg-media-img" src="'+url+'" alt="'+safeAlt+'" loading="lazy">';
+}
+
+function _knowledgeReplaceMarkdownImages(markdown, notePath){
+  const src=String(markdown||'');
+  let out='';
+  let i=0;
+  while(i<src.length){
+    const start=src.indexOf('![', i);
+    if(start<0){
+      out+=src.slice(i);
+      break;
+    }
+    out+=src.slice(i,start);
+    let altEnd=-1;
+    for(let j=start+2;j<src.length;j++){
+      if(src[j]==='\\'){ j++; continue; }
+      if(src[j]===']'){ altEnd=j; break; }
+      if(src[j]==='\n') break;
+    }
+    if(altEnd<0 || src[altEnd+1] !== '('){
+      out+=src[start];
+      i=start+1;
+      continue;
+    }
+    let depth=0;
+    let destEnd=-1;
+    for(let j=altEnd+2;j<src.length;j++){
+      const ch=src[j];
+      if(ch==='\\'){ j++; continue; }
+      if(ch==='\n') break;
+      if(ch==='('){ depth++; continue; }
+      if(ch===')'){
+        if(depth===0){ destEnd=j; break; }
+        depth--;
+      }
+    }
+    if(destEnd<0){
+      out+=src[start];
+      i=start+1;
+      continue;
+    }
+    const alt=src.slice(start+2,altEnd);
+    const inner=src.slice(altEnd+2,destEnd);
+    const destination=_knowledgeMarkdownDestination(inner);
+    const resolved=_knowledgeResolveImagePath(destination,notePath);
+    out+=_knowledgeImageHtml(alt,resolved) || src.slice(start,destEnd+1);
+    i=destEnd+1;
+  }
+  return out;
+}
+
+function _knowledgeResolveMediaMarkdown(markdown, notePath){
+  return _knowledgeReplaceMarkdownImages(markdown,notePath).replace(/!\[\[([^\]\n]+)\]\]/g,(all,inner)=>{
+    let destination=String(inner||'').trim();
+    let alt='';
+    if(destination.includes('|')){
+      const parts=destination.split('|');
+      destination=parts.shift().trim();
+      alt=parts.join('|').trim();
+    }
+    const resolved=_knowledgeResolveImagePath(destination,notePath);
+    return _knowledgeImageHtml(alt||_knowledgeImageAltFromPath(destination),resolved) || all;
   });
 }
 
@@ -679,27 +790,54 @@ async function _knowledgeHandleEditorPaste(event){
   }
 }
 
+function _knowledgeChooseFiles({accept='', multiple=false}={}){
+  return new Promise((resolve)=>{
+    let settled=false;
+    let input=document.getElementById('knowledgeFilePicker');
+    if(!input){
+      input=document.createElement('input');
+      input.type='file';
+      input.id='knowledgeFilePicker';
+      input.className='file-input-visually-hidden';
+      input.tabIndex=-1;
+      input.setAttribute('aria-hidden','true');
+      document.body.appendChild(input);
+    }
+    const finish=(files=[])=>{
+      if(settled) return;
+      settled=true;
+      input.onchange=null;
+      input.oncancel=null;
+      resolve(files);
+    };
+    input.value='';
+    input.accept=accept;
+    input.multiple=!!multiple;
+    input.onchange=()=>finish(Array.from(input.files||[]));
+    input.oncancel=()=>finish([]);
+    try{
+      input.click();
+    }catch(e){
+      showToast('无法打开文件选择器：' + e.message);
+      finish([]);
+    }
+  });
+}
+
 async function openKnowledgeImageUpload(){
   const textarea=$('knowledgeFormContent');
   if(!textarea) return;
-  const input=document.createElement('input');
-  input.type='file';
-  input.accept='image/png,image/jpeg,image/gif,image/webp';
-  input.multiple=true;
-  input.onchange=async()=>{
-    const files=Array.from(input.files||[]);
-    if(!files.length) return;
-    try{
-      for(const file of files){
-        const uploaded=await _knowledgeUploadImageFile(file);
-        _knowledgeInsertIntoTextarea(textarea, uploaded && uploaded.markdown);
-      }
-      showToast('图片已插入');
-    }catch(e){
-      showToast('图片上传失败：' + e.message);
+  const files=await _knowledgeChooseFiles({accept:'image/png,image/jpeg,image/gif,image/webp', multiple:true});
+  if(!files.length) return;
+  try{
+    for(const file of files){
+      const uploaded=await _knowledgeUploadImageFile(file);
+      _knowledgeInsertIntoTextarea(textarea, uploaded && uploaded.markdown);
     }
-  };
-  input.click();
+    showToast('图片已插入');
+  }catch(e){
+    showToast('图片上传失败：' + e.message);
+  }
 }
 
 async function deleteCurrentKnowledgeNote(){
@@ -851,46 +989,162 @@ async function downloadCurrentKnowledgeNote(){
 }
 
 async function openKnowledgeUpload(){
-  const input=document.createElement('input');
-  input.type='file';
-  input.accept='.md,.markdown,text/markdown';
-  input.multiple=false;
-  input.onchange=async ()=>{
-    const file=input.files && input.files[0];
-    if(!file) return;
-    try{
-      const fd=new FormData();
-      fd.append('file', file, file.name);
-      fd.append('target_dir', _knowledgeActiveDir && _knowledgeActiveDir !== '.' ? _knowledgeActiveDir : '');
-      await api('/api/notes/upload',{method:'POST',body:fd,headers:{}});
-      showToast('Markdown 已上传');
-      await loadKnowledgeNotes(true);
-    }catch(e){
-      showToast('上传失败：' + e.message);
-    }
-  };
-  input.click();
+  const files=await _knowledgeChooseFiles({accept:'.md,.markdown,text/markdown'});
+  const file=files[0];
+  if(!file) return;
+  try{
+    const fd=new FormData();
+    fd.append('file', file, file.name);
+    fd.append('target_dir', _knowledgeActiveDir && _knowledgeActiveDir !== '.' ? _knowledgeActiveDir : '');
+    await api('/api/notes/upload',{method:'POST',body:fd,headers:{}});
+    showToast('Markdown 已上传');
+    await loadKnowledgeNotes(true);
+  }catch(e){
+    showToast('上传失败：' + e.message);
+  }
 }
 
 async function openKnowledgeOfficeImport(){
-  const input=document.createElement('input');
-  input.type='file';
-  input.accept='.docx,.xlsx,.pptx,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation';
-  input.multiple=false;
-  input.onchange=async()=>{
-    const file=input.files && input.files[0];
-    if(!file) return;
-    try{
-      const fd=new FormData();
-      fd.append('file', file, file.name);
-      fd.append('target_dir', _knowledgeActiveDir && _knowledgeActiveDir !== '.' ? _knowledgeActiveDir : '');
-      const data=await api('/api/notes/import',{method:'POST',body:fd,headers:{}});
-      showToast('Office 文档已导入');
-      await loadKnowledgeNotes(true);
-      if(data && data.path) await openKnowledgeNote(data.path,null,{silent:true});
-    }catch(e){
-      showToast('Office 导入失败：' + e.message);
-    }
+  const files=await _knowledgeChooseFiles({
+    accept:'.docx,.xlsx,.pptx,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  });
+  const file=files[0];
+  if(!file) return;
+  try{
+    const fd=new FormData();
+    fd.append('file', file, file.name);
+    fd.append('target_dir', _knowledgeActiveDir && _knowledgeActiveDir !== '.' ? _knowledgeActiveDir : '');
+    const data=await api('/api/notes/import',{method:'POST',body:fd,headers:{}});
+    showToast('Office 文档已导入');
+    await loadKnowledgeNotes(true);
+    if(data && data.path) await openKnowledgeNote(data.path,null,{silent:true});
+  }catch(e){
+    showToast('Office 导入失败：' + e.message);
+  }
+}
+
+function _knowledgeBatchFailureReport(data){
+  const failed=Array.isArray(data&&data.failed)?data.failed:[];
+  if(!failed.length) return '';
+  const lines=failed.slice(0,5).map(f=>{
+    const source=(f&&f.source)||'(unknown)';
+    const stage=_knowledgeBatchStageLabel((f&&f.stage)||'import');
+    const error=(f&&f.error)||'导入失败';
+    return `${source}：${stage}，${error}`;
+  });
+  if(failed.length>lines.length) lines.push(`另有 ${failed.length-lines.length} 个失败文件`);
+  return lines.join('\n');
+}
+
+function _knowledgeBatchTargetDir(){
+  return _knowledgeActiveDir && _knowledgeActiveDir !== '.' ? _knowledgeActiveDir : '';
+}
+
+function _knowledgeBatchStageLabel(stage){
+  const labels={
+    validate:'校验',
+    import:'导入',
+    convert:'转换',
+    copy_assets:'复制附件',
   };
-  input.click();
+  return labels[String(stage||'')] || String(stage||'导入');
+}
+
+function _knowledgeBatchGuideText(){
+  const target=_knowledgeBatchTargetDir() || '知识库根目录';
+  return [
+    `当前导入目标：${target}`,
+    '',
+    'ZIP 目录可以直接按笔记目录组织，系统会保留 Markdown 和 Office 文件在 ZIP 内的相对目录。',
+    '',
+    '推荐结构：',
+    'runbooks/login.md',
+    'runbooks/img/login.png',
+    'reports/weekly.docx',
+    '',
+    '导入规则：',
+    '1. .md / .markdown 会作为笔记导入。',
+    '2. .docx / .xlsx / .pptx 会转换成 Markdown；Office 内嵌图片会归档为附件。',
+    '3. Markdown 本地图片必须放在 ZIP 内并保持相对路径一致，例如 ![](./img/login.png) 或 Obsidian 的 ![[附件/login.png]]。图片不会单独生成笔记，导入时会统一复制到对应笔记的 _attachments/<note-stem>/。',
+    '4. 当前目标目录会作为前缀；例如目标是“导入”，runbooks/a.md 会保存为 导入/runbooks/a.md。',
+    '5. 不要放入隐藏目录、__MACOSX、绝对路径或包含 .. 的路径。',
+  ].join('\n');
+}
+
+function _knowledgeBatchResultText(data){
+  const success=Number(data&&data.success_count||0);
+  const failure=Number(data&&data.failure_count||0);
+  const skipped=Number(data&&data.skipped_count||0);
+  const target=_knowledgeBatchTargetDir() || '知识库根目录';
+  const lines=[
+    `导入目标：${target}`,
+    `结果：${success} 成功，${failure} 失败${skipped ? `，${skipped} 个图片或系统文件已跳过` : ''}`,
+  ];
+  const imported=Array.isArray(data&&data.imported)?data.imported:[];
+  if(imported.length){
+    lines.push('', '成功导入：');
+    for(const item of imported.slice(0,8)){
+      const source=(item&&item.source)||'(unknown)';
+      const path=(item&&item.path)||'';
+      const assets=Number(item&&item.assets||0);
+      lines.push(`- ${source}${path ? ` -> ${path}` : ''}${assets ? `（附件 ${assets} 个）` : ''}`);
+    }
+    if(imported.length>8) lines.push(`- 另有 ${imported.length-8} 个成功文件`);
+  }
+  const failed=Array.isArray(data&&data.failed)?data.failed:[];
+  if(failed.length){
+    lines.push('', '失败明细：');
+    for(const item of failed.slice(0,10)){
+      const source=(item&&item.source)||'(unknown)';
+      const stage=_knowledgeBatchStageLabel((item&&item.stage)||'import');
+      const error=(item&&item.error)||'导入失败';
+      lines.push(`- ${source}\n  阶段：${stage}\n  原因：${error}`);
+    }
+    if(failed.length>10) lines.push(`- 另有 ${failed.length-10} 个失败文件；完整明细已输出到浏览器控制台。`);
+  }
+  return lines.join('\n');
+}
+
+async function openKnowledgeBatchImport(){
+  const proceed=await showConfirmDialog({
+    title:'批量导入 ZIP',
+    message:_knowledgeBatchGuideText(),
+    confirmLabel:'选择 ZIP',
+    cancelLabel:'取消',
+    focusCancel:false,
+    wide:true,
+  });
+  if(!proceed) return;
+  const files=await _knowledgeChooseFiles({accept:'.zip,application/zip,application/x-zip-compressed'});
+  const file=files[0];
+  if(!file) return;
+  try{
+    const fd=new FormData();
+    fd.append('archive', file, file.name);
+    fd.append('target_dir', _knowledgeBatchTargetDir());
+    const data=await api('/api/notes/import/batch',{method:'POST',body:fd,headers:{},timeoutMs:120000});
+    const success=Number(data&&data.success_count||0);
+    const failure=Number(data&&data.failure_count||0);
+    const report=_knowledgeBatchFailureReport(data);
+    if(failure && window.console) console.warn('[knowledge] batch import failures', data&&data.failed);
+    showToast(
+      failure ? `批量导入完成：${success} 成功，${failure} 失败\n${report}` : `批量导入完成：${success} 个文件已导入`,
+      failure ? 12000 : undefined,
+      failure ? 'error' : 'success'
+    );
+    if(failure){
+      await showConfirmDialog({
+        title:'批量导入结果',
+        message:_knowledgeBatchResultText(data),
+        confirmLabel:'知道了',
+        hideCancel:true,
+        wide:true,
+      });
+    }
+    await loadKnowledgeNotes(true);
+    const first=data&&Array.isArray(data.imported)&&data.imported[0];
+    if(first&&first.path) await openKnowledgeNote(first.path,null,{silent:true});
+  }catch(e){
+    showToast('批量导入失败：' + e.message);
+  }
 }

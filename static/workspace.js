@@ -109,14 +109,38 @@ function _wsExpandKey(){
 }
 function _saveExpandedDirs(){
   const key=_wsExpandKey();if(!key)return;
-  try{localStorage.setItem(key,JSON.stringify([...(S._expandedDirs||new Set())]));}catch(e){}
+  try{localStorage.setItem(key,JSON.stringify(_cleanExpandedDirs(S._expandedDirs||new Set())));}catch(e){}
+}
+function _workspaceDirKey(path){
+  if(typeof _workspaceTreePath==='function') return _workspaceTreePath(path);
+  const raw=String(path||'').replace(/\\/g,'/').trim();
+  if(!raw||raw==='.') return '.';
+  const parts=[];
+  for(const part of raw.split('/')){
+    if(!part||part==='.'||part==='..') continue;
+    parts.push(part);
+  }
+  return parts.join('/')||'.';
+}
+function _cleanExpandedDirs(values){
+  const out=[];
+  const seen=new Set();
+  for(const value of (values||[])){
+    const key=_workspaceDirKey(value);
+    if(!key||key==='.'||seen.has(key)) continue;
+    if(key.length>512||key.split('/').length>80) continue;
+    seen.add(key);
+    out.push(key);
+    if(out.length>=200) break;
+  }
+  return out;
 }
 function _restoreExpandedDirs(){
   const key=_wsExpandKey();
   if(!key){S._expandedDirs=new Set();return;}
   try{
     const raw=localStorage.getItem(key);
-    S._expandedDirs=raw?new Set(JSON.parse(raw)):new Set();
+    S._expandedDirs=raw?new Set(_cleanExpandedDirs(JSON.parse(raw))):new Set();
   }catch(e){S._expandedDirs=new Set();}
 }
 
@@ -284,22 +308,28 @@ async function openArtifactPath(path){
 async function loadDir(path){
   if(!S.session)return;
   const sessionId=S.session.session_id;
+  const requestedPath=_workspaceDirKey(path||'.');
   try{
-    if(!path||path==='.'){
+    if(requestedPath==='.'){
       S._dirCache={};
       _restoreExpandedDirs();  // restore per-workspace expanded state on root load
     }
-    S.currentDir=path||'.';
-    const data=await api(`/api/list?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}`);
+    S.currentDir=requestedPath;
+    const data=await api(`/api/list?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(requestedPath)}`);
     if(!S.session||S.session.session_id!==sessionId)return;
     S.entries=data.entries||[];renderBreadcrumb();renderFileTree();
     // #2673 — refresh Artifacts tab when its source data (the file tree) updates.
     if(typeof renderSessionArtifacts==='function') renderSessionArtifacts();
     // Pre-fetch contents of restored expanded dirs so they render without a second click
     // (parallelized — avoids serial waterfall when multiple dirs are expanded)
-    if(!path||path==='.'){
+    if(requestedPath==='.'){
       const expanded=S._expandedDirs||new Set();
-      const pending=[...expanded].filter(dirPath=>!S._dirCache[dirPath]);
+      const cleanExpanded=_cleanExpandedDirs(expanded);
+      if(cleanExpanded.length!==expanded.size){
+        S._expandedDirs=new Set(cleanExpanded);
+        if(typeof _saveExpandedDirs==='function')_saveExpandedDirs();
+      }
+      const pending=cleanExpanded.filter(dirPath=>!S._dirCache[dirPath]);
       if(pending.length){
         const results=await Promise.all(pending.map(dirPath=>
           api(`/api/list?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(dirPath)}`)
@@ -307,7 +337,7 @@ async function loadDir(path){
             .catch(()=>({dirPath,entries:[]}))
         ));
         if(!S.session||S.session.session_id!==sessionId)return;
-        for(const {dirPath,entries} of results) S._dirCache[dirPath]=entries;
+        for(const {dirPath,entries} of results) S._dirCache[_workspaceDirKey(dirPath)]=entries;
       }
       if(expanded.size>0)renderFileTree();
     }
@@ -319,7 +349,7 @@ async function loadDir(path){
       }
     }
     // Fetch git info for workspace root (non-blocking)
-    if(!path||path==='.') _refreshGitBadge();
+    if(requestedPath==='.') _refreshGitBadge();
   }catch(e){console.warn('loadDir',e);}
 }
 

@@ -3962,7 +3962,13 @@ function copyToastText(btn){
 function showToast(msg,ms,type){
   const el=$('toast');if(!el)return;
   const s=String(msg==null?'':msg);let t=type;
-  if(!t){const low=s.toLowerCase();if(/fail|error|denied|invalid|unavailable|no active|no workspace match|no model match|no personalities/.test(low))t='error';else if(/warn|queued|takes effect|skipped|fallback/.test(low))t='warning';else if(/saved|created|imported|restored|switched|set to|updated|duplicated|moved to|renamed|deleted|complete|pinned|archived|cleared|stopped/.test(low))t='success';else t='info';}
+  if(!t){
+    const low=s.toLowerCase();
+    if(/fail|error|denied|invalid|unavailable|no active|no workspace match|no model match|no personalities|失败|错误|无效|不可用|不存在|不能为空|过大|超出|不支持|未找到/.test(low))t='error';
+    else if(/warn|queued|takes effect|skipped|fallback|警告|跳过|排队|稍后生效/.test(low))t='warning';
+    else if(/saved|created|imported|restored|switched|set to|updated|duplicated|moved to|renamed|deleted|complete|pinned|archived|cleared|stopped|已保存|已创建|已导入|已上传|已删除|已重命名|已切换|完成|成功/.test(low))t='success';
+    else t='info';
+  }
   const duration=(ms==null)?(t==='error'?TOAST_ERROR_DEFAULT_MS:TOAST_DEFAULT_MS):ms;
   el.className='toast show '+t;
   el.dataset.toastMessage=s;
@@ -3997,6 +4003,7 @@ function _finishAppDialog(result, restoreFocus=true){
   const overlay=$('appDialogOverlay');
   const dialog=$('appDialog');
   const input=$('appDialogInput');
+  const cancelBtn=$('appDialogCancel');
   const confirmBtn=$('appDialogConfirm');
   const resolve=APP_DIALOG.resolve;
   const lastFocus=APP_DIALOG.lastFocus;
@@ -4004,8 +4011,9 @@ function _finishAppDialog(result, restoreFocus=true){
   APP_DIALOG.kind=null;
   APP_DIALOG.lastFocus=null;
   if(overlay){overlay.style.display='none';overlay.setAttribute('aria-hidden','true');}
-  if(dialog) dialog.setAttribute('role','dialog');
+  if(dialog){dialog.setAttribute('role','dialog');dialog.classList.remove('app-dialog--wide');}
   if(input){input.value='';input.style.display='none';input.placeholder='';}
+  if(cancelBtn){cancelBtn.style.display='';cancelBtn.textContent=t('cancel');}
   if(confirmBtn){confirmBtn.classList.remove('danger');confirmBtn.textContent=t('dialog_confirm_btn');}
   if(restoreFocus&&lastFocus&&typeof lastFocus.focus==='function'){setTimeout(()=>lastFocus.focus(),0);}
   if(resolve) resolve(result);
@@ -4082,15 +4090,19 @@ function showConfirmDialog(opts={}){
   if(desc) desc.textContent=opts.message||'';
   if(input){input.style.display='none';input.value='';}
   if(cancelBtn) cancelBtn.textContent=opts.cancelLabel||t('cancel');
+  if(cancelBtn) cancelBtn.style.display=opts.hideCancel?'none':'';
   if(confirmBtn){
     confirmBtn.textContent=opts.confirmLabel||t('dialog_confirm_btn');
     confirmBtn.classList.toggle('danger',!!opts.danger);
   }
-  if(dialog) dialog.setAttribute('role',opts.danger?'alertdialog':'dialog');
+  if(dialog){
+    dialog.setAttribute('role',opts.danger?'alertdialog':'dialog');
+    dialog.classList.toggle('app-dialog--wide',!!opts.wide);
+  }
   if(overlay){overlay.style.display='flex';overlay.setAttribute('aria-hidden','false');}
   return new Promise(resolve=>{
     APP_DIALOG.resolve=resolve;
-    setTimeout(()=>((opts.focusCancel?cancelBtn:confirmBtn)||confirmBtn||cancelBtn).focus(),0);
+    setTimeout(()=>((opts.focusCancel&&!opts.hideCancel?cancelBtn:confirmBtn)||confirmBtn||cancelBtn).focus(),0);
   });
 }
 
@@ -4113,7 +4125,7 @@ function showPromptDialog(opts={}){
   }
   if(cancelBtn) cancelBtn.textContent=opts.cancelLabel||t('cancel');
   if(confirmBtn){confirmBtn.textContent=opts.confirmLabel||t('create');confirmBtn.classList.remove('danger');}
-  if(dialog) dialog.setAttribute('role','dialog');
+  if(dialog){dialog.setAttribute('role','dialog');dialog.classList.toggle('app-dialog--wide',!!opts.wide);}
   if(overlay){overlay.style.display='flex';overlay.setAttribute('aria-hidden','false');}
   return new Promise(resolve=>{
     APP_DIALOG.resolve=resolve;
@@ -8272,11 +8284,34 @@ function _showWorkspaceRootContextMenu(e){
 if(!S._expandedDirs) S._expandedDirs=new Set();
 // Cache of fetched directory contents: path -> entries[]
 if(!S._dirCache) S._dirCache={};
+const WORKSPACE_TREE_MAX_DEPTH=80;
+
+function _workspaceTreePath(path){
+  const raw=String(path||'').replace(/\\/g,'/').trim();
+  if(!raw||raw==='.') return '.';
+  const parts=[];
+  for(const part of raw.split('/')){
+    if(!part||part==='.') continue;
+    if(part==='..') continue;
+    parts.push(part);
+  }
+  return parts.join('/')||'.';
+}
+
+function _workspaceTreeBlockedRow(container, item, depth, reason){
+  if(!container) return;
+  const row=document.createElement('div');
+  row.className='file-item file-empty';
+  row.style.paddingLeft=(8+(depth+1)*16)+'px';
+  row.textContent=reason||t('empty_dir');
+  if(item&&item.path) row.dataset.blockedPath=String(item.path);
+  container.appendChild(row);
+}
 
 function renderFileTree(){
   const box=$('fileTree');box.innerHTML='';
   // Cache current dir entries
-  S._dirCache[S.currentDir||'.']=S.entries;
+  S._dirCache[_workspaceTreePath(S.currentDir||'.')]=S.entries;
   // Show empty-state when no workspace is set or the directory is empty (#703)
   const emptyEl=$('wsEmptyState');
   const hasWorkspace=!!(S.session&&S.session.workspace);
@@ -8292,11 +8327,18 @@ function renderFileTree(){
     if(emptyEl){emptyEl.textContent=t('workspace_empty_dir');emptyEl.style.display='flex';}
     return;
   }
-  _renderTreeItems(box, visibleEntries, 0);
+  _renderTreeItems(box, visibleEntries, 0, new Set([_workspaceTreePath(S.currentDir||'.')]));
 }
 
-function _renderTreeItems(container, entries, depth){
+function _renderTreeItems(container, entries, depth, ancestry){
+  if(depth>WORKSPACE_TREE_MAX_DEPTH){
+    _workspaceTreeBlockedRow(container,null,depth,'Directory nesting is too deep');
+    return;
+  }
+  const parentAncestry=ancestry instanceof Set?ancestry:new Set();
   for(const item of entries){
+    if(!item) continue;
+    const itemPath=_workspaceTreePath(item.path||item.name);
     const el=document.createElement('div');el.className='file-item';
     el.style.paddingLeft=(8+depth*16)+'px';
     el.setAttribute('draggable','true');
@@ -8307,7 +8349,7 @@ function _renderTreeItems(container, entries, depth){
       // Toggle arrow for directories
       const arrow=document.createElement('span');
       arrow.className='file-tree-toggle';
-      const isExpanded=S._expandedDirs.has(item.path);
+      const isExpanded=S._expandedDirs.has(itemPath);
       arrow.textContent=isExpanded?'\u25BE':'\u25B8';
       el.appendChild(arrow);
     }else{
@@ -8349,7 +8391,7 @@ function _renderTreeItems(container, entries, depth){
       e.stopPropagation();
       if(_nameClickTimer){clearTimeout(_nameClickTimer);_nameClickTimer=null;}
       // For directories, double-click navigates (breadcrumb view)
-      if(item.type==='dir'){loadDir(item.path);return;}
+      if(item.type==='dir'){loadDir(itemPath);return;}
       const inp=document.createElement('input');
       inp.className='file-rename-input';inp.value=item.name;
       inp.onclick=(e2)=>e2.stopPropagation();
@@ -8365,11 +8407,11 @@ function _renderTreeItems(container, entries, depth){
               showToast(t('renamed_to')+newName);
               // Update expanded dirs cache key if renaming a directory
               if(item.type==='dir'&&S._expandedDirs){
-                S._expandedDirs.delete(item.path);
+                S._expandedDirs.delete(itemPath);
                 const parent=item.path.includes('/')?item.path.substring(0,item.path.lastIndexOf('/')):'.';
                 const newPath=parent==='.'?newName:parent+'/'+newName;
                 S._expandedDirs.add(newPath);
-                if(S._dirCache[item.path]){S._dirCache[newPath]=S._dirCache[item.path];delete S._dirCache[item.path];}
+                if(S._dirCache[itemPath]){S._dirCache[newPath]=S._dirCache[itemPath];delete S._dirCache[itemPath];}
                 if(typeof _saveExpandedDirs==='function')_saveExpandedDirs();
               }
               // Invalidate cache and re-render
@@ -8419,19 +8461,19 @@ function _renderTreeItems(container, entries, depth){
       // Single-click toggles expand/collapse
       el.onclick=async(e)=>{
         e.stopPropagation();
-        if(S._expandedDirs.has(item.path)){
-          S._expandedDirs.delete(item.path);
+        if(S._expandedDirs.has(itemPath)){
+          S._expandedDirs.delete(itemPath);
           if(typeof _saveExpandedDirs==='function')_saveExpandedDirs();
           renderFileTree();
         }else{
-          S._expandedDirs.add(item.path);
+          S._expandedDirs.add(itemPath);
           if(typeof _saveExpandedDirs==='function')_saveExpandedDirs();
           // Fetch children if not cached
-          if(!S._dirCache[item.path]){
+          if(!S._dirCache[itemPath]){
             try{
-              const data=await api(`/api/list?session_id=${encodeURIComponent(S.session.session_id)}&path=${encodeURIComponent(item.path)}`);
-              S._dirCache[item.path]=data.entries||[];
-            }catch(e2){S._dirCache[item.path]=[];}
+              const data=await api(`/api/list?session_id=${encodeURIComponent(S.session.session_id)}&path=${encodeURIComponent(itemPath)}`);
+              S._dirCache[itemPath]=data.entries||[];
+            }catch(e2){S._dirCache[itemPath]=[];}
           }
           renderFileTree();
         }
@@ -8443,10 +8485,18 @@ function _renderTreeItems(container, entries, depth){
     container.appendChild(el);
 
     // Render children if directory is expanded
-    if(item.type==='dir'&&S._expandedDirs.has(item.path)){
-      const children=_visibleWorkspaceEntries(S._dirCache[item.path]||[]);
+    if(item.type==='dir'&&S._expandedDirs.has(itemPath)){
+      if(parentAncestry.has(itemPath)){
+        if(S._expandedDirs.delete(itemPath)&&typeof _saveExpandedDirs==='function')_saveExpandedDirs();
+        delete S._dirCache[itemPath];
+        _workspaceTreeBlockedRow(container,item,depth,'Skipped recursive directory');
+        continue;
+      }
+      const nextAncestry=new Set(parentAncestry);
+      nextAncestry.add(itemPath);
+      const children=_visibleWorkspaceEntries(S._dirCache[itemPath]||[]);
       if(children.length){
-        _renderTreeItems(container, children, depth+1);
+        _renderTreeItems(container, children, depth+1, nextAncestry);
       }else{
         const empty=document.createElement('div');
         empty.className='file-item file-empty';

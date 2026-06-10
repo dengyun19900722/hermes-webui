@@ -85,3 +85,24 @@ class TestWorkspaceDragDrop:
         after = src[m.start():m.start() + 2000]
         assert "addFiles(files)" in after, \
             "OS file drop path (addFiles) must still work after workspace drop addition"
+
+    def test_file_tree_render_guards_recursive_expanded_dirs(self):
+        """Workspace tree render must not recurse forever on restored cyclic cache."""
+        src = _src("ui.js")
+        assert "WORKSPACE_TREE_MAX_DEPTH" in src, \
+            "file tree render should cap nesting depth"
+        assert "parentAncestry.has(itemPath)" in src, \
+            "file tree render should detect a directory already in the render ancestry"
+        assert "Skipped recursive directory" in src, \
+            "recursive directory branches should stop rendering instead of recursing"
+        assert "S._expandedDirs.delete(itemPath)" in src, \
+            "recursive expanded paths should be removed from the restored expanded set"
+
+    def test_restored_expanded_dirs_are_sanitized_before_prefetch(self):
+        """Restored expanded-dir localStorage must be bounded before prefetch."""
+        src = _src("workspace.js")
+        assert "function _cleanExpandedDirs" in src
+        assert "key.split('/').length>80" in src
+        assert "if(out.length>=200) break" in src
+        assert "S._expandedDirs=raw?new Set(_cleanExpandedDirs(JSON.parse(raw))):new Set()" in src
+        assert "const pending=cleanExpanded.filter" in src

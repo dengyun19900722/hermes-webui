@@ -3,6 +3,20 @@
 
 ## [Unreleased]
 
+### Added
+
+- Knowledge 批量 ZIP 导入现在会在选择文件前展示推荐目录结构、相对图片引用规则和目标目录说明；导入出现部分失败时会弹出中文逐文件明细，便于修正 ZIP 后重试。
+- Knowledge 批量 ZIP 导入现在兼容旧版中文 ZIP 文件名编码、Obsidian `![[附件/图片.png]]` 图片链接，以及常见附件目录名；导入时会把图片统一归档到 `_attachments/<note-stem>/` 并改写 Markdown 链接。
+- Knowledge 笔记预览现在会把导入后的 `_attachments/<note-stem>/...` 相对图片链接解析为媒体接口，兼容中文、空格、括号路径和残留的 Obsidian 图片语法，避免 ZIP 导入成功后正文图片不展示。
+- Knowledge Office/ZIP 导入现在会把转换器输出的 `data:image/...;base64` 图片解码为 `_attachments/<note-stem>/` 附件并重写 Markdown 链接，避免 Word 图片以 base64 形式残留而无法预览。
+- Knowledge Markdown 上传现在也会把正文里的 `data:image/...;base64` 图片解码为附件并改写链接；data URI 参数带空格、换行或缺少 padding 时也能识别。
+
+### Changed
+
+- Knowledge 导入和笔记文件操作的常见后端错误改为中文用户可读提示；通用确认/输入弹窗改为更克制的 token 化面板样式，并支持宽说明弹窗和仅确认按钮形态。
+- Knowledge 的上传 Markdown、导入 Office、批量导入 ZIP 和编辑器插入图片按钮现在使用页面内隐藏文件输入，避免部分浏览器点击后不打开文件选择器。
+- Workspace 文件树现在会清理恢复的展开目录状态，并在渲染时检测递归目录和过深嵌套，避免复制正在执行的 session 到新浏览器标签页时因文件树递归导致页面卡死。
+
 ## [v0.51.152] — 2026-05-28 — Release DX (stage-batch34 — single-PR optional gateway-backed browser chat)
 
 ### Added

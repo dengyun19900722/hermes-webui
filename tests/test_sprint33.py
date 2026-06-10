@@ -32,6 +32,7 @@ def test_app_dialog_css_rules_exist():
     for selector in (
         ".app-dialog-overlay",
         ".app-dialog",
+        ".app-dialog--wide",
         ".app-dialog-input",
         ".app-dialog-actions",
         ".app-dialog-btn.confirm",
@@ -44,6 +45,8 @@ def test_ui_js_exposes_shared_dialog_helpers():
     src = read("static/ui.js")
     assert "function showConfirmDialog(opts={})" in src
     assert "function showPromptDialog(opts={})" in src
+    assert "opts.hideCancel" in src
+    assert "app-dialog--wide" in src
     assert "document.addEventListener('keydown'" in src
 
 

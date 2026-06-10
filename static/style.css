@@ -518,24 +518,25 @@
   :root[data-skin="geist-contrast"] textarea#msg{scrollbar-width:none;overflow-y:auto;}
   :root[data-skin="geist-contrast"] textarea#msg::-webkit-scrollbar{display:none;}
 
-  /* #594: app-dialog light mode overrides — base styles use hardcoded dark gradients */
+  /* #594: app-dialog light mode overrides. Keep dialog controls aligned with
+     the active light palette instead of inheriting dark translucent surfaces. */
   :root:not(.dark) .app-dialog{
-    background:linear-gradient(180deg,rgba(240,237,232,.99),rgba(228,224,216,.99));
+    background:var(--surface);
     border-color:rgba(0,0,0,.12);
-    box-shadow:0 12px 40px rgba(0,0,0,.15);
+    box-shadow:0 14px 38px rgba(0,0,0,.14);
   }
   :root:not(.dark) .app-dialog-input{
-    background:rgba(0,0,0,.04);border-color:rgba(0,0,0,.2);
+    background:var(--input-bg);border-color:rgba(0,0,0,.2);
   }
   :root:not(.dark) .app-dialog-input:focus{
     border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg);
   }
   :root:not(.dark) .app-dialog-close{
-    background:rgba(0,0,0,.04);
+    background:transparent;
   }
-  :root:not(.dark) .app-dialog-close:hover{background:rgba(0,0,0,.09);}
-  :root:not(.dark) .app-dialog-btn{background:rgba(0,0,0,.04);}
-  :root:not(.dark) .app-dialog-btn:hover{background:rgba(0,0,0,.09);}
+  :root:not(.dark) .app-dialog-close:hover{background:var(--hover-bg);}
+  :root:not(.dark) .app-dialog-btn{background:var(--surface-subtle);}
+  :root:not(.dark) .app-dialog-btn:hover{background:var(--hover-bg);}
   :root:not(.dark) .app-dialog-btn.confirm{
     border-color:var(--accent);background:var(--accent-bg);color:var(--accent-text);
   }
@@ -846,19 +847,20 @@
   .batch-action-btn-danger:hover{background:rgba(233,69,96,.1);}
   .session-date-caret{font-size:9px;transition:transform .2s;flex-shrink:0;display:inline-block;transform:rotate(0deg);}
   .session-date-caret.collapsed{transform:rotate(-90deg);}
-  .app-dialog-overlay{position:fixed;inset:0;background:rgba(7,12,19,.62);backdrop-filter:blur(6px);z-index:1100;display:none;align-items:center;justify-content:center;padding:24px;}
-  .app-dialog{width:min(460px,100%);background:linear-gradient(180deg,rgba(21,31,45,.98),rgba(13,20,31,.98));border:1px solid var(--accent-bg-strong);border-radius:18px;box-shadow:0 18px 60px rgba(0,0,0,.45);padding:18px 18px 16px;color:var(--text);}
+  .app-dialog-overlay{position:fixed;inset:0;background:rgba(7,12,19,.58);backdrop-filter:blur(3px);z-index:1100;display:none;align-items:center;justify-content:center;padding:24px;}
+  .app-dialog{width:min(460px,100%);max-height:min(82vh,760px);display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--border2);border-radius:10px;box-shadow:0 16px 44px rgba(0,0,0,.32);padding:16px;color:var(--text);box-sizing:border-box;}
+  .app-dialog--wide{width:min(680px,100%);}
   #changelogDialog>.app-dialog{width:min(640px,100%);max-height:85vh;overflow:hidden;display:flex;flex-direction:column;}
-  .app-dialog-header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px;}
-  .app-dialog-title{font-size:16px;font-weight:700;letter-spacing:.01em;color:var(--text);}
-  .app-dialog-close{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border:none;border-radius:10px;background:rgba(255,255,255,.04);color:var(--muted);cursor:pointer;transition:background .15s,color .15s;}
-  .app-dialog-close:hover{background:rgba(255,255,255,.09);color:var(--text);}
-  .app-dialog-desc{font-size:13px;line-height:1.6;color:var(--muted);white-space:pre-wrap;}
-  .app-dialog-input{width:100%;margin-top:14px;padding:11px 12px;background:rgba(255,255,255,.04);border:1px solid var(--border2);border-radius:10px;color:var(--text);font-size:14px;outline:none;box-sizing:border-box;}
+  .app-dialog-header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px;flex-shrink:0;}
+  .app-dialog-title{font-size:15px;font-weight:650;letter-spacing:0;color:var(--text);line-height:1.35;}
+  .app-dialog-close{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border:1px solid transparent;border-radius:8px;background:transparent;color:var(--muted);cursor:pointer;transition:background .15s,color .15s,border-color .15s;flex-shrink:0;}
+  .app-dialog-close:hover{background:var(--hover-bg);border-color:var(--border);color:var(--text);}
+  .app-dialog-desc{font-size:13px;line-height:1.62;color:var(--muted);white-space:pre-wrap;overflow:auto;max-height:min(52vh,460px);padding-right:2px;}
+  .app-dialog-input{width:100%;margin-top:14px;padding:10px 12px;background:var(--input-bg);border:1px solid var(--border2);border-radius:8px;color:var(--text);font-size:14px;outline:none;box-sizing:border-box;flex-shrink:0;}
   .app-dialog-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg);}
-  .app-dialog-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px;flex-wrap:wrap;}
-  .app-dialog-btn{display:inline-flex;align-items:center;justify-content:center;min-width:104px;padding:10px 14px;border-radius:10px;border:1px solid var(--border2);background:rgba(255,255,255,.05);color:var(--text);font-size:13px;font-weight:600;cursor:pointer;transition:transform .15s,background .15s,border-color .15s;}
-  .app-dialog-btn:hover{transform:translateY(-1px);background:rgba(255,255,255,.1);}
+  .app-dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px;flex-wrap:wrap;flex-shrink:0;}
+  .app-dialog-btn{display:inline-flex;align-items:center;justify-content:center;min-width:96px;padding:9px 13px;border-radius:8px;border:1px solid var(--border2);background:var(--surface-subtle);color:var(--text);font-size:13px;font-weight:600;cursor:pointer;transition:background .15s,border-color .15s,color .15s;}
+  .app-dialog-btn:hover{background:var(--hover-bg);border-color:var(--border2);}
   .app-dialog-btn.confirm{border-color:var(--accent);background:var(--accent-bg);color:var(--accent-text);}
   .app-dialog-btn.confirm:hover{background:var(--accent-bg-strong);border-color:var(--accent);}
   .app-dialog-btn.confirm.danger{border-color:var(--error);background:rgba(239,83,80,.12);color:var(--error);}
@@ -1192,8 +1194,7 @@
   .knowledge-detail-meta{font-size:11px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:min(70vw,760px);}
   .knowledge-detail-layout,.knowledge-editor-shell{display:grid;grid-template-columns:minmax(0,1fr) 220px;gap:0;min-height:0;width:100%;}
   .knowledge-note-content{font-size:14px;line-height:1.7;color:var(--text);}
-  .knowledge-note-content img,
-  .knowledge-note-content .msg-media-img{display:block;width:100%;max-width:100%;height:auto;margin:12px 0;object-fit:contain;vertical-align:initial;}
+  .knowledge-note-content img{display:block;width:100%;max-width:100%;height:auto;margin:12px 0;object-fit:contain;vertical-align:initial;}
   .knowledge-editor-form{min-width:0;}
   .knowledge-editor-label-row{display:flex;align-items:center;justify-content:space-between;gap:8px;}
   .knowledge-inline-tool{height:26px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:var(--muted);display:inline-flex;align-items:center;gap:5px;padding:0 8px;font-size:11px;cursor:pointer;}
@@ -2089,7 +2090,7 @@
     .clarify-choice{min-height:44px;}
     .clarify-choice-badge{min-width:22px;height:22px;}
     .app-dialog-overlay{padding:12px;}
-    .app-dialog{width:100%;padding:16px 16px 14px;border-radius:16px;}
+    .app-dialog{width:100%;padding:16px 16px 14px;border-radius:10px;}
     .app-dialog-actions{flex-direction:column-reverse;align-items:stretch;}
     .app-dialog-btn{width:100%;min-height:44px;}
     /* Tool cards */

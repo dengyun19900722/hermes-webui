@@ -5267,6 +5267,10 @@ def handle_post(handler, parsed) -> bool:
         from api.obsidian_notes import handle_notes_asset_upload
 
         return handle_notes_asset_upload(handler)
+    if parsed.path == "/api/notes/import/batch":
+        from api.obsidian_notes import handle_notes_batch_import
+
+        return handle_notes_batch_import(handler)
     if parsed.path == "/api/notes/import":
         from api.obsidian_notes import handle_notes_import
 

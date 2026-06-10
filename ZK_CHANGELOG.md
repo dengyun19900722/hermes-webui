@@ -1,5 +1,22 @@
 # ZK 运维智能体 - 版本变更日志
 
+## [v1.0.1] — 2026-06-10
+
+### Added
+
+- ZKREQ-099: Knowledge 批量 ZIP 导入（Markdown / Office / 图片资源包，支持逐文件失败明细）
+- ZKREQ-100: Knowledge 导入附件自动归档（Markdown 本地图片、Obsidian 图片链接、Office 内嵌图片统一写入 `_attachments/<note-stem>/`）
+- ZKREQ-101: Knowledge Markdown / Office 导入 data URI 图片自动落盘并改写为相对附件链接
+
+### Changed
+
+- ZKREQ-102: Knowledge 上传 Markdown、导入 Office、批量导入 ZIP、编辑器插入图片改为页面内隐藏文件选择器，修复部分浏览器点击无响应
+- ZKREQ-103: Knowledge 导入和笔记文件操作错误提示中文化，批量导入失败时展示可读的逐文件诊断
+
+### Fixed
+
+- ZKREQ-104: Workspace 文件树清理异常展开状态，并检测递归目录和过深嵌套，避免复制运行中 session 到新标签页时页面卡死
+
 ## [v1.0.0] — 2026-04-30
 
 ### Added

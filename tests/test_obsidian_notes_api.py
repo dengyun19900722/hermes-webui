@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import base64
+import zipfile
 import sys
 import types
 from pathlib import Path
@@ -24,6 +26,14 @@ class _DownloadHandler:
 
     def end_headers(self):
         return None
+
+
+def _zip_bytes(entries: dict[str, bytes | str]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for name, data in entries.items():
+            zf.writestr(name, data.encode("utf-8") if isinstance(data, str) else data)
+    return buf.getvalue()
 
 
 def test_filesystem_crud_roundtrip(tmp_path, monkeypatch):
@@ -115,6 +125,112 @@ def test_office_import_uses_optional_converter(tmp_path, monkeypatch):
     assert "## 导入内容" in imported["content"]
 
 
+def test_office_import_rewrites_data_uri_images_to_attachments(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_OBSIDIAN_VAULT_DIR", str(tmp_path / "vault"))
+    from api import obsidian_notes as notes
+
+    image_bytes = b"\x89PNG\r\n\x1a\n"
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+
+    class FakeMarkItDown:
+        def convert(self, path):
+            assert path.endswith(".docx")
+            return types.SimpleNamespace(
+                text_content=f"## 导入内容\n\n![登录截图](data:image/png;base64,{encoded})\n"
+            )
+
+    monkeypatch.setitem(sys.modules, "markitdown", types.SimpleNamespace(MarkItDown=FakeMarkItDown))
+
+    imported = notes.import_office_document("巡检报告.docx", b"fake", target_dir="02-运维手册")
+
+    assert "data:image/png;base64" not in imported["content"]
+    assert "![登录截图](_attachments/" in imported["content"]
+    assert imported["asset_count"] == 1
+    asset_path = tmp_path / "vault" / imported["assets"][0]["path"]
+    assert asset_path.read_bytes() == image_bytes
+
+
+def test_markdown_upload_rewrites_data_uri_images_to_attachments(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_OBSIDIAN_VAULT_DIR", str(tmp_path / "vault"))
+    from api import obsidian_notes as notes
+
+    image_bytes = b"\x89PNG\r\n\x1a\n"
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+
+    uploaded = notes.upload_markdown(
+        "导入.md",
+        f"# 导入\n\n![](data:image/png; charset=utf-8; base64, {encoded})\n".encode("utf-8"),
+        "02-运维手册",
+    )
+
+    assert "data:image/png" not in uploaded["content"]
+    assert "![](_attachments/导入/image-1.png)" in uploaded["content"]
+    assert uploaded["asset_count"] == 1
+    asset_path = tmp_path / "vault" / uploaded["assets"][0]["path"]
+    assert asset_path.read_bytes() == image_bytes
+
+
+def test_office_import_rewrites_wrapped_data_uri_with_parameters(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_OBSIDIAN_VAULT_DIR", str(tmp_path / "vault"))
+    from api import obsidian_notes as notes
+
+    image_bytes = b"\x89PNG\r\n\x1a\n"
+    encoded = base64.b64encode(image_bytes).decode("ascii").rstrip("=")
+    folded = encoded[:8] + "\n" + encoded[8:]
+
+    class FakeMarkItDown:
+        def convert(self, path):
+            assert path.endswith(".docx")
+            return types.SimpleNamespace(
+                text_content=(
+                    "## 导入内容\n\n"
+                    f"![登录截图](<data:image/png; charset=utf-8; base64, {folded}> \"截图\")\n"
+                )
+            )
+
+    monkeypatch.setitem(sys.modules, "markitdown", types.SimpleNamespace(MarkItDown=FakeMarkItDown))
+
+    imported = notes.import_office_document("巡检报告.docx", b"fake", target_dir="02-运维手册")
+
+    assert "data:image/png" not in imported["content"]
+    assert "![登录截图](_attachments/" in imported["content"]
+    assert '"截图"' in imported["content"]
+    assert imported["asset_count"] == 1
+    asset_path = tmp_path / "vault" / imported["assets"][0]["path"]
+    assert asset_path.read_bytes() == image_bytes
+
+
+def test_office_import_rewrites_unparseable_data_uri_with_embedded_image_fallback(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_OBSIDIAN_VAULT_DIR", str(tmp_path / "vault"))
+    from api import obsidian_notes as notes
+
+    image_bytes = b"\x89PNG\r\n\x1a\n"
+
+    class FakeMarkItDown:
+        def convert(self, path):
+            assert path.endswith(".docx")
+            return types.SimpleNamespace(text_content="## 导入内容\n\n![](data:image/png;base64,not-valid-base64!!)\n")
+
+    monkeypatch.setitem(sys.modules, "markitdown", types.SimpleNamespace(MarkItDown=FakeMarkItDown))
+
+    docx = _zip_bytes(
+        {
+            "[Content_Types].xml": b"",
+            "word/document.xml": b"",
+            "word/media/image1.png": image_bytes,
+        }
+    )
+
+    imported = notes.import_office_document("巡检报告.docx", docx, target_dir="02-运维手册")
+
+    assert "data:image/png" not in imported["content"]
+    assert "![](_attachments/" in imported["content"]
+    assert "## 附件图片" not in imported["content"]
+    assert imported["asset_count"] == 1
+    asset_path = tmp_path / "vault" / imported["assets"][0]["path"]
+    assert asset_path.read_bytes() == image_bytes
+
+
 def test_default_vault_root_uses_global_workspace_obsidian(tmp_path, monkeypatch):
     monkeypatch.delenv("HERMES_OBSIDIAN_VAULT_DIR", raising=False)
     from api import config
@@ -186,6 +302,12 @@ def test_route_get_post_put_delete_cover_notes_endpoints(tmp_path, monkeypatch):
         assert routes.handle_post(handler, urlparse("/api/notes/import")) is True
         import_mock.assert_called_once()
 
+    with patch("api.routes._check_csrf", return_value=True), \
+         patch("api.routes.read_body", side_effect=AssertionError("read_body should not run for batch import")), \
+         patch("api.obsidian_notes.handle_notes_batch_import", return_value=True) as batch_import_mock:
+        assert routes.handle_post(handler, urlparse("/api/notes/import/batch")) is True
+        batch_import_mock.assert_called_once()
+
     captured.clear()
     body = {"path": created["path"], "content": "# 修改后的内容"}
     with patch("api.obsidian_notes.j", side_effect=fake_j), \
@@ -223,12 +345,27 @@ def test_static_wiring_includes_knowledge_panel():
     assert 'data-tooltip="新建笔记"' in html
     assert 'data-tooltip="上传 Markdown"' in html
     assert 'data-tooltip="导入 Office 文档"' in html
+    assert 'data-tooltip="批量导入 ZIP"' in html
     assert 'placeholder="搜索笔记..."' in html
     assert "function createRootKnowledgeDirectory" in notes_js
     assert "createKnowledgeDirectory" in notes_js
     assert "createKnowledgeDirectory(nodePath)" in notes_js
     assert "'folder-plus'" in icons_js
     assert "openKnowledgeOfficeImport" in notes_js
+    assert "openKnowledgeBatchImport" in notes_js
+    assert "function _knowledgeChooseFiles" in notes_js
+    assert "id='knowledgeFilePicker'" in notes_js
+    assert "file-input-visually-hidden" in notes_js
+    assert "document.body.appendChild(input)" in notes_js
+    assert "_knowledgeChooseFiles({accept:'.md,.markdown,text/markdown'})" in notes_js
+    assert "openKnowledgeImageUpload" in notes_js
+    assert "_knowledgeBatchGuideText" in notes_js
+    assert "推荐结构" in notes_js
+    assert "Markdown 本地图片必须放在 ZIP 内" in notes_js
+    assert "![[附件/login.png]]" in notes_js
+    assert "hideCancel:true" in notes_js
+    assert "wide:true" in notes_js
+    assert "/api/notes/import/batch" in notes_js
     assert "/api/notes/assets" in notes_js
     assert "knowledge-toc" in css
     assert ".knowledge-row-actions{margin-left:auto;display:inline-flex" in css
@@ -236,3 +373,4 @@ def test_static_wiring_includes_knowledge_panel():
     assert ".knowledge-note-content img" in css
     assert "width:100%" in css
     assert "showing-knowledge" in css
+    assert ".app-dialog--wide" in css

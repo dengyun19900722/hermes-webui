@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, quote, unquote
 
 from api.config import MAX_UPLOAD_BYTES
 from api.helpers import _sanitize_error, _security_headers, bad, j
+from api.notes_import.errors import friendly_error
 from api.upload import parse_multipart
 
 
@@ -41,6 +42,7 @@ RESERVED_ENDPOINTS = {
     "/api/notes/assets",
     "/api/notes/media",
     "/api/notes/import",
+    "/api/notes/import/batch",
 }
 MAX_SEARCH_FILE_BYTES = 512 * 1024
 MAX_SEARCH_RESULTS = 100
@@ -368,19 +370,21 @@ def delete_directory(raw_path: str, *, recursive: bool = False) -> dict:
 
 
 def upload_markdown(filename: str, file_bytes: bytes, target_dir: str | None = None) -> dict:
-    safe_name = _safe_upload_name(filename)
+    return import_markdown_document(filename, file_bytes, target_dir=target_dir)
+
+
+def _import_parent_dir(target_dir: str | None, source_rel_path: PurePosixPath | None = None) -> Path:
     parent = _resolve_vault_path(target_dir or ".", allow_root=True, create_root=True)
     if parent.suffix:
         raise NotesError("target_dir must be a directory")
+    if source_rel_path:
+        for part in source_rel_path.parent.parts:
+            if part in {"", "."}:
+                continue
+            parent = (parent / _safe_dir_name(part)).resolve()
+            parent.relative_to(vault_root())
     parent.mkdir(parents=True, exist_ok=True)
-    dest = (parent / safe_name).resolve()
-    dest.relative_to(vault_root())
-    if dest.exists():
-        raise FileExistsError("note already exists")
-    dest.write_bytes(file_bytes)
-    payload = _note_payload(dest)
-    payload["content"] = file_bytes.decode("utf-8", errors="replace")
-    return payload
+    return parent
 
 
 def _asset_base_dir(note_path: str | None, target_dir: str | None) -> Path:
@@ -397,6 +401,27 @@ def _asset_base_dir(note_path: str | None, target_dir: str | None) -> Path:
 def _relative_between(path: Path, base: Path) -> str:
     rel = os.path.relpath(path.resolve(), base.resolve())
     return Path(rel).as_posix()
+
+
+def _note_asset_dir(note_dest: Path) -> Path:
+    asset_dir = (note_dest.parent / ASSET_DIR_NAME / _safe_filename_stem(note_dest.stem)).resolve()
+    asset_dir.relative_to(vault_root())
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    return asset_dir
+
+
+def _write_note_asset(filename: str, file_bytes: bytes, note_dest: Path) -> dict:
+    safe_name = _safe_asset_name(filename)
+    asset_dir = _note_asset_dir(note_dest)
+    dest = _unique_path((asset_dir / safe_name).resolve())
+    dest.relative_to(vault_root())
+    dest.write_bytes(file_bytes)
+    return {
+        "name": dest.name,
+        "path": _relative(dest),
+        "relative_path": _relative_between(dest, note_dest.parent),
+        "size": dest.stat().st_size,
+    }
 
 
 def upload_asset(
@@ -429,6 +454,82 @@ def upload_asset(
         "url": "api/notes/media?path=" + quote(rel),
         "size": dest.stat().st_size,
     }
+
+
+def import_markdown_document(
+    filename: str,
+    file_bytes: bytes,
+    *,
+    target_dir: str | None = None,
+    source_rel_path: PurePosixPath | None = None,
+    asset_loader=None,
+) -> dict:
+    from api.notes_import.errors import ImportStageError
+    from api.notes_import.md_image_handler import collect_local_image_refs, rewrite_markdown_image_links
+    from api.notes_import.office_image_handler import collect_data_uri_images, rewrite_data_uri_image_links
+
+    source_path = source_rel_path or PurePosixPath(Path(filename).name)
+    safe_name = _safe_upload_name(source_path.name)
+    parent = _import_parent_dir(target_dir, source_path if source_rel_path else None)
+    dest = (parent / safe_name).resolve()
+    dest.relative_to(vault_root())
+    if dest.exists():
+        raise FileExistsError("note already exists")
+
+    content = file_bytes.decode("utf-8-sig", errors="replace")
+    data_uri_images = collect_data_uri_images(content)
+    data_uri_replacements: dict[int, str] = {}
+    assets: list[dict] = []
+    for image in data_uri_images:
+        try:
+            asset = _write_note_asset(image.filename, image.data, dest)
+        except Exception as exc:
+            raise ImportStageError("copy_assets", str(exc)) from exc
+        assets.append(asset)
+        data_uri_replacements[image.index] = asset["relative_path"]
+    generated_asset_refs = set(data_uri_replacements.values())
+    if data_uri_replacements:
+        content = rewrite_data_uri_image_links(content, data_uri_replacements)
+
+    refs = collect_local_image_refs(content, source_path)
+    replacements: dict[int, str] = {}
+    resolved_assets = []
+    if asset_loader:
+        for ref in refs:
+            if ref.destination in generated_asset_refs:
+                continue
+            image_bytes = None
+            try:
+                image_bytes = asset_loader(ref.resolved_path)
+            except KeyError:
+                for candidate_path in ref.candidate_paths:
+                    if candidate_path == ref.resolved_path:
+                        continue
+                    try:
+                        image_bytes = asset_loader(candidate_path)
+                        break
+                    except KeyError:
+                        continue
+            if image_bytes is None:
+                raise ImportStageError("copy_assets", f"local image not found: {ref.destination}")
+            resolved_assets.append((ref, image_bytes))
+    for ref, image_bytes in resolved_assets:
+        try:
+            asset = _write_note_asset(ref.filename, image_bytes, dest)
+        except Exception as exc:
+            raise ImportStageError("copy_assets", str(exc)) from exc
+        assets.append(asset)
+        replacements[ref.index] = asset["relative_path"]
+    if replacements:
+        content = rewrite_markdown_image_links(content, replacements)
+
+    dest.write_text(content, encoding="utf-8")
+    payload = _note_payload(dest)
+    payload["content"] = content
+    payload["imported_from"] = source_path.as_posix()
+    payload["assets"] = assets
+    payload["asset_count"] = len(assets)
+    return payload
 
 
 def send_note_media(handler, raw_path: str) -> bool:
@@ -471,24 +572,109 @@ def import_office_document(
     *,
     target_dir: str | None = None,
     title: str | None = None,
+    source_rel_path: PurePosixPath | None = None,
 ) -> dict:
+    from api.notes_import.office_image_handler import (
+        collect_data_uri_image_indexes,
+        collect_data_uri_images,
+        extract_office_images,
+        rewrite_data_uri_image_links,
+    )
+
     safe_source = _safe_office_name(filename)
     safe_title = _safe_filename_stem(title or Path(safe_source).stem)
-    parent = _resolve_vault_path(target_dir or ".", allow_root=True, create_root=True)
-    if parent.suffix:
-        raise NotesError("target_dir must be a directory")
-    parent.mkdir(parents=True, exist_ok=True)
+    parent = _import_parent_dir(target_dir, source_rel_path)
     content = _convert_office_with_markitdown(safe_source, file_bytes)
     if not re.match(r"^\s*#\s+", content):
         content = f"# {safe_title}\n\n{content.lstrip()}"
     filename_md = f"{date.today().isoformat()}_{safe_title}.md"
     dest = _unique_path((parent / filename_md).resolve())
     dest.relative_to(vault_root())
+    data_uri_images = collect_data_uri_images(content)
+    replacements: dict[int, str] = {}
+    assets = []
+    replaced_data_uri_indexes = set()
+    for image in data_uri_images:
+        asset = _write_note_asset(image.filename, image.data, dest)
+        assets.append(asset)
+        replacements[image.index] = asset["relative_path"]
+        replaced_data_uri_indexes.add(image.index)
+    if replacements:
+        content = rewrite_data_uri_image_links(content, replacements)
+
+    data_uri_payloads = {image.data for image in data_uri_images}
+    embedded_assets = []
+    extracted_images = extract_office_images(safe_source, file_bytes)
+    remaining_data_uri_indexes = collect_data_uri_image_indexes(content)
+    fallback_replacements: dict[int, str] = {}
+    fallback_cursor = 0
+    for index in remaining_data_uri_indexes:
+        while fallback_cursor < len(extracted_images) and extracted_images[fallback_cursor].data in data_uri_payloads:
+            fallback_cursor += 1
+        if fallback_cursor >= len(extracted_images):
+            break
+        image = extracted_images[fallback_cursor]
+        fallback_cursor += 1
+        asset = _write_note_asset(image.filename, image.data, dest)
+        assets.append(asset)
+        data_uri_payloads.add(image.data)
+        fallback_replacements[index] = asset["relative_path"]
+    if fallback_replacements:
+        content = rewrite_data_uri_image_links(content, fallback_replacements)
+
+    for image in extracted_images:
+        if image.data in data_uri_payloads:
+            continue
+        embedded_assets.append(_write_note_asset(image.filename, image.data, dest))
+    assets.extend(embedded_assets)
+    if embedded_assets:
+        lines = [f"![{Path(asset['name']).stem}]({asset['relative_path']})" for asset in embedded_assets]
+        content = content.rstrip() + "\n\n## 附件图片\n\n" + "\n".join(lines) + "\n"
     dest.write_text(content, encoding="utf-8")
     payload = _note_payload(dest)
     payload["content"] = content
-    payload["imported_from"] = safe_source
+    payload["imported_from"] = source_rel_path.as_posix() if source_rel_path else safe_source
+    payload["assets"] = assets
+    payload["asset_count"] = len(assets)
     return payload
+
+
+def import_batch_archive(filename: str, file_bytes: bytes, *, target_dir: str | None = None) -> dict:
+    from api.notes_import.batch_import import import_archive
+    from api.notes_import.errors import ImportStageError
+
+    def load_archive_asset(path: PurePosixPath, entry_map: dict[str, object]) -> bytes:
+        entry = entry_map.get(path.as_posix())
+        if entry is None:
+            raise KeyError(path.as_posix())
+        return entry.data
+
+    def import_markdown_entry(entry, entry_map: dict[str, object]) -> dict:
+        return import_markdown_document(
+            entry.filename,
+            entry.data,
+            target_dir=target_dir,
+            source_rel_path=entry.path,
+            asset_loader=lambda path: load_archive_asset(path, entry_map),
+        )
+
+    def import_office_entry(entry) -> dict:
+        try:
+            return import_office_document(
+                entry.filename,
+                entry.data,
+                target_dir=target_dir,
+                source_rel_path=entry.path,
+            )
+        except NotesDependencyError as exc:
+            raise ImportStageError("convert", str(exc)) from exc
+
+    return import_archive(
+        filename,
+        file_bytes,
+        import_markdown=import_markdown_entry,
+        import_office=import_office_entry,
+    )
 
 
 def search_notes(query: str) -> dict:
@@ -557,14 +743,14 @@ def send_note_download(handler, raw_path: str) -> bool:
 
 def _error_response(handler, exc: Exception) -> bool:
     if isinstance(exc, NotesError):
-        return bad(handler, str(exc), status=400)
+        return bad(handler, friendly_error(str(exc)), status=400)
     if isinstance(exc, FileNotFoundError):
-        return bad(handler, str(exc), status=404)
+        return bad(handler, friendly_error(str(exc)), status=404)
     if isinstance(exc, FileExistsError):
-        return bad(handler, str(exc), status=409)
+        return bad(handler, friendly_error(str(exc)), status=409)
     if isinstance(exc, NotesDependencyError):
-        return bad(handler, str(exc), status=501)
-    return bad(handler, _sanitize_error(exc), status=500)
+        return bad(handler, friendly_error(str(exc)), status=501)
+    return bad(handler, friendly_error(_sanitize_error(exc)), status=500)
 
 
 def handle_notes_get(handler, parsed) -> bool:
@@ -631,10 +817,10 @@ def handle_notes_upload(handler) -> bool:
         content_type = handler.headers.get("Content-Type", "")
         content_length = int(handler.headers.get("Content-Length", 0) or 0)
         if content_length > MAX_UPLOAD_BYTES:
-            return j(handler, {"error": f"File too large (max {MAX_UPLOAD_BYTES // 1024 // 1024}MB)"}, status=413) or True
+            return j(handler, {"error": friendly_error(f"File too large (max {MAX_UPLOAD_BYTES // 1024 // 1024}MB)")}, status=413) or True
         fields, files = parse_multipart(handler.rfile, content_type, content_length)
         if "file" not in files:
-            return bad(handler, "No file field in request", status=400)
+            return bad(handler, friendly_error("No file field in request"), status=400)
         filename, file_bytes = files["file"]
         return j(handler, upload_markdown(filename, file_bytes, fields.get("target_dir", ""))) or True
     except Exception as exc:
@@ -646,10 +832,10 @@ def handle_notes_asset_upload(handler) -> bool:
         content_type = handler.headers.get("Content-Type", "")
         content_length = int(handler.headers.get("Content-Length", 0) or 0)
         if content_length > MAX_UPLOAD_BYTES:
-            return j(handler, {"error": f"File too large (max {MAX_UPLOAD_BYTES // 1024 // 1024}MB)"}, status=413) or True
+            return j(handler, {"error": friendly_error(f"File too large (max {MAX_UPLOAD_BYTES // 1024 // 1024}MB)")}, status=413) or True
         fields, files = parse_multipart(handler.rfile, content_type, content_length)
         if "file" not in files:
-            return bad(handler, "No file field in request", status=400)
+            return bad(handler, friendly_error("No file field in request"), status=400)
         filename, file_bytes = files["file"]
         return j(
             handler,
@@ -669,10 +855,10 @@ def handle_notes_import(handler) -> bool:
         content_type = handler.headers.get("Content-Type", "")
         content_length = int(handler.headers.get("Content-Length", 0) or 0)
         if content_length > MAX_UPLOAD_BYTES:
-            return j(handler, {"error": f"File too large (max {MAX_UPLOAD_BYTES // 1024 // 1024}MB)"}, status=413) or True
+            return j(handler, {"error": friendly_error(f"File too large (max {MAX_UPLOAD_BYTES // 1024 // 1024}MB)")}, status=413) or True
         fields, files = parse_multipart(handler.rfile, content_type, content_length)
         if "file" not in files:
-            return bad(handler, "No file field in request", status=400)
+            return bad(handler, friendly_error("No file field in request"), status=400)
         filename, file_bytes = files["file"]
         return j(
             handler,
@@ -681,6 +867,29 @@ def handle_notes_import(handler) -> bool:
                 file_bytes,
                 target_dir=fields.get("target_dir", ""),
                 title=fields.get("title", ""),
+            ),
+        ) or True
+    except Exception as exc:
+        return _error_response(handler, exc)
+
+
+def handle_notes_batch_import(handler) -> bool:
+    try:
+        content_type = handler.headers.get("Content-Type", "")
+        content_length = int(handler.headers.get("Content-Length", 0) or 0)
+        if content_length > MAX_UPLOAD_BYTES:
+            return j(handler, {"error": friendly_error(f"File too large (max {MAX_UPLOAD_BYTES // 1024 // 1024}MB)")}, status=413) or True
+        fields, files = parse_multipart(handler.rfile, content_type, content_length)
+        archive = files.get("archive") or files.get("file")
+        if not archive:
+            return bad(handler, friendly_error("No archive field in request"), status=400)
+        filename, file_bytes = archive
+        return j(
+            handler,
+            import_batch_archive(
+                filename,
+                file_bytes,
+                target_dir=fields.get("target_dir", ""),
             ),
         ) or True
     except Exception as exc:
