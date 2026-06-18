@@ -4003,6 +4003,32 @@ def _serve_manifest(handler) -> bool:
 def handle_get(handler, parsed) -> bool:
     """Handle all GET routes. Returns True if handled, False for 404."""
 
+    # ── License routes ─────────────────────────────────────────────────────────
+    if parsed.path == "/api/license/status":
+        from api.license import init_license_config, check_license_status
+        from api.profiles import get_active_hermes_home
+
+        workspace = Path(get_active_hermes_home())
+        try:
+            init_license_config(workspace)
+        except FileNotFoundError:
+            return j(handler, {"error": "License not initialized"}, status=400)
+
+        status = check_license_status(workspace)
+        config = init_license_config(workspace)  # reload to get platform_id/mac_address
+        status["platform_id"] = config.get("platform_id")
+        status["mac_address"] = config.get("mac_address")
+        return j(handler, status)
+
+    if parsed.path == "/api/admin/license/list":
+        from api.license import get_admin_license_list
+        from api.profiles import get_active_hermes_home
+
+        workspace = Path(get_active_hermes_home())
+        licenses = get_admin_license_list(workspace)
+        return j(handler, {"licenses": licenses})
+
+    # ── Notes routes ───────────────────────────────────────────────────────────
     if parsed.path.startswith("/api/notes"):
         from api.obsidian_notes import handle_notes_get
 
@@ -5290,6 +5316,52 @@ def handle_post(handler, parsed) -> bool:
         finally:
             if diag:
                 diag.finish()
+
+    # ── License routes ─────────────────────────────────────────────────────────
+    if parsed.path == "/api/license/apply":
+        from api.license import get_mac_address, generate_platform_id
+        from api.profiles import get_active_hermes_home
+
+        workspace = Path(get_active_hermes_home())
+        secret_key_path = workspace / ".license" / "secret_key"
+        if not secret_key_path.exists():
+            return bad(handler, "License not initialized", status=400)
+        with open(secret_key_path, "r") as f:
+            secret_key = f.read().strip()
+        mac_address = get_mac_address()
+        platform_id = generate_platform_id(secret_key, mac_address)
+        return j(handler, {"platform_id": platform_id, "mac_address": mac_address})
+
+    if parsed.path == "/api/license/import":
+        from api.license import import_license
+        from api.profiles import get_active_hermes_home
+
+        body = read_body(handler)
+        field = require(body, "license_string")
+        workspace = Path(get_active_hermes_home())
+        result = import_license(workspace, field)
+        if result.get("ok"):
+            return j(handler, {"ok": True, "expires_at": result.get("expires_at")})
+        return j(handler, {"ok": False, "error": result.get("error")}, status=400)
+
+    if parsed.path == "/api/admin/license/generate":
+        from api.license import generate_license_string, save_generated_license
+        from api.profiles import get_active_hermes_home
+
+        body = read_body(handler)
+        platform_id = require(body, "platform_id")
+        mac_address = require(body, "mac_address")
+        expires_at = require(body, "expires_at")
+        workspace = Path(get_active_hermes_home())
+        secret_key_path = workspace / ".license" / "secret_key"
+        if not secret_key_path.exists():
+            return bad(handler, "License not initialized", status=400)
+        with open(secret_key_path, "r") as f:
+            secret_key = f.read().strip()
+        license_string = generate_license_string(secret_key, platform_id, mac_address, expires_at)
+        save_generated_license(workspace, platform_id, mac_address, expires_at)
+        return j(handler, {"ok": True, "license_string": license_string})
+
     # CSRF: reject cross-origin or tokenless authenticated browser requests.
     # /api/auth/login has no authenticated session token yet, and /api/csp-report
     # is intentionally unauthenticated for browser-generated violation reports.
