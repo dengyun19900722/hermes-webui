@@ -124,6 +124,14 @@ def get_secret_key_path(workspace: Path) -> Path:
     return get_license_dir(workspace) / "secret_key"
 
 
+def read_secret_key(workspace: Path) -> str:
+    """Read secret_key file contents. Raises FileNotFoundError if not found."""
+    secret_key_path = get_secret_key_path(workspace)
+    if not secret_key_path.exists():
+        raise FileNotFoundError(f"secret_key not found at {secret_key_path}")
+    return secret_key_path.read_text().strip()
+
+
 def load_license_config(workspace: Path) -> dict:
     """Load license.json, return default structure if not exists."""
     path = get_license_config_path(workspace)

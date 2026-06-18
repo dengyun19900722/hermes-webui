@@ -4010,12 +4010,11 @@ def handle_get(handler, parsed) -> bool:
 
         workspace = Path(get_active_hermes_home())
         try:
-            init_license_config(workspace)
+            config = init_license_config(workspace)
         except FileNotFoundError:
-            return j(handler, {"error": "License not initialized"}, status=400)
+            return bad(handler, "License not initialized", status=400)
 
         status = check_license_status(workspace)
-        config = init_license_config(workspace)  # reload to get platform_id/mac_address
         status["platform_id"] = config.get("platform_id")
         status["mac_address"] = config.get("mac_address")
         return j(handler, status)
@@ -5319,15 +5318,14 @@ def handle_post(handler, parsed) -> bool:
 
     # ── License routes ─────────────────────────────────────────────────────────
     if parsed.path == "/api/license/apply":
-        from api.license import get_mac_address, generate_platform_id
+        from api.license import get_mac_address, generate_platform_id, read_secret_key
         from api.profiles import get_active_hermes_home
 
         workspace = Path(get_active_hermes_home())
-        secret_key_path = workspace / ".license" / "secret_key"
-        if not secret_key_path.exists():
+        try:
+            secret_key = read_secret_key(workspace)
+        except FileNotFoundError:
             return bad(handler, "License not initialized", status=400)
-        with open(secret_key_path, "r") as f:
-            secret_key = f.read().strip()
         mac_address = get_mac_address()
         platform_id = generate_platform_id(secret_key, mac_address)
         return j(handler, {"platform_id": platform_id, "mac_address": mac_address})
@@ -5337,27 +5335,32 @@ def handle_post(handler, parsed) -> bool:
         from api.profiles import get_active_hermes_home
 
         body = read_body(handler)
-        field = require(body, "license_string")
+        try:
+            field = require(body, "license_string")
+        except ValueError as e:
+            return bad(handler, str(e), status=400)
         workspace = Path(get_active_hermes_home())
         result = import_license(workspace, field)
         if result.get("ok"):
             return j(handler, {"ok": True, "expires_at": result.get("expires_at")})
-        return j(handler, {"ok": False, "error": result.get("error")}, status=400)
+        return bad(handler, result.get("error"), status=400)
 
     if parsed.path == "/api/admin/license/generate":
-        from api.license import generate_license_string, save_generated_license
+        from api.license import generate_license_string, save_generated_license, read_secret_key
         from api.profiles import get_active_hermes_home
 
         body = read_body(handler)
-        platform_id = require(body, "platform_id")
-        mac_address = require(body, "mac_address")
-        expires_at = require(body, "expires_at")
+        try:
+            platform_id = require(body, "platform_id")
+            mac_address = require(body, "mac_address")
+            expires_at = require(body, "expires_at")
+        except ValueError as e:
+            return bad(handler, str(e), status=400)
         workspace = Path(get_active_hermes_home())
-        secret_key_path = workspace / ".license" / "secret_key"
-        if not secret_key_path.exists():
+        try:
+            secret_key = read_secret_key(workspace)
+        except FileNotFoundError:
             return bad(handler, "License not initialized", status=400)
-        with open(secret_key_path, "r") as f:
-            secret_key = f.read().strip()
         license_string = generate_license_string(secret_key, platform_id, mac_address, expires_at)
         save_generated_license(workspace, platform_id, mac_address, expires_at)
         return j(handler, {"ok": True, "license_string": license_string})
