@@ -500,7 +500,7 @@ def export_csv(
 
     fieldnames = [
         "id", "ts", "category", "session_id", "action", "outcome",
-        "client_ip", "question",
+        "client_ip", "question", "answer",
         "method", "path", "status", "duration_ms",
         "model", "workspace", "usage", "tool_calls",
         "login_success", "login_reason",

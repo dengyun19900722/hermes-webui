@@ -15,7 +15,12 @@
 
 - Knowledge 导入和笔记文件操作的常见后端错误改为中文用户可读提示；通用确认/输入弹窗改为更克制的 token 化面板样式，并支持宽说明弹窗和仅确认按钮形态。
 - Knowledge 的上传 Markdown、导入 Office、批量导入 ZIP 和编辑器插入图片按钮现在使用页面内隐藏文件输入，避免部分浏览器点击后不打开文件选择器。
+- Knowledge Markdown/Office/ZIP 导入大小上限改为独立的 500MB（`HERMES_WEBUI_KNOWLEDGE_IMPORT_MAX_MB` 可覆盖），不再受通用聊天附件 20MB 默认限制影响。
 - Workspace 文件树现在会清理恢复的展开目录状态，并在渲染时检测递归目录和过深嵌套，避免复制正在执行的 session 到新浏览器标签页时因文件树递归导致页面卡死。
+
+### Fixed
+
+- 审计日志现在会在 HTTP 请求审计和 chat 审计中记录访问 IP，优先使用 `X-Forwarded-For`，其次 `X-Real-IP`，最后回退到 socket 客户端地址，修复审计中心 IP 为空或 `-` 的问题。
 
 ## [v0.51.152] — 2026-05-28 — Release DX (stage-batch34 — single-PR optional gateway-backed browser chat)
 

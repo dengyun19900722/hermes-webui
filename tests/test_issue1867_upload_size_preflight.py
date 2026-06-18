@@ -30,6 +30,7 @@ def test_upload_limit_constant_matches_server_limit():
 
     assert "window.__HERMES_CONFIG__.maxUploadBytes" in ui
     assert 'MAX_UPLOAD_BYTES = _env_mb_bytes("HERMES_WEBUI_MAX_UPLOAD_MB", 20)' in config
+    assert 'KNOWLEDGE_IMPORT_MAX_BYTES = _env_mb_bytes("HERMES_WEBUI_KNOWLEDGE_IMPORT_MAX_MB", 500)' in config
 
 
 def test_file_picker_rejects_oversize_files_before_queueing():

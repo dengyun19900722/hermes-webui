@@ -16,7 +16,7 @@ from datetime import date
 from pathlib import Path, PurePosixPath
 from urllib.parse import parse_qs, quote, unquote
 
-from api.config import MAX_UPLOAD_BYTES
+from api.config import KNOWLEDGE_IMPORT_MAX_BYTES, MAX_UPLOAD_BYTES
 from api.helpers import _sanitize_error, _security_headers, bad, j
 from api.notes_import.errors import friendly_error
 from api.upload import parse_multipart
@@ -753,6 +753,13 @@ def _error_response(handler, exc: Exception) -> bool:
     return bad(handler, friendly_error(_sanitize_error(exc)), status=500)
 
 
+def _reject_oversized_upload(handler, content_length: int, max_bytes: int) -> bool:
+    if content_length <= max_bytes:
+        return False
+    max_mb = max_bytes // 1024 // 1024
+    return j(handler, {"error": friendly_error(f"File too large (max {max_mb}MB)")}, status=413) or True
+
+
 def handle_notes_get(handler, parsed) -> bool:
     qs = parse_qs(parsed.query)
     try:
@@ -816,8 +823,8 @@ def handle_notes_upload(handler) -> bool:
     try:
         content_type = handler.headers.get("Content-Type", "")
         content_length = int(handler.headers.get("Content-Length", 0) or 0)
-        if content_length > MAX_UPLOAD_BYTES:
-            return j(handler, {"error": friendly_error(f"File too large (max {MAX_UPLOAD_BYTES // 1024 // 1024}MB)")}, status=413) or True
+        if _reject_oversized_upload(handler, content_length, KNOWLEDGE_IMPORT_MAX_BYTES):
+            return True
         fields, files = parse_multipart(handler.rfile, content_type, content_length)
         if "file" not in files:
             return bad(handler, friendly_error("No file field in request"), status=400)
@@ -831,8 +838,8 @@ def handle_notes_asset_upload(handler) -> bool:
     try:
         content_type = handler.headers.get("Content-Type", "")
         content_length = int(handler.headers.get("Content-Length", 0) or 0)
-        if content_length > MAX_UPLOAD_BYTES:
-            return j(handler, {"error": friendly_error(f"File too large (max {MAX_UPLOAD_BYTES // 1024 // 1024}MB)")}, status=413) or True
+        if _reject_oversized_upload(handler, content_length, MAX_UPLOAD_BYTES):
+            return True
         fields, files = parse_multipart(handler.rfile, content_type, content_length)
         if "file" not in files:
             return bad(handler, friendly_error("No file field in request"), status=400)
@@ -854,8 +861,8 @@ def handle_notes_import(handler) -> bool:
     try:
         content_type = handler.headers.get("Content-Type", "")
         content_length = int(handler.headers.get("Content-Length", 0) or 0)
-        if content_length > MAX_UPLOAD_BYTES:
-            return j(handler, {"error": friendly_error(f"File too large (max {MAX_UPLOAD_BYTES // 1024 // 1024}MB)")}, status=413) or True
+        if _reject_oversized_upload(handler, content_length, KNOWLEDGE_IMPORT_MAX_BYTES):
+            return True
         fields, files = parse_multipart(handler.rfile, content_type, content_length)
         if "file" not in files:
             return bad(handler, friendly_error("No file field in request"), status=400)
@@ -877,8 +884,8 @@ def handle_notes_batch_import(handler) -> bool:
     try:
         content_type = handler.headers.get("Content-Type", "")
         content_length = int(handler.headers.get("Content-Length", 0) or 0)
-        if content_length > MAX_UPLOAD_BYTES:
-            return j(handler, {"error": friendly_error(f"File too large (max {MAX_UPLOAD_BYTES // 1024 // 1024}MB)")}, status=413) or True
+        if _reject_oversized_upload(handler, content_length, KNOWLEDGE_IMPORT_MAX_BYTES):
+            return True
         fields, files = parse_multipart(handler.rfile, content_type, content_length)
         archive = files.get("archive") or files.get("file")
         if not archive:

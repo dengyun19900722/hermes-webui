@@ -276,6 +276,26 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args): pass  # suppress default Apache-style log
 
+    def _header_value(self, name: str) -> str:
+        try:
+            return str(self.headers.get(name) or "").strip()
+        except Exception:
+            return ""
+
+    def _client_ip_for_audit(self) -> str:
+        forwarded_for = self._header_value("X-Forwarded-For").split(",", 1)[0].strip()
+        if forwarded_for:
+            return forwarded_for
+        real_ip = self._header_value("X-Real-IP")
+        if real_ip:
+            return real_ip
+        try:
+            if getattr(self, "client_address", None):
+                return str(self.client_address[0])
+        except Exception:
+            pass
+        return "-"
+
     _audit_module = None
 
     def log_request(self, code: str='-', size: str='-') -> None:
@@ -288,16 +308,16 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             remote = '-'
         forwarded_for = None
-        try:
-            forwarded_for = (self.headers.get('X-Forwarded-For') or '').split(',')[0].strip() or None
-        except Exception:
-            forwarded_for = None
+        forwarded_for = self._header_value("X-Forwarded-For").split(",", 1)[0].strip() or None
+        method = getattr(self, 'command', None) or '-'
+        path = getattr(self, 'path', None) or '-'
+        status = int(code) if str(code).isdigit() else code
         record_data = {
             'ts': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
             'remote': remote,
-            'method': getattr(self, 'command', None) or '-',
-            'path': getattr(self, 'path', None) or '-',
-            'status': int(code) if str(code).isdigit() else code,
+            'method': method,
+            'path': path,
+            'status': status,
             'ms': duration_ms,
         }
         if forwarded_for:
@@ -311,16 +331,28 @@ class Handler(BaseHTTPRequestHandler):
                 if Handler._audit_module is None:
                     from api import audit as _mod
                     Handler._audit_module = _mod
+                seeded_client_ip = getattr(self, '_client_ip', None)
+                client_ip = seeded_client_ip if seeded_client_ip and seeded_client_ip != '-' else self._client_ip_for_audit()
+                user_agent = self._header_value("User-Agent")
+                path_only = urlparse(path).path if path != '-' else '-'
                 Handler._audit_module.write(
                     category="http",
-                    action=f"{self.command} {urlparse(self.path).path}",
-                    outcome="success" if (isinstance(code, int) and 200 <= code < 400) else "failure",
-                    client_ip=getattr(self, '_client_ip', '-'),
+                    action=f"{method} {path_only}",
+                    operation=f"{method} {path_only}",
+                    outcome="success" if (isinstance(status, int) and 200 <= status < 400) else "failure",
+                    client_ip=client_ip,
+                    user_agent=user_agent,
+                    method=method,
+                    path=path,
+                    status=status,
+                    duration_ms=duration_ms,
                     metadata={
-                        'method': self.command or '-',
-                        'path': self.path or '-',
-                        'status': int(code) if str(code).isdigit() else code,
+                        'method': method,
+                        'path': path,
+                        'status': status,
                         'ms': duration_ms,
+                        'remote': remote,
+                        'forwarded_for': forwarded_for or '',
                     },
                 )
             except Exception:
@@ -328,9 +360,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         self._req_t0 = time.time()
-        # Capture real client IP (honour X-Forwarded-For like routes.py does)
-        _xff = self.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-        self._client_ip = _xff if _xff else (self.client_address[0] if self.client_address else "-")
+        self._client_ip = self._client_ip_for_audit()
         cookie_profile = get_profile_cookie(self)
         if cookie_profile:
             set_request_profile(cookie_profile)
@@ -353,8 +383,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_write(self, route_func) -> None:
         self._req_t0 = time.time()
-        _xff = self.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-        self._client_ip = _xff if _xff else (self.client_address[0] if self.client_address else "-")
+        self._client_ip = self._client_ip_for_audit()
         cookie_profile = get_profile_cookie(self)
         if cookie_profile:
             set_request_profile(cookie_profile)

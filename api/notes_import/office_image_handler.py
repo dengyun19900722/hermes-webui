@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from urllib.parse import unquote_to_bytes
 
-from api.config import MAX_UPLOAD_BYTES
+from api.config import KNOWLEDGE_IMPORT_MAX_BYTES
 
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
@@ -174,7 +174,7 @@ def collect_data_uri_image_indexes(markdown: str) -> list[int]:
 def collect_data_uri_images(
     markdown: str,
     *,
-    max_total_bytes: int = MAX_UPLOAD_BYTES,
+    max_total_bytes: int = KNOWLEDGE_IMPORT_MAX_BYTES,
 ) -> list[OfficeDataUriImage]:
     images: list[OfficeDataUriImage] = []
     total = 0
@@ -225,7 +225,7 @@ def extract_office_images(
     filename: str,
     file_bytes: bytes,
     *,
-    max_total_bytes: int = MAX_UPLOAD_BYTES,
+    max_total_bytes: int = KNOWLEDGE_IMPORT_MAX_BYTES,
 ) -> list[OfficeImage]:
     suffix = PurePosixPath(str(filename or "")).suffix.lower()
     if suffix not in {".docx", ".xlsx", ".pptx"}:

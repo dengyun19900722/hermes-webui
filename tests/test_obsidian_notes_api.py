@@ -321,7 +321,59 @@ def test_route_get_post_put_delete_cover_notes_endpoints(tmp_path, monkeypatch):
          patch("api.routes._check_csrf", return_value=True), \
          patch("api.routes.read_body", return_value={"path": created["path"]}):
         assert routes.handle_delete(handler, urlparse("/api/notes/content")) is True
-        assert captured["payload"]["ok"] is True
+    assert captured["payload"]["ok"] is True
+
+
+def test_notes_office_import_allows_knowledge_limit_above_default_upload_limit(monkeypatch):
+    from api import obsidian_notes as notes
+
+    captured = {}
+
+    def fake_j(handler, payload, status=200, extra_headers=None):
+        captured["payload"] = payload
+        captured["status"] = status
+        return True
+
+    handler = MagicMock()
+    handler.headers = {
+        "Content-Type": "multipart/form-data; boundary=test",
+        "Content-Length": str(notes.MAX_UPLOAD_BYTES + 1),
+    }
+    handler.rfile = io.BytesIO()
+
+    with patch("api.obsidian_notes.j", side_effect=fake_j), \
+         patch("api.obsidian_notes.parse_multipart", return_value=({"target_dir": "导入"}, {"file": ("big.docx", b"fake")})) as parse_mock, \
+         patch("api.obsidian_notes.import_office_document", return_value={"path": "导入/big.md"}) as import_mock:
+        assert notes.handle_notes_import(handler) is True
+
+    assert captured["status"] == 200
+    parse_mock.assert_called_once()
+    import_mock.assert_called_once()
+
+
+def test_notes_batch_import_rejects_files_over_knowledge_limit(monkeypatch):
+    from api import obsidian_notes as notes
+
+    captured = {}
+
+    def fake_j(handler, payload, status=200, extra_headers=None):
+        captured["payload"] = payload
+        captured["status"] = status
+        return True
+
+    handler = MagicMock()
+    handler.headers = {
+        "Content-Type": "multipart/form-data; boundary=test",
+        "Content-Length": str(notes.KNOWLEDGE_IMPORT_MAX_BYTES + 1),
+    }
+    handler.rfile = io.BytesIO()
+
+    with patch("api.obsidian_notes.j", side_effect=fake_j), \
+         patch("api.obsidian_notes.parse_multipart", side_effect=AssertionError("oversized upload should stop before parsing")):
+        assert notes.handle_notes_batch_import(handler) is True
+
+    assert captured["status"] == 413
+    assert "500 MB" in captured["payload"]["error"]
 
 
 def test_static_wiring_includes_knowledge_panel():

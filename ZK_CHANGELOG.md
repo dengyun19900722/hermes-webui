@@ -1,5 +1,15 @@
 # ZK 运维智能体 - 版本变更日志
 
+## [v1.0.2] — 2026-06-10
+
+### Changed
+
+- ZKREQ-105: Knowledge Markdown / Office / ZIP 导入大小上限放宽到 500MB，并支持通过 `HERMES_WEBUI_KNOWLEDGE_IMPORT_MAX_MB` 覆盖
+
+### Fixed
+
+- ZKREQ-106: 审计中心补全访问 IP 记录，HTTP 请求和对话审计均优先记录 `X-Forwarded-For`，其次 `X-Real-IP`，最后回退到客户端 socket 地址
+
 ## [v1.0.1] — 2026-06-10
 
 ### Added

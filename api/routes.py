@@ -1377,6 +1377,31 @@ def _client_ip_for_rate_limit(handler) -> str:
     return "unknown"
 
 
+def _client_ip_for_audit(handler) -> str:
+    try:
+        forwarded_for = str(handler.headers.get("X-Forwarded-For") or "").split(",", 1)[0].strip()
+        if forwarded_for:
+            return forwarded_for
+        real_ip = str(handler.headers.get("X-Real-IP") or "").strip()
+        if real_ip:
+            return real_ip
+    except Exception:
+        pass
+    try:
+        client_ip = getattr(handler, "_client_ip", None)
+        if client_ip and client_ip != "-":
+            return str(client_ip)
+    except Exception:
+        pass
+    try:
+        address = getattr(handler, "client_address", None)
+        if address:
+            return str(address[0])
+    except Exception:
+        pass
+    return "-"
+
+
 def _csp_report_rate_limited(handler, *, now: float | None = None) -> bool:
     now = time.time() if now is None else now
     key = _client_ip_for_rate_limit(handler)
@@ -9503,6 +9528,8 @@ def _handle_chat_start(handler, body, diag=None):
             requested_model,
             requested_provider,
         )
+        client_ip = _client_ip_for_audit(handler)
+        s.pending_client_ip = client_ip if client_ip and client_ip != "-" else None
         from api.runtime_adapter import (
             LegacyJournalRuntimeAdapter,
             StartRunRequest,
@@ -9544,7 +9571,7 @@ def _handle_chat_start(handler, body, diag=None):
                         provider=model_provider,
                         model=model,
                         source="webui",
-                        metadata={"route": "/api/chat/start"},
+                        metadata={"route": "/api/chat/start", "client_ip": client_ip},
                     )
                 )
             except NotImplementedError as exc:
