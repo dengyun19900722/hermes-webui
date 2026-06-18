@@ -8007,8 +8007,7 @@ async function _restoreCheckpoint(workspace,checkpoint,message){
 // 检查 License 状态并显示/隐藏 overlay
 async function checkLicenseStatus() {
   try {
-    const resp = await fetch('/api/license/status');
-    const data = await resp.json();
+    const data = await api('/api/license/status');
     const overlay = document.getElementById('licenseOverlay');
     if (!data.activated || data.status === 'expired' || data.status === 'copied') {
       // 显示 License 申请页面
@@ -8020,13 +8019,18 @@ async function checkLicenseStatus() {
     }
   } catch (e) {
     console.error('License check failed:', e);
+    showToast('License 检查失败: ' + (e.message || e), 4000, 'error');
   }
 }
 
 // 复制到剪贴板
 function copyToClipboard(elementId) {
   const text = document.getElementById(elementId).textContent;
-  navigator.clipboard.writeText(text);
+  navigator.clipboard.writeText(text).then(() => {
+    showToast('已复制到剪贴板', 2000);
+  }).catch(() => {
+    showToast('复制失败', 2000, 'error');
+  });
 }
 
 // 导入 License
@@ -8045,12 +8049,10 @@ async function importLicense() {
   const text = await file.text();
 
   try {
-    const resp = await fetch('/api/license/import', {
+    const result = await api('/api/license/import', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({license_string: text.trim()})
     });
-    const result = await resp.json();
     if (result.ok) {
       // 激活成功，刷新页面
       location.reload();
@@ -8067,8 +8069,7 @@ async function importLicense() {
 // 加载 License 管理信息（系统管理页面用）
 async function loadLicenseAdminInfo() {
   try {
-    const resp = await fetch('/api/license/status');
-    const data = await resp.json();
+    const data = await api('/api/license/status');
     document.getElementById('adminLicenseStatus').textContent = data.status || 'not_activated';
     document.getElementById('adminPlatformId').textContent = data.platform_id || '-';
     document.getElementById('adminMacAddress').textContent = data.mac_address || '-';
