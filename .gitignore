@@ -59,3 +59,10 @@ graphify-out/
 .graphify_uncached.txt
 
 .venv/
+
+# IDE and CI
+.omc/
+.codebuddy/
+.github/
+.pytest_cache/
+.benchmark/

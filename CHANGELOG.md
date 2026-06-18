@@ -10,6 +10,9 @@
 - Knowledge 笔记预览现在会把导入后的 `_attachments/<note-stem>/...` 相对图片链接解析为媒体接口，兼容中文、空格、括号路径和残留的 Obsidian 图片语法，避免 ZIP 导入成功后正文图片不展示。
 - Knowledge Office/ZIP 导入现在会把转换器输出的 `data:image/...;base64` 图片解码为 `_attachments/<note-stem>/` 附件并重写 Markdown 链接，避免 Word 图片以 base64 形式残留而无法预览。
 - Knowledge Markdown 上传现在也会把正文里的 `data:image/...;base64` 图片解码为附件并改写链接；data URI 参数带空格、换行或缺少 padding 时也能识别。
+- 新增受控 `/api/log-context` 日志上下文接口和 `hermes-log://context` 聊天链接增强；WebUI 后端按配置通过 expect 登录服务器、使用固定 `awk` 命令读取白名单日志路径，并记录 `log_context` 审计。
+- `/api/log-context` 现在支持 `host_ip`/`account` 入参，后端可从服务端主机清单或固定 lookup 脚本解析日志只读账号和 `password_env`，同时继续复用 `source` 的路径白名单和上下文限额。
+- `/api/log-context` 主机凭据解析新增 Neo4j 图库回退：当静态清单未命中时，可通过 `NEO4J_URI`/`NEO4J_USER`/`NEO4J_PASSWORD` 查询 `Host.ip` 对应的 `ssh_user`、`ssh_password` 和 `ssh_port`，并把密码仅保存在服务端请求内存中传给 expect。
 
 ### Changed
 
@@ -17,6 +20,8 @@
 - Knowledge 的上传 Markdown、导入 Office、批量导入 ZIP 和编辑器插入图片按钮现在使用页面内隐藏文件输入，避免部分浏览器点击后不打开文件选择器。
 - Knowledge Markdown/Office/ZIP 导入大小上限改为独立的 500MB（`HERMES_WEBUI_KNOWLEDGE_IMPORT_MAX_MB` 可覆盖），不再受通用聊天附件 20MB 默认限制影响。
 - Workspace 文件树现在会清理恢复的展开目录状态，并在渲染时检测递归目录和过深嵌套，避免复制正在执行的 session 到新浏览器标签页时因文件树递归导致页面卡死。
+- 日志上下文弹窗交互增强：当前匹配行高亮（左侧彩色标识条、更强背景色、行号加粗高亮），新增浮动"回到当前行"按钮（滚动离开匹配行后自动显示，点击平滑滚动回当前位置），弹窗全部按钮和提示文字适配中文界面。
+- Markdown 渲染支持 `hermes-log://context` 协议链接，聊天消息中可直接点击打开日志上下文弹窗。
 
 ### Fixed
 

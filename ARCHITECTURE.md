@@ -55,6 +55,8 @@ actions. The topbar remains focused on conversation context and the workspace/fi
       auth.py              Optional password authentication, signed cookies (~366 lines)
       config.py            Discovery, globals, model detection, reloadable config (~4139 lines)
       helpers.py           HTTP helpers: j(), bad(), require(), safe_resolve(), security headers (~302 lines)
+      log_context.py       Controlled /api/log-context lookup: source config, path allowlists,
+                           expect connector invocation, and awk output parsing
       models.py            Session model + CRUD, per-session profile tracking (~1927 lines)
       profiles.py          Profile state management, hermes_cli wrapper (~1056 lines)
       onboarding.py        First-run onboarding status, real provider config writes, OAuth linking, and readiness detection (~1002 lines)
@@ -74,6 +76,8 @@ actions. The topbar remains focused on conversation context and the workspace/fi
       commands.js          Slash command registry, parser, autocomplete dropdown (~1302 lines)
       onboarding.js        First-run wizard overlay, provider setup flow, and settings/workspace orchestration.
       boot.js              Event wiring, mobile sidebar/workspace nav, voice input, boot IIFE (~1607 lines)
+    scripts/
+      log_context_expect.sh Fixed expect SSH connector for remote log context reads
     tests/
       conftest.py          Isolated test server/state fixtures (~644 lines)
       488 test files       5303 tests collected via pytest
@@ -127,6 +131,18 @@ Environment variables controlling behavior:
     HERMES_WEBUI_PREFILL_MESSAGES_SCRIPT_TIMEOUT Optional script timeout in seconds (default 5, max 30)
     HERMES_HOME                    Base directory for Hermes state (~/.hermes by default)
 
+Log context lookup is configured in the active profile's config.yaml under
+`log_context_sources`. Each source names a fixed host/user/password_env and
+allowed remote roots. Password values are read only from environment variables
+referenced by `password_env`; inline passwords in config.yaml are rejected.
+Requests may also provide `host_ip` plus optional `account`; WebUI resolves the
+target account/password_env from server-side `log_context_host_inventory` or a
+Neo4j `Host` node (`NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`) or fixed
+`log_context_host_lookup_script` before applying the configured source path
+allowlist and context limits. Neo4j lookups may provide an in-memory SSH
+password value for the expect connector; it is not returned to the browser or
+written to audit logs.
+
 Test isolation environment variables (set by conftest.py):
 
     HERMES_WEBUI_TEST_PORT=...                         Optional pinned test port
@@ -162,7 +178,7 @@ thread. The Handler class subclasses BaseHTTPRequestHandler with two methods:
 
     do_GET    Routes: /, /health, /api/session, /api/sessions, /api/list,
                       /api/chat/stream, /api/file, /api/approval/pending,
-                      /api/session/worktree/status
+                      /api/session/worktree/status, /api/log-context
     do_POST   Routes: /api/upload, /api/session/new, /api/session/update,
                       /api/session/delete, /api/chat/start, /api/chat,
                       /api/approval/respond, /api/session/worktree/remove

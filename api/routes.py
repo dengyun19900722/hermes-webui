@@ -4170,6 +4170,31 @@ def handle_get(handler, parsed) -> bool:
     if parsed.path == "/api/logs":
         return _handle_logs(handler, parsed)
 
+    if parsed.path == "/api/log-context":
+        from api.log_context import LogContextError, audit_log_context, build_request_from_query, fetch_log_context
+
+        req = None
+        try:
+            req = build_request_from_query(parsed.query)
+            payload = fetch_log_context(req)
+            audit_log_context(req, outcome="success", client_ip=_client_ip_for_audit(handler))
+            return j(handler, payload)
+        except LogContextError as exc:
+            print(json.dumps({
+                'ts': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                'level': 'ERROR',
+                'event': 'log_context_error',
+                'code': exc.code,
+                'msg': str(exc),
+            }), flush=True)
+            audit_log_context(
+                req,
+                outcome="failure",
+                client_ip=_client_ip_for_audit(handler),
+                error_code=exc.code,
+            )
+            return j(handler, {"ok": False, "error": str(exc), "code": exc.code}, status=exc.status)
+
     if parsed.path == "/health":
         return _handle_health(handler, parsed)
 

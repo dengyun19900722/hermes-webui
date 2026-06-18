@@ -3122,7 +3122,7 @@ function renderMd(raw){
     t=t.replace(/\x00C(\d+)\x00/g,(_,i)=>_code_stash[+i]);
     // Stash [label](url) links before autolink so the URL in href= is not re-linked
     const _link_stash=[];
-    t=t.replace(/\[([^\]]+)\]\(((?:https?:\/\/|file:\/\/|workspace:\/\/|mailto:|tel:)[^\s\)]+)\)/g,(_,lb,u)=>{_link_stash.push(`<a href="${_markdownHref(u)}" target="_blank" rel="noopener">${esc(lb)}</a>`);return `\x00L${_link_stash.length-1}\x00`;});
+    t=t.replace(/\[([^\]]+)\]\(((?:https?:\/\/|file:\/\/|workspace:\/\/|hermes-log:\/\/|mailto:|tel:)[^\s\)]+)\)/g,(_,lb,u)=>{_link_stash.push(`<a href="${_markdownHref(u)}" target="_blank" rel="noopener">${esc(lb)}</a>`);return `\x00L${_link_stash.length-1}\x00`;});
     t=t.replace(/(https?:\/\/[^\s<>"')\]]+)/g,(url)=>{const trail=url.match(/[.,;:!?)]$/)?url.slice(-1):'';const clean=trail?url.slice(0,-1):url;return `<a href="${clean}" target="_blank" rel="noopener">${esc(clean)}</a>${trail}`;});
     t=t.replace(/\x00L(\d+)\x00/g,(_,i)=>_link_stash[+i]);
     t=t.replace(/\x00G(\d+)\x00/g,(_,i)=>_img_stash[+i]);
@@ -3215,7 +3215,7 @@ function renderMd(raw){
   // Stash existing <a> tags first to avoid re-linking already-linked URLs.
   const _a_stash=[];
   s=s.replace(/(<a\b[^>]*>[\s\S]*?<\/a>)/g,m=>{_a_stash.push(m);return `\x00A${_a_stash.length-1}\x00`;});
-  s=s.replace(/\[([^\]]+)\]\(((?:https?:\/\/|file:\/\/|workspace:\/\/|mailto:|tel:)[^\s\)]+)\)/g,(_,label,url)=>`<a href="${_markdownHref(url)}" target="_blank" rel="noopener">${esc(label)}</a>`);
+  s=s.replace(/\[([^\]]+)\]\(((?:https?:\/\/|file:\/\/|workspace:\/\/|hermes-log:\/\/|mailto:|tel:)[^\s\)]+)\)/g,(_,label,url)=>`<a href="${_markdownHref(url)}" target="_blank" rel="noopener">${esc(label)}</a>`);
   s=s.replace(/\x00A(\d+)\x00/g,(_,i)=>_a_stash[+i]);
   // Restore raw <pre> only after markdown rewrites so literal preformatted
   // content stays placeholder-protected, then let the sanitizer normalize tags.
@@ -3249,6 +3249,7 @@ function renderMd(raw){
         return 'api/media?path='+encodeURIComponent(href.replace(/^file:\/\//i,''))+'&inline=1';
       }
     }
+    if(/^hermes-log:\/\/context\?/i.test(href)) return href;
     return href;
   }
   function _isSafeUrl(v, img){
@@ -3257,6 +3258,7 @@ function renderMd(raw){
     if(!compact) return false;
     if(/^(javascript|data|vbscript):/i.test(compact)) return false;
     if(/^https?:\/\//i.test(raw)) return true;
+    if(/^hermes-log:\/\/context\?/i.test(raw)) return true;
     if(/^(mailto:|tel:)/i.test(raw)) return true;
     if(img && /^api\//i.test(raw)) return true;
     if(!img && (/^api\//i.test(raw) || /^#/.test(raw))) return true;
@@ -3307,7 +3309,7 @@ function renderMd(raw){
       if(!_isSafeUrl(a.href,false)) return '<a>';
       const target=a.target==='_blank'?' target="_blank"':'';
       const rel=a.rel==='noopener'?' rel="noopener"':'';
-      const cls=_cls(a.class,['msg-media-link','skill-linked-file','skill-file-back']);
+      const cls=_cls(a.class,['msg-media-link','skill-linked-file','skill-file-back','log-context-ref']);
       const download=a.download?` download="${esc(a.download)}"`:'';
       return `<a${cls} href="${esc(_safeAttrValue(a.href))}"${target}${rel}${download}>`;
     }
@@ -7217,8 +7219,293 @@ async function regenerateResponse(btn) {
   } catch(e) { setStatus(t('regen_failed') + e.message); }
 }
 
+const LOG_CONTEXT_PRESETS=[20,50,100];
+let _logContextDialog=null;
+let _logContextState=null;
+
+function _logContextLabel(key,fallback){
+  try{
+    const val=(typeof t==='function')?t(key):'';
+    return val&&val!==key?val:fallback;
+  }catch(_){
+    return fallback;
+  }
+}
+
+function _parseLogContextHref(href){
+  try{
+    const url=new URL(String(href||''),document.baseURI||location.href);
+    if(url.protocol!=='hermes-log:'||url.hostname!=='context') return null;
+    const source=(url.searchParams.get('source')||'').trim();
+    const hostIp=(url.searchParams.get('host_ip')||url.searchParams.get('ip')||'').trim();
+    const account=(url.searchParams.get('account')||url.searchParams.get('user')||'').trim();
+    const path=(url.searchParams.get('path')||'').trim();
+    const line=Number.parseInt(url.searchParams.get('line')||'',10);
+    if((!source&&!hostIp)||!path||!Number.isFinite(line)||line<1) return null;
+    return {source,host_ip:hostIp,account,path,line};
+  }catch(_){
+    return null;
+  }
+}
+
+function _ensureLogContextDialog(){
+  if(_logContextDialog) return _logContextDialog;
+  const overlay=document.createElement('div');
+  overlay.id='logContextDialog';
+  overlay.className='app-dialog-overlay log-context-overlay';
+  overlay.style.display='none';
+  overlay.setAttribute('aria-hidden','true');
+  overlay.innerHTML=`
+    <div class="app-dialog app-dialog--wide log-context-dialog" role="dialog" aria-modal="true">
+      <div class="app-dialog-header">
+        <div>
+          <div class="app-dialog-title log-context-title">${esc(_logContextLabel('log_context_title','Log context'))}</div>
+          <div class="log-context-meta"></div>
+        </div>
+        <button type="button" class="app-dialog-close log-context-close" aria-label="${esc(_logContextLabel('close','Close'))}">${typeof li==='function'?li('x',16):'x'}</button>
+      </div>
+      <div class="log-context-controls">
+        <div class="log-context-presets"></div>
+        <label>${esc(_logContextLabel('log_context_before','Before'))} <input class="log-context-before" type="number" min="0" step="1" value="50"></label>
+        <label>${esc(_logContextLabel('log_context_after','After'))} <input class="log-context-after" type="number" min="0" step="1" value="50"></label>
+        <button type="button" class="app-dialog-btn log-context-refresh">${esc(_logContextLabel('refresh','Refresh'))}</button>
+      </div>
+      <div class="log-context-error" hidden></div>
+      <div class="log-context-body" role="region" aria-live="polite"></div>
+      <button type="button" class="log-context-scroll-btn" hidden>${esc(_logContextLabel('log_context_scroll_to','↑ Current line'))}</button>
+      <div class="app-dialog-actions log-context-actions">
+        <button type="button" class="app-dialog-btn log-context-copy">${esc(_logContextLabel('copy','Copy'))}</button>
+        <button type="button" class="app-dialog-btn log-context-append">${esc(_logContextLabel('log_context_append','Use in reply'))}</button>
+        <button type="button" class="app-dialog-btn log-context-close-secondary">${esc(_logContextLabel('close','Close'))}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const presets=overlay.querySelector('.log-context-presets');
+  LOG_CONTEXT_PRESETS.forEach(count=>{
+    const btn=document.createElement('button');
+    btn.type='button';
+    btn.className='log-context-preset';
+    btn.dataset.count=String(count);
+    btn.textContent=String(count);
+    const beforeLabel=_logContextLabel('log_context_before','before'),afterLabel=_logContextLabel('log_context_after','after');
+    btn.title=`${count} ${beforeLabel} / ${count} ${afterLabel}`;
+    btn.addEventListener('click',()=>{
+      overlay.querySelector('.log-context-before').value=String(count);
+      overlay.querySelector('.log-context-after').value=String(count);
+      _fetchAndRenderLogContext();
+    });
+    presets.appendChild(btn);
+  });
+  overlay.addEventListener('click',e=>{if(e.target===overlay)_closeLogContextDialog();});
+  overlay.querySelectorAll('.log-context-close,.log-context-close-secondary').forEach(btn=>btn.addEventListener('click',_closeLogContextDialog));
+  overlay.querySelector('.log-context-refresh').addEventListener('click',_fetchAndRenderLogContext);
+  overlay.querySelector('.log-context-copy').addEventListener('click',_copyLogContextDialogText);
+  overlay.querySelector('.log-context-append').addEventListener('click',_appendLogContextToComposer);
+  overlay.querySelector('.log-context-scroll-btn').addEventListener('click',()=>{
+    const body=overlay.querySelector('.log-context-body');
+    const matchLine=body?.querySelector('.log-context-line.match');
+    if(matchLine){matchLine.scrollIntoView({block:'center',behavior:'smooth'});}
+    overlay.querySelector('.log-context-scroll-btn').classList.remove('visible');
+  });
+  overlay.addEventListener('keydown',e=>{if(e.key==='Escape')_closeLogContextDialog();});
+  _logContextDialog=overlay;
+  return overlay;
+}
+
+function _closeLogContextDialog(){
+  if(!_logContextDialog)return;
+  _logContextDialog.style.display='none';
+  _logContextDialog.setAttribute('aria-hidden','true');
+}
+
+function _openLogContextDialog(ref){
+  const overlay=_ensureLogContextDialog();
+  _logContextState={ref,payload:null};
+  const target=[ref.source,ref.host_ip,ref.account].filter(Boolean).join('  ');
+  overlay.querySelector('.log-context-meta').textContent=`${target}  ${ref.path}:${ref.line}`;
+  overlay.querySelector('.log-context-error').hidden=true;
+  overlay.querySelector('.log-context-error').textContent='';
+  overlay.querySelector('.log-context-body').textContent=_logContextLabel('loading','Loading...');
+  overlay.style.display='flex';
+  overlay.setAttribute('aria-hidden','false');
+  setTimeout(()=>overlay.querySelector('.log-context-refresh')?.focus(),0);
+  _fetchAndRenderLogContext();
+}
+
+async function _fetchAndRenderLogContext(){
+  const overlay=_ensureLogContextDialog();
+  const state=_logContextState;
+  if(!state||!state.ref)return;
+  const beforeInput=overlay.querySelector('.log-context-before');
+  const afterInput=overlay.querySelector('.log-context-after');
+  const before=Math.max(0,Number.parseInt(beforeInput.value||'50',10)||0);
+  const after=Math.max(0,Number.parseInt(afterInput.value||'50',10)||0);
+  const body=overlay.querySelector('.log-context-body');
+  const err=overlay.querySelector('.log-context-error');
+  if(err){err.hidden=true;err.textContent='';}
+  if(body)body.textContent=_logContextLabel('loading','Loading...');
+  const url=new URL('api/log-context',document.baseURI||location.href);
+  if(state.ref.source)url.searchParams.set('source',state.ref.source);
+  if(state.ref.host_ip)url.searchParams.set('host_ip',state.ref.host_ip);
+  if(state.ref.account)url.searchParams.set('account',state.ref.account);
+  url.searchParams.set('path',state.ref.path);
+  url.searchParams.set('line',String(state.ref.line));
+  url.searchParams.set('before',String(before));
+  url.searchParams.set('after',String(after));
+  if(S.session&&S.session.session_id)url.searchParams.set('session_id',S.session.session_id);
+  try{
+    const res=await fetch(url.href,{credentials:'include',cache:'no-store'});
+    if(_redirectIfUnauth(res))return;
+    const payload=await res.json().catch(()=>({ok:false,error:`HTTP ${res.status}`}));
+    if(!res.ok||payload.ok===false)throw new Error(payload.error||payload.code||`HTTP ${res.status}`);
+    state.payload=payload;
+    _renderLogContextPayload(payload);
+  }catch(e){
+    state.payload=null;
+    if(body)body.textContent='';
+    if(err){err.hidden=false;err.textContent=String(e&&e.message?e.message:e);}
+  }
+}
+
+function _renderLogContextPayload(payload){
+  const overlay=_ensureLogContextDialog();
+  const body=overlay.querySelector('.log-context-body');
+  if(!body)return;
+  body.innerHTML='';
+  const lines=Array.isArray(payload.lines)?payload.lines:[];
+  if(!lines.length){
+    const empty=document.createElement('div');
+    empty.className='log-context-empty';
+    empty.textContent=_logContextLabel('log_context_empty','No lines returned.');
+    body.appendChild(empty);
+    return;
+  }
+  const frag=document.createDocumentFragment();
+  lines.forEach(item=>{
+    const row=document.createElement('div');
+    row.className='log-context-line';
+    if(item&&item.match)row.classList.add('match');
+    const no=document.createElement('span');
+    no.className='log-context-line-no';
+    no.textContent=String(item&&item.no!=null?item.no:'');
+    const text=document.createElement('span');
+    text.className='log-context-line-text';
+    text.textContent=String(item&&item.text!=null?item.text:'');
+    row.appendChild(no);
+    row.appendChild(text);
+    frag.appendChild(row);
+  });
+  body.appendChild(frag);
+
+  // Auto-scroll to the match (current) line
+  const matchLine=body.querySelector('.log-context-line.match');
+  const scrollBtn=overlay.querySelector('.log-context-scroll-btn');
+  if(matchLine&&scrollBtn){
+    scrollBtn.hidden=false;
+    requestAnimationFrame(()=>{
+      matchLine.scrollIntoView({block:'center',behavior:'auto'});
+      _monitorLogContextScroll(overlay,matchLine);
+    });
+  }else if(scrollBtn){
+    scrollBtn.hidden=true;
+    scrollBtn.classList.remove('visible');
+  }
+}
+
+function _monitorLogContextScroll(overlay,matchLine){
+  const body=overlay.querySelector('.log-context-body');
+  const btn=overlay.querySelector('.log-context-scroll-btn');
+  if(!body||!btn)return;
+  const check=()=>{
+    const bodyRect=body.getBoundingClientRect();
+    const matchRect=matchLine.getBoundingClientRect();
+    const fullyVisible=matchRect.top>=bodyRect.top+2&&matchRect.bottom<=bodyRect.bottom-2;
+    btn.classList.toggle('visible',!fullyVisible);
+  };
+  if(body._scrollHandler)body.removeEventListener('scroll',body._scrollHandler);
+  body._scrollHandler=check;
+  body.addEventListener('scroll',check,{passive:true});
+  if(body._resizeHandler)window.removeEventListener('resize',body._resizeHandler);
+  body._resizeHandler=()=>check();
+  window.addEventListener('resize',body._resizeHandler);
+  check();
+}
+
+function _formatLogContextPayload(payload){
+  if(!payload)return '';
+  const lines=(Array.isArray(payload.lines)?payload.lines:[]).map(item=>`${item.no}\t${item.text}`).join('\n');
+  return [
+    `source: ${payload.source}`,
+    payload.host_ip?`host_ip: ${payload.host_ip}`:'',
+    payload.account?`account: ${payload.account}`:'',
+    `path: ${payload.path}`,
+    `line: ${payload.line}`,
+    `context: ${payload.before} before / ${payload.after} after`,
+    '',
+    lines,
+  ].filter(line=>line!=='').join('\n').trim();
+}
+
+function _copyLogContextDialogText(){
+  const text=_formatLogContextPayload(_logContextState&&_logContextState.payload);
+  if(!text)return;
+  _copyText(text).then(()=>showToast(_logContextLabel('copied','Copied'),1400)).catch(()=>showToast(_logContextLabel('copy_failed','Copy failed')));
+}
+
+function _appendLogContextToComposer(){
+  const text=_formatLogContextPayload(_logContextState&&_logContextState.payload);
+  const input=$('msg');
+  if(!text||!input)return;
+  const block=`Please continue the analysis based on this log context:\n\n\`\`\`log\n${text}\n\`\`\``;
+  const current=String(input.value||'');
+  input.value=current.trim()?`${current.replace(/\s+$/,'')}\n\n${block}\n\n`:`${block}\n\n`;
+  input.focus();
+  try{input.setSelectionRange(input.value.length,input.value.length);}catch(_){}
+  input.dispatchEvent(new Event('input',{bubbles:true}));
+  if(typeof autoResize==='function')autoResize();
+  showToast(_logContextLabel('log_context_appended','Log context added to composer'),1600);
+}
+
+function enhanceLogContextRefs(container){
+  const root=container||document;
+  root.querySelectorAll('a[href^="hermes-log://context"]:not([data-log-context-bound])').forEach(anchor=>{
+    const ref=_parseLogContextHref(anchor.getAttribute('href')||anchor.href||'');
+    if(!ref)return;
+    anchor.dataset.logContextBound='1';
+    anchor.dataset.source=ref.source;
+    anchor.dataset.hostIp=ref.host_ip;
+    anchor.dataset.account=ref.account;
+    anchor.dataset.path=ref.path;
+    anchor.dataset.line=String(ref.line);
+    anchor.classList.add('log-context-ref');
+    anchor.removeAttribute('target');
+    anchor.removeAttribute('rel');
+    anchor.setAttribute('role','button');
+    anchor.title=_logContextLabel('log_context_view','View log context');
+    const open=e=>{
+      e.preventDefault();
+      e.stopPropagation();
+      _openLogContextDialog(ref);
+    };
+    anchor.addEventListener('click',open);
+    if(anchor.parentElement&&!anchor.parentElement.classList.contains('log-context-ref-wrap')){
+      const wrap=document.createElement('span');
+      wrap.className='log-context-ref-wrap';
+      anchor.parentNode.insertBefore(wrap,anchor);
+      wrap.appendChild(anchor);
+      const btn=document.createElement('button');
+      btn.type='button';
+      btn.className='log-context-action';
+      btn.textContent=_logContextLabel('log_context_view','View context');
+      btn.addEventListener('click',open);
+      wrap.appendChild(btn);
+    }
+  });
+}
+
 function postProcessRenderedMessages(container) {
   highlightCode(container);
+  enhanceLogContextRefs(container);
   addCopyButtons(container);
   loadDiffInline(container);
   loadCsvInline(container);

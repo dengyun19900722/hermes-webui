@@ -1,5 +1,19 @@
 # ZK 运维智能体 - 版本变更日志
 
+## [v1.0.3] — 2026-06-10
+
+### Added
+
+- ZKREQ-107: 日志分析结果支持 `hermes-log://context` 引用，点击后由 WebUI 后端通过受控 expect 登录服务器读取日志上下文
+- ZKREQ-108: 新增 `/api/log-context`，按 `source/path/line/before/after` 返回日志前后文，强制配置源、路径白名单、行数上限、响应大小上限和审计记录
+- ZKREQ-109: `/api/log-context` 入参支持 `host_ip/account`，后端从服务端主机清单或固定 lookup 脚本解析日志账号和密码环境变量，不接受前端明文密码
+- ZKREQ-110: 日志上下文主机凭据解析新增 Neo4j 图库回退，按 `Host.ip` 查询 `ssh_user`、`ssh_password`、`ssh_port`，无需额外 host_inventory 配置
+
+### Changed
+
+- ZKREQ-111: 日志上下文弹窗交互增强 — 当前匹配行高亮（左侧彩色标识条 `border-left`、更强背景色、行号加粗高亮），新增浮动"回到当前行"按钮（滚动离开匹配行后自动显示，点击平滑滚动回当前位置），弹窗全部按钮和提示文字支持中文界面适配
+- ZKREQ-112: Markdown 渲染支持 `hermes-log://context` 协议链接，Skill 输出中可直接点击跳转弹出日志上下文弹窗
+
 ## [v1.0.2] — 2026-06-10
 
 ### Changed

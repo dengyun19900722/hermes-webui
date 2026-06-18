@@ -2225,6 +2225,61 @@
 .selected-text-reply-btn.visible{opacity:1;pointer-events:auto;transform:translateY(0);}
 .selected-text-reply-btn:hover{background:var(--accent-bg);border-color:var(--accent-hover);}
 .selected-text-reply-btn:focus-visible{background:var(--accent-bg);border-color:var(--accent-hover);outline:2px solid var(--focus-ring);outline-offset:2px;}
+.log-context-ref-wrap{display:inline-flex;align-items:center;gap:6px;position:relative;vertical-align:baseline;}
+.log-context-ref{font-family:'SF Mono',ui-monospace,Menlo,monospace;font-size:.92em;color:var(--accent-text);text-decoration:none;border-bottom:1px dashed var(--accent);cursor:pointer;}
+.log-context-ref:hover{background:var(--accent-bg);}
+.log-context-action{display:inline-flex;align-items:center;min-height:24px;padding:3px 7px;border:1px solid var(--border2);border-radius:6px;background:var(--surface-subtle);color:var(--muted);font-size:11px;font-weight:600;line-height:1;opacity:0;pointer-events:none;transform:translateY(2px);transition:opacity .12s ease,transform .12s ease,background .12s ease,color .12s ease,border-color .12s ease;}
+.log-context-ref-wrap:hover .log-context-action,.log-context-ref-wrap:focus-within .log-context-action{opacity:1;pointer-events:auto;transform:translateY(0);}
+.log-context-action:hover{background:var(--accent-bg);border-color:var(--accent);color:var(--accent-text);}
+.log-context-dialog{width:min(900px,100%);position:relative;}
+.log-context-meta{margin-top:4px;color:var(--muted);font-family:'SF Mono',ui-monospace,Menlo,monospace;font-size:11px;line-height:1.45;word-break:break-all;}
+.log-context-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:4px 0 10px;}
+.log-context-presets{display:flex;align-items:center;gap:6px;}
+.log-context-preset{min-width:34px;min-height:30px;padding:4px 8px;border:1px solid var(--border2);border-radius:6px;background:var(--surface-subtle);color:var(--text);font-size:12px;font-weight:650;cursor:pointer;}
+.log-context-preset:hover{background:var(--hover-bg);border-color:var(--accent);}
+.log-context-controls label{display:inline-flex;align-items:center;gap:5px;color:var(--muted);font-size:12px;}
+.log-context-controls input{width:72px;height:30px;padding:4px 7px;border:1px solid var(--border2);border-radius:6px;background:var(--input-bg);color:var(--text);font-size:12px;box-sizing:border-box;}
+.log-context-error{margin:0 0 10px;padding:8px 10px;border:1px solid rgba(248,113,113,.35);border-radius:8px;background:rgba(248,113,113,.10);color:var(--error);font-size:12px;}
+.log-context-body{max-height:min(56vh,560px);overflow:auto;border:1px solid var(--border2);border-radius:8px;background:var(--bg);font-family:'SF Mono',ui-monospace,Menlo,monospace;font-size:12px;line-height:1.55;}
+.log-context-line{display:grid;grid-template-columns:minmax(54px,auto) 1fr;gap:10px;padding:1px 10px;border-bottom:1px solid rgba(128,128,128,.08);white-space:pre-wrap;}
+.log-context-line.match{background:color-mix(in srgb,var(--accent) 18%,var(--bg));border-left:3px solid var(--accent);padding-left:7px;}
+.log-context-line.match .log-context-line-no{color:var(--accent-text);font-weight:700;}
+.log-context-line-no{color:var(--muted);text-align:right;user-select:none;}
+.log-context-line-text{min-width:0;word-break:break-word;}
+.log-context-empty{padding:14px;color:var(--muted);}
+.log-context-actions{margin-top:12px;}
+
+/* ── Log context scroll-to-current-line button ── */
+.log-context-scroll-btn{
+  position:absolute;
+  z-index:10;
+  top:84px;
+  right:20px;
+  display:inline-flex;
+  align-items:center;
+  gap:5px;
+  padding:5px 11px;
+  border:1px solid var(--accent);
+  border-radius:7px;
+  background:var(--surface);
+  color:var(--accent-text);
+  font-size:11px;
+  font-weight:650;
+  cursor:pointer;
+  box-shadow:0 3px 12px rgba(0,0,0,.18);
+  opacity:0;
+  pointer-events:none;
+  transition:opacity .15s ease,transform .15s ease;
+  transform:translateY(-4px);
+  white-space:nowrap;
+}
+.log-context-scroll-btn.visible{
+  opacity:1;
+  pointer-events:auto;
+  transform:translateY(0);
+}
+.log-context-scroll-btn:hover{background:var(--accent-bg);}
+
 /* TTS speaker button: hidden by default, shown when TTS is enabled.
  * Use body-class selector instead of JS inline-style so the rule survives
  * subsequent renderMd() passes and is not subject to inline-style cascade

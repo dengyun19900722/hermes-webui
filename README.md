@@ -644,6 +644,7 @@ State lives outside the repo at `~/.hermes/webui/` by default
 - `docs/onboarding.md` -- first-run wizard, provider setup, local model server Base URLs, and safe re-runs
 - `docs/onboarding-agent-checklist.md` -- safety rules, evidence commands, and pass/fail checks for assistant-led install or reinstall support
 - `docs/troubleshooting.md` -- diagnostic flows for common failures (e.g. "AIAgent not available")
+- `docs/log-context.md` -- expect-based `/api/log-context` setup and manual API test plan
 - `docs/wsl-autostart.md` -- WSL2 auto-start at Windows login
 - `docs/EXTENSIONS.md` -- administrator-controlled WebUI extension injection
 - `docs/rfcs/README.md` -- RFC index for larger architecture and durability proposals
