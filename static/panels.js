@@ -8001,3 +8001,84 @@ async function _restoreCheckpoint(workspace,checkpoint,message){
     showToast(t('checkpoint_restore')+': '+e.message,'error');
   }
 }
+
+// ── License Management ────────────────────────────────────────────────────────
+
+// 检查 License 状态并显示/隐藏 overlay
+async function checkLicenseStatus() {
+  try {
+    const resp = await fetch('/api/license/status');
+    const data = await resp.json();
+    const overlay = document.getElementById('licenseOverlay');
+    if (!data.activated || data.status === 'expired' || data.status === 'copied') {
+      // 显示 License 申请页面
+      document.getElementById('licensePlatformId').textContent = data.platform_id || 'N/A';
+      document.getElementById('licenseMacAddress').textContent = data.mac_address || 'N/A';
+      overlay.style.display = 'flex';
+    } else {
+      overlay.style.display = 'none';
+    }
+  } catch (e) {
+    console.error('License check failed:', e);
+  }
+}
+
+// 复制到剪贴板
+function copyToClipboard(elementId) {
+  const text = document.getElementById(elementId).textContent;
+  navigator.clipboard.writeText(text);
+}
+
+// 导入 License
+async function importLicense() {
+  const fileInput = document.getElementById('licenseFileInput');
+  const errorEl = document.getElementById('licenseError');
+  errorEl.style.display = 'none';
+
+  if (!fileInput.files.length) {
+    errorEl.textContent = '请选择 License 文件';
+    errorEl.style.display = 'block';
+    return;
+  }
+
+  const file = fileInput.files[0];
+  const text = await file.text();
+
+  try {
+    const resp = await fetch('/api/license/import', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({license_string: text.trim()})
+    });
+    const result = await resp.json();
+    if (result.ok) {
+      // 激活成功，刷新页面
+      location.reload();
+    } else {
+      errorEl.textContent = result.error || '导入失败';
+      errorEl.style.display = 'block';
+    }
+  } catch (e) {
+    errorEl.textContent = '导入失败: ' + e.message;
+    errorEl.style.display = 'block';
+  }
+}
+
+// 加载 License 管理信息（系统管理页面用）
+async function loadLicenseAdminInfo() {
+  try {
+    const resp = await fetch('/api/license/status');
+    const data = await resp.json();
+    document.getElementById('adminLicenseStatus').textContent = data.status || 'not_activated';
+    document.getElementById('adminPlatformId').textContent = data.platform_id || '-';
+    document.getElementById('adminMacAddress').textContent = data.mac_address || '-';
+    document.getElementById('adminExpiresAt').textContent = data.expires_at || '-';
+    document.getElementById('adminDaysRemaining').textContent = data.days_remaining !== null ? data.days_remaining + ' 天' : '-';
+    document.getElementById('adminImportedAt').textContent = data.imported_at || '-';
+  } catch (e) {
+    console.error('Failed to load license info:', e);
+  }
+}
+
+// 页面加载时检查 License 状态
+document.addEventListener('DOMContentLoaded', checkLicenseStatus);
