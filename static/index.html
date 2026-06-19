@@ -1354,6 +1354,19 @@
               </div>
             </div>
 
+            <!-- License Admin Section -->
+            <div class="settings-field" style="margin-top:18px;padding-top:16px;border-top:1px solid var(--border)">
+              <label>License 管理</label>
+              <div style="font-size:11px;color:var(--muted);margin-bottom:8px">当前系统的 License 状态信息</div>
+              <div id="licenseAdminPanel" class="license-admin-info">
+                <div class="info-row"><span class="info-label">状态:</span><span id="adminLicenseStatus" class="info-value">-</span></div>
+                <div class="info-row"><span class="info-label">平台 ID:</span><span id="adminPlatformId" class="info-value">-</span></div>
+                <div class="info-row"><span class="info-label">MAC 地址:</span><span id="adminMacAddress" class="info-value">-</span></div>
+                <div class="info-row"><span class="info-label">过期时间:</span><span id="adminExpiresAt" class="info-value">-</span></div>
+                <div class="info-row"><span class="info-label">剩余天数:</span><span id="adminDaysRemaining" class="info-value">-</span></div>
+                <div class="info-row"><span class="info-label">导入时间:</span><span id="adminImportedAt" class="info-value">-</span></div>
+              </div>
+            </div>
             <!-- Security Audit Section -->
             <div style="margin-top:18px;padding-top:16px;border-top:1px solid var(--border)">
               <label data-i18n="audit_section_title">Security Audit Log</label>
@@ -1577,6 +1590,31 @@
     <div style="margin-top:12px;text-align:center;">
       <span id="changelogCount" style="font-size:12px;color:var(--muted);"></span>
     </div>
+  </div>
+</div>
+
+<div id="licenseOverlay" class="license-overlay" style="display:none;">
+  <div class="license-container">
+    <h2>License 激活</h2>
+    <p>请将以下信息发送给管理员以获取 License</p>
+    <div class="license-info">
+      <div class="license-field">
+        <label>平台 ID:</label>
+        <span id="licensePlatformId" class="license-value"></span>
+        <button onclick="copyToClipboard('licensePlatformId')">复制</button>
+      </div>
+      <div class="license-field">
+        <label>MAC 地址:</label>
+        <span id="licenseMacAddress" class="license-value"></span>
+        <button onclick="copyToClipboard('licenseMacAddress')">复制</button>
+      </div>
+    </div>
+    <div class="license-import">
+      <p>导入 License 文件：</p>
+      <input type="file" id="licenseFileInput" accept=".lic,.txt">
+      <button onclick="importLicense()">导入</button>
+    </div>
+    <p id="licenseError" class="license-error" style="display:none;"></p>
   </div>
 </div>
 

@@ -4726,3 +4726,88 @@ main.main.showing-logs > #mainLogs{display:flex;}
 
 /* Audit action buttons: override sm-btn defaults to match section */
 #auditResults[style*="display"]+.sm-btn{margin-top:4px;}
+
+/* License Overlay */
+.license-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+.license-container {
+  background: var(--bg-secondary, #1e1e1e);
+  padding: 40px;
+  border-radius: 12px;
+  max-width: 500px;
+  width: 90%;
+  color: var(--text-primary, #e0e0e0);
+}
+.license-container h2 {
+  margin-top: 0;
+  margin-bottom: 20px;
+  color: var(--text-primary, #e0e0e0);
+}
+.license-container p {
+  color: var(--text-secondary, #a0a0a0);
+  margin: 10px 0;
+}
+.license-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 15px 0;
+}
+.license-field label {
+  width: 80px;
+  color: var(--text-secondary, #a0a0a0);
+}
+.license-value {
+  font-family: monospace;
+  background: var(--bg-tertiary, #2d2d2d);
+  padding: 8px 12px;
+  border-radius: 4px;
+  flex: 1;
+  color: var(--text-primary, #e0e0e0);
+}
+.license-import {
+  margin-top: 25px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-color, #3d3d3d);
+}
+.license-import p {
+  margin-bottom: 10px;
+}
+.license-import input[type="file"] {
+  margin: 10px 0;
+  color: var(--text-primary, #e0e0e0);
+}
+.license-error {
+  color: #ff6b6b;
+  margin-top: 15px;
+  padding: 10px;
+  background: rgba(255, 107, 107, 0.1);
+  border-radius: 4px;
+}
+.license-admin-info {
+  padding: 10px 0;
+}
+.license-admin-info .info-row {
+  display: flex;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-color, #3d3d3d);
+}
+.license-admin-info .info-row:last-child {
+  border-bottom: none;
+}
+.license-admin-info .info-label {
+  width: 100px;
+  color: var(--text-secondary, #a0a0a0);
+}
+.license-admin-info .info-value {
+  flex: 1;
+  color: var(--text-primary, #e0e0e0);
+  font-family: monospace;
+}

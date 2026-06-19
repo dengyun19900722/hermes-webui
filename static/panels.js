@@ -5717,6 +5717,7 @@ function switchSettingsSection(name){
   // Lazy-load integration panels when their tabs are opened
   if(section==='providers') loadProvidersPanel();
   if(section==='plugins') loadPluginsPanel();
+  if(section==='system') loadLicenseAdminInfo();
 }
 
 function _syncHermesPanelSessionActions(){
