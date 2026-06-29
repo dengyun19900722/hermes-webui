@@ -97,15 +97,23 @@ def generate_license_string(secret_key: str, platform_id: str, mac_address: str,
 
 def decrypt_license_string(license_string: str, secret_key: str) -> dict | None:
     """AES decrypt license string. Returns {"platform_id", "mac_address", "expires_at"} or None."""
+    import logging as _lg
+    _log = _lg.getLogger(__name__)
     try:
         plaintext = _aes_decrypt(license_string.encode(), secret_key)
         if plaintext is None:
+            _log.warning("[license] 解密失败: _aes_decrypt 返回空（密钥不匹配或数据损坏）")
             return None
         parts = plaintext.split("|")
         if len(parts) != 3:
+            _log.warning(
+                "[license] 解密失败: 格式异常 — %d 段（期望 3 段） 原始=%s",
+                len(parts), plaintext[:60],
+            )
             return None
         return {"platform_id": parts[0], "mac_address": parts[1], "expires_at": parts[2]}
-    except Exception:
+    except Exception as exc:
+        _log.warning("[license] 解密异常 %s: %s", type(exc).__name__, exc)
         return None
 
 
@@ -156,13 +164,31 @@ def save_license_config(workspace: Path, config: dict) -> None:
 
 
 def init_license_config(workspace: Path) -> dict:
-    """Initialize license config: read/create license.json, compute platform_id and mac_hash."""
-    secret_key_path = get_secret_key_path(workspace)
-    if not secret_key_path.exists():
-        raise FileNotFoundError(f"secret_key not found at {secret_key_path}")
+    """Initialize license config: read/create license.json, compute platform_id and mac_hash.
 
-    with open(secret_key_path, "r") as f:
-        secret_key = f.read().strip()
+    secret_key 优先级:
+      1. 项目根目录 .secret_key（部署时固定不变，拷贝到新部署即可复用）
+      2. {workspace}/.license/secret_key（已存在）
+      3. 自动生成（首次使用）
+    """
+    secret_key_path = get_secret_key_path(workspace)
+    license_dir = get_license_dir(workspace)
+    license_dir.mkdir(parents=True, exist_ok=True)
+
+    # 项目根目录的固定密钥（与 server.py 同目录）
+    project_key = Path(__file__).resolve().parent.parent / ".secret_key"
+
+    if project_key.exists():
+        secret_key = project_key.read_text().strip()
+        # 同步到 workspace/.license/ 下（如果不存在或内容不同）
+        if not secret_key_path.exists() or secret_key_path.read_text().strip() != secret_key:
+            secret_key_path.write_text(secret_key)
+    elif secret_key_path.exists():
+        secret_key = secret_key_path.read_text().strip()
+    else:
+        import secrets
+        secret_key = secrets.token_hex(32)
+        secret_key_path.write_text(secret_key)
 
     config = load_license_config(workspace)
 
@@ -181,16 +207,19 @@ def init_license_config(workspace: Path) -> dict:
 def check_license_status(workspace: Path) -> dict:
     """
     Check license status. Returns:
-    {"activated": bool, "expires_at": str|null, "days_remaining": int|null, "status": str}
+    {"activated": bool, "expires_at": str|null, "days_remaining": int|null,
+     "imported_at": str|null, "status": str}
     status: "valid" | "expired" | "not_activated" | "copied"
     """
     config = load_license_config(workspace)
+    imported_at = config.get("imported_at")
 
     if not config.get("activated"):
         return {
             "activated": False,
             "expires_at": config.get("expires_at"),
             "days_remaining": None,
+            "imported_at": imported_at,
             "status": "not_activated",
         }
 
@@ -200,6 +229,7 @@ def check_license_status(workspace: Path) -> dict:
             "activated": True,
             "expires_at": None,
             "days_remaining": None,
+            "imported_at": imported_at,
             "status": "valid",
         }
 
@@ -210,6 +240,7 @@ def check_license_status(workspace: Path) -> dict:
             "activated": True,
             "expires_at": expires_at_str,
             "days_remaining": None,
+            "imported_at": imported_at,
             "status": "valid",
         }
 
@@ -221,6 +252,7 @@ def check_license_status(workspace: Path) -> dict:
             "activated": True,
             "expires_at": expires_at_str,
             "days_remaining": remaining,
+            "imported_at": imported_at,
             "status": "expired",
         }
 
@@ -238,6 +270,7 @@ def check_license_status(workspace: Path) -> dict:
                     "activated": True,
                     "expires_at": expires_at_str,
                     "days_remaining": remaining,
+                    "imported_at": imported_at,
                     "status": "copied",
                 }
     except Exception:
@@ -249,6 +282,7 @@ def check_license_status(workspace: Path) -> dict:
         "activated": True,
         "expires_at": expires_at_str,
         "days_remaining": remaining,
+        "imported_at": imported_at,
         "status": "valid",
     }
 
@@ -262,40 +296,66 @@ def import_license(workspace: Path, license_string: str) -> dict:
     4. Update license.json
     Returns {"ok": bool, "error"?: str, "expires_at"?: str}
     """
+    import logging as _lg
+    _log = _lg.getLogger(__name__)
+
     secret_key_path = get_secret_key_path(workspace)
     if not secret_key_path.exists():
-        return {"ok": False, "error": "secret_key not found"}
+        _log.warning("[license] 导入失败: secret_key 文件未找到 %s", secret_key_path)
+        return {"ok": False, "error": "secret_key 文件未找到"}
 
     with open(secret_key_path, "r") as f:
         secret_key = f.read().strip()
 
     decrypted = decrypt_license_string(license_string, secret_key)
     if decrypted is None:
-        return {"ok": False, "error": "Invalid license string"}
+        _log.warning(
+            "[license] 导入失败: 解密返回空（长度=%d  前20位=%s...）",
+            len(license_string), license_string[:20],
+        )
+        return {"ok": False, "error": "无效的 License 字符串"}
 
     license_platform_id = decrypted["platform_id"]
     license_mac = decrypted["mac_address"]
     expires_at = decrypted["expires_at"]
+    _log.info(
+        "[license] 导入: 解密成功  platform=%s  mac=%s  过期时间=%s",
+        license_platform_id, license_mac, expires_at,
+    )
 
     # Verify platform_id matches
     local_mac = get_mac_address()
     local_platform_id = generate_platform_id(secret_key, local_mac)
     if license_platform_id != local_platform_id:
-        return {"ok": False, "error": "Platform ID mismatch"}
+        _log.warning(
+            "[license] 导入失败: 平台 ID 不匹配  期望=%s  实际=%s",
+            local_platform_id, license_platform_id,
+        )
+        return {"ok": False, "error": "平台 ID 不匹配"}
 
     # Verify MAC matches
     if license_mac != local_mac:
-        return {"ok": False, "error": "MAC address mismatch"}
+        _log.warning(
+            "[license] 导入失败: MAC 地址不匹配  期望=%s  实际=%s",
+            local_mac, license_mac,
+        )
+        return {"ok": False, "error": "MAC 地址不匹配"}
 
     # Verify not expired
     if expires_at:
         try:
             expires_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-            if expires_dt < datetime.now(timezone.utc):
-                return {"ok": False, "error": "License expired"}
-        except ValueError:
-            pass
+            now = datetime.now(timezone.utc)
+            if expires_dt < now:
+                _log.warning(
+                    "[license] 导入失败: License 已过期  过期时间=%s  当前时间=%s",
+                    expires_at, now.isoformat(),
+                )
+                return {"ok": False, "error": "License 已过期"}
+        except ValueError as e:
+            _log.warning("[license] 导入: 无法解析过期时间 %s  错误=%s", expires_at, e)
 
+    _log.info("[license] 导入成功: 过期时间=%s", expires_at)
     # Update config
     config = load_license_config(workspace)
     config["activated"] = True

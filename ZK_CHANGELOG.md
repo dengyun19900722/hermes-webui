@@ -1,5 +1,23 @@
 # ZK 运维智能体 - 版本变更日志
 
+## [v1.1.0] — 2026-06-29
+
+### Added
+
+- ZKREQ-113: License 激活管理模块 — 服务端 `api/license.py` 核心模块（AES-256-CBC 加密/解密、platform_id 与 mac_hash 生成、license 文件导入验证），`/api/license/*` 和 `/api/admin/license/*` 路由
+- ZKREQ-114: License 独立激活页面 — 未激活时服务端直接返回自包含 HTML 页面（内联 CSS+JS），显示平台 ID 和 MAC 地址，支持 License 文件上传导入
+
+### Changed
+
+- ZKREQ-115: 服务端 License 中间件 `_require_license` — 所有非 License API 请求强制校验，无效时返回 403 中文错误提示（未激活/已过期/已拷贝/未初始化）
+- ZKREQ-116: 前端 License 校验增强 — 页面加载（boot.js 安全网 + panels.js）、每次面板切换（switchPanel 入口）均校验 License，校验失败显示全屏遮罩
+- ZKREQ-117: License 密钥存储路径从 `HERMES_HOME/.license` 迁移到 `DEFAULT_WORKSPACE/.license`，项目根目录 `.secret_key` 作为固定主密钥随代码部署
+- ZKREQ-118: License 相关日志和错误提示中文化（`[license]` 前缀日志全部中文、API 返回错误消息中文）
+
+### Fixed
+
+- ZKREQ-119: 修复 `require()` 函数返回值始终为 `None` 的 Bug（`require` 只验证不返回值），影响 License 导入和生成路由
+
 ## [v1.0.3] — 2026-06-10
 
 ### Added

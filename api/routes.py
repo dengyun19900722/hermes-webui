@@ -2956,6 +2956,77 @@ button:hover{background:rgba(124,185,255,.25)}
 <script src="static/login.js?v={{WEBUI_VERSION}}"></script>
 </body></html>"""
 
+# ── License activation page (self-contained, no external deps) ──────────────
+_LICENSE_PAGE_HTML = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hermes — License 激活</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#1a1a2e;color:#e8e8f0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  height:100vh;display:flex;align-items:center;justify-content:center}
+.card{background:#16213e;border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:32px 28px;
+  width:380px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.3)}
+h1{font-size:17px;font-weight:600;margin-bottom:6px;color:#e8e8f0}
+p{font-size:12px;color:#8888aa;margin-bottom:16px;line-height:1.5}
+.info{text-align:left;margin-bottom:16px}
+.field{display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.05);font-size:12px}
+.field label{color:#8888aa}
+.field .val{color:#e8e8f0;font-family:monospace;font-size:11px;word-break:break-all;max-width:180px;text-align:right}
+.import-area{border:1px dashed rgba(255,255,255,.15);border-radius:10px;padding:14px;margin-bottom:12px}
+.import-area p{margin-bottom:8px;font-size:11px}
+input[type=file]{width:100%;font-size:11px;color:#8888aa;margin-bottom:10px}
+button{width:100%;padding:9px;border-radius:10px;border:none;background:rgba(124,185,255,.15);
+  border:1px solid rgba(124,185,255,.3);color:#7cb9ff;font-size:13px;font-weight:600;cursor:pointer;
+  transition:all .15s}
+button:hover{background:rgba(124,185,255,.25)}
+.err{color:#e94560;font-size:12px;margin-top:10px;display:none}
+.status{font-size:11px;color:#8888aa;margin-top:10px;display:none}
+</style></head><body>
+<div class="card">
+  <h1>{{BOT_NAME}} — License 激活</h1>
+  <p>请将以下信息发送给管理员以获取 License 文件</p>
+  <div class="info">
+    <div class="field"><label>平台 ID</label><span class="val" id="pid">{{PLATFORM_ID}}</span></div>
+    <div class="field"><label>MAC 地址</label><span class="val" id="mac">{{MAC_ADDRESS}}</span></div>
+  </div>
+  <div class="import-area">
+    <p>选择 License 文件（.lic / .txt）</p>
+    <input type="file" id="licenseFileInput" accept=".lic,.txt">
+    <button onclick="doImport()">导入 License</button>
+  </div>
+  <div class="err" id="err"></div>
+  <div class="status" id="status"></div>
+</div>
+<script>
+function doImport(){
+  var f=document.getElementById('licenseFileInput');
+  var e=document.getElementById('err');
+  var s=document.getElementById('status');
+  e.style.display='none';s.style.display='none';
+  if(!f.files.length){e.textContent='请选择 License 文件';e.style.display='block';return}
+  var fr=new FileReader();
+  fr.onload=function(){
+    s.textContent='正在验证...';s.style.display='block';
+    var base=(document.querySelector('base')||{}).href||location.origin+'/';
+    fetch(base+'api/license/import',{method:'POST',credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({license_string:fr.result.trim()})
+    }).then(function(r){return r.json()}).then(function(d){
+      if(d.ok){
+        s.textContent='激活成功，即将刷新页面...';
+        try{sessionStorage.setItem('hermes_license_activated','1')}catch(_){}
+        setTimeout(function(){location.reload()},1200)
+      }else{e.textContent=d.error||'导入失败';e.style.display='block';s.style.display='none'}
+    }).catch(function(x){
+      e.textContent='请求失败: '+(x.message||x);e.style.display='block';s.style.display='none'
+    })
+  };
+  fr.readAsText(f.files[0]);
+}
+</script>
+</body></html>"""
+
+
 _LOG_FILE_WHITELIST = {
     "agent": "agent.log",
     "errors": "errors.log",
@@ -4000,31 +4071,105 @@ def _serve_manifest(handler) -> bool:
     return j(handler, {"error": "not found"}, status=404)
 
 
+def _require_license(handler, parsed) -> bool | None:
+    """License gate: return True (blocked) or None (allowed).
+
+    Blocks non-license API routes when license is not activated/valid.
+    The main SPA page (/, /index.html, /session/*) is *not* blocked here
+    because the frontend overlay handles it — but the page will refuse to
+    fetch any API data if license is invalid.
+    """
+    path = parsed.path
+
+    # Always allow license admin, auth, static files, login, CSP
+    if (
+        path.startswith("/api/license/")
+        or path.startswith("/api/auth/")
+        or path.startswith("/static/")
+        or path.startswith("/session/static/")
+        or path in ("/login", "/api/csp-report", "/api/shutdown")
+        or path in ("/manifest.json", "/manifest.webmanifest")
+        or path in ("/session/manifest.json", "/session/manifest.webmanifest")
+    ):
+        return None
+
+    # Main SPA page — serve as-is, frontend handles the overlay
+    if path in ("/", "/index.html") or path.startswith("/session/"):
+        return None
+
+    from api.license import check_license_status, init_license_config
+    from api.config import DEFAULT_WORKSPACE
+
+    workspace = Path(DEFAULT_WORKSPACE)
+    try:
+        config = init_license_config(workspace)
+    except FileNotFoundError:
+        j(handler, {
+            "error": "license_not_initialized",
+            "message": "License 未初始化，请联系管理员。",
+        }, status=403)
+        return True
+
+    status = check_license_status(workspace)
+    if status["status"] == "valid":
+        return None  # allowed
+
+    reasons = {
+        "not_activated": "License 未激活。",
+        "not_initialized": "License 未初始化。",
+        "expired": f"License 已过期 {abs(status['days_remaining'])} 天。" if status.get("days_remaining") is not None else "License 已过期。",
+        "copied": "License 已被拷贝到其他机器，请联系管理员。",
+    }
+    message = reasons.get(status["status"], "License 验证失败。")
+    logger.info("[license] 拦截 %s: %s  platform=%s", parsed.path, status["status"], status.get("platform_id", "?"))
+    j(handler, {
+        "error": f"license_{status['status']}",
+        "message": message,
+    }, status=403)
+    return True
+
+
 def handle_get(handler, parsed) -> bool:
     """Handle all GET routes. Returns True if handled, False for 404."""
+
+    # License check (blocks API calls if license invalid)
+    blocked = _require_license(handler, parsed)
+    if blocked is True:
+        return True
 
     # ── License routes ─────────────────────────────────────────────────────────
     if parsed.path == "/api/license/status":
         from api.license import init_license_config, check_license_status
-        from api.profiles import get_active_hermes_home
-
-        workspace = Path(get_active_hermes_home())
+        workspace = Path(DEFAULT_WORKSPACE)
         try:
             config = init_license_config(workspace)
         except FileNotFoundError:
-            return bad(handler, "License not initialized", status=400)
+            logger.info("[license] 状态查询: 未初始化(secret_key 文件缺失)")
+            return j(handler, {
+                "activated": False,
+                "status": "not_initialized",
+                "platform_id": None,
+                "mac_address": None,
+                "expires_at": None,
+                "days_remaining": None,
+                "imported_at": None,
+            })
 
         status = check_license_status(workspace)
         status["platform_id"] = config.get("platform_id")
         status["mac_address"] = config.get("mac_address")
+        logger.info(
+            "[license] 状态查询: %s  platform=%s  mac=%s  过期时间=%s  剩余天数=%s",
+            status["status"], status.get("platform_id"), status.get("mac_address"),
+            status.get("expires_at"), status.get("days_remaining"),
+        )
         return j(handler, status)
 
     if parsed.path == "/api/admin/license/list":
         from api.license import get_admin_license_list
-        from api.profiles import get_active_hermes_home
-
-        workspace = Path(get_active_hermes_home())
+        workspace = Path(DEFAULT_WORKSPACE)
         licenses = get_admin_license_list(workspace)
+        logger.info("[license] 管理员查询列表: %d 条记录", len(licenses))
         return j(handler, {"licenses": licenses})
 
     # ── Notes routes ───────────────────────────────────────────────────────────
@@ -4076,6 +4221,34 @@ def handle_get(handler, parsed) -> bool:
                 .replace("__MAX_UPLOAD_BYTES__", str(MAX_UPLOAD_BYTES))
                 .replace("__CSRF_TOKEN_JSON__", json.dumps(csrf_token))
             )
+
+            # License gate: if license is invalid, return a standalone
+            # self-contained license activation page (bypasses SPA entirely).
+            try:
+                from api.license import check_license_status, init_license_config
+
+                lw = Path(DEFAULT_WORKSPACE)
+                lconf = init_license_config(lw)
+                lstatus = check_license_status(lw)
+            except Exception:
+                lconf = {}
+                lstatus = {"status": "not_initialized", "activated": False}
+
+            if lstatus.get("status") != "valid":
+                logger.info(
+                    "[license] 返回 License 激活页（状态=%s  platform=%s）",
+                    lstatus.get("status"), lconf.get("platform_id", "?"),
+                )
+                _settings = load_settings()
+                _bot_name = _html.escape(_settings.get("bot_name") or "Hermes")
+                page = (
+                    _LICENSE_PAGE_HTML
+                    .replace("{{BOT_NAME}}", _bot_name)
+                    .replace("{{PLATFORM_ID}}", _html.escape(lconf.get("platform_id") or "N/A"))
+                    .replace("{{MAC_ADDRESS}}", _html.escape(lconf.get("mac_address") or "N/A"))
+                )
+                return t(handler, page, content_type="text/html; charset=utf-8")
+
             return t(
                 handler,
                 inject_extension_tags(html),
@@ -5319,51 +5492,69 @@ def handle_post(handler, parsed) -> bool:
     # ── License routes ─────────────────────────────────────────────────────────
     if parsed.path == "/api/license/apply":
         from api.license import get_mac_address, generate_platform_id, read_secret_key
-        from api.profiles import get_active_hermes_home
-
-        workspace = Path(get_active_hermes_home())
+        workspace = Path(DEFAULT_WORKSPACE)
         try:
             secret_key = read_secret_key(workspace)
         except FileNotFoundError:
-            return bad(handler, "License not initialized", status=400)
+            logger.warning("[license] 申请信息失败: secret_key 文件未找到")
+            return bad(handler, "License 未初始化", status=400)
         mac_address = get_mac_address()
         platform_id = generate_platform_id(secret_key, mac_address)
+        logger.info("[license] 申请信息: platform=%s  mac=%s", platform_id, mac_address)
         return j(handler, {"platform_id": platform_id, "mac_address": mac_address})
 
     if parsed.path == "/api/license/import":
         from api.license import import_license
-        from api.profiles import get_active_hermes_home
 
-        body = read_body(handler)
         try:
-            field = require(body, "license_string")
-        except ValueError as e:
-            return bad(handler, str(e), status=400)
-        workspace = Path(get_active_hermes_home())
-        result = import_license(workspace, field)
-        if result.get("ok"):
-            return j(handler, {"ok": True, "expires_at": result.get("expires_at")})
-        return bad(handler, result.get("error"), status=400)
+            body = read_body(handler)
+            field = body.get("license_string")
+            if not field:
+                logger.warning(
+                    "[license] 导入失败: license_string 缺失或为空  body=%s",
+                    {k: (v[:20] + "...") if isinstance(v, str) and len(v) > 20 else v for k, v in body.items()} if isinstance(body, dict) else type(body).__name__,
+                )
+                return bad(handler, "缺少 License 内容", status=400)
+            workspace = Path(DEFAULT_WORKSPACE)
+            result = import_license(workspace, field)
+            if result.get("ok"):
+                logger.info("[license] 导入成功: 过期时间=%s", result.get("expires_at"))
+                return j(handler, {"ok": True, "expires_at": result.get("expires_at")})
+            logger.warning("[license] 导入失败: %s", result.get("error"))
+            return bad(handler, result.get("error"), status=400)
+        except Exception as exc:
+            logger.exception("[license] 导入异常 %s: %s", type(exc).__name__, exc)
+            return bad(handler, f"导入异常: {exc}", status=500)
 
     if parsed.path == "/api/admin/license/generate":
         from api.license import generate_license_string, save_generated_license, read_secret_key
-        from api.profiles import get_active_hermes_home
 
         body = read_body(handler)
-        try:
-            platform_id = require(body, "platform_id")
-            mac_address = require(body, "mac_address")
-            expires_at = require(body, "expires_at")
-        except ValueError as e:
-            return bad(handler, str(e), status=400)
-        workspace = Path(get_active_hermes_home())
+        platform_id = body.get("platform_id")
+        mac_address = body.get("mac_address")
+        expires_at = body.get("expires_at")
+        if not platform_id or not mac_address or not expires_at:
+            logger.warning("[license] 管理员生成失败: 缺少必填字段  pid=%s mac=%s exp=%s",
+                          platform_id, mac_address, expires_at)
+            return bad(handler, "缺少必填字段: platform_id, mac_address, expires_at", status=400)
+        workspace = Path(DEFAULT_WORKSPACE)
         try:
             secret_key = read_secret_key(workspace)
         except FileNotFoundError:
-            return bad(handler, "License not initialized", status=400)
+            logger.warning("[license] 管理员生成失败: secret_key 文件未找到")
+            return bad(handler, "License 未初始化", status=400)
         license_string = generate_license_string(secret_key, platform_id, mac_address, expires_at)
         save_generated_license(workspace, platform_id, mac_address, expires_at)
+        logger.info("[license] 管理员生成: platform=%s  mac=%s  过期时间=%s  长度=%d",
+                    platform_id, mac_address, expires_at, len(license_string))
         return j(handler, {"ok": True, "license_string": license_string})
+
+    # License gate: block non-license POST endpoints when not activated
+    blocked = _require_license(handler, parsed)
+    if blocked is True:
+        if diag:
+            diag.finish()
+        return True
 
     # CSRF: reject cross-origin or tokenless authenticated browser requests.
     # /api/auth/login has no authenticated session token yet, and /api/csp-report

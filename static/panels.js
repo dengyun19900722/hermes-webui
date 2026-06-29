@@ -219,6 +219,17 @@ function _resyncChatSidebarAfterPanelSwitch() {
 }
 
 async function switchPanel(name, opts = {}) {
+  // ── License enforcement on every panel switch ──
+  try {
+    const licData = await api('/api/license/status').catch(() => null);
+    if (!licData || !licData.activated || ['not_activated','expired','copied','not_initialized'].includes(licData.status)) {
+      try { if (sessionStorage.getItem('hermes_license_activated')) { sessionStorage.removeItem('hermes_license_activated'); } } catch(_) {}
+      const o = document.getElementById('licenseOverlay');
+      if (o) o.setAttribute('style', 'display:flex !important;visibility:visible !important;z-index:99999;');
+      return false;
+    }
+  } catch(_) {}
+  // ──────────────────────────────────────────────────
   const nextPanel = name || 'chat';
   const prevPanel = _currentPanel;
   // ── Desktop sidebar collapse toggle (rail-click only) ──
@@ -8007,20 +8018,36 @@ async function _restoreCheckpoint(workspace,checkpoint,message){
 
 // 检查 License 状态并显示/隐藏 overlay
 async function checkLicenseStatus() {
+  let data;
   try {
-    const data = await api('/api/license/status');
-    const overlay = document.getElementById('licenseOverlay');
-    if (!data.activated || data.status === 'expired' || data.status === 'copied') {
-      // 显示 License 申请页面
-      document.getElementById('licensePlatformId').textContent = data.platform_id || 'N/A';
-      document.getElementById('licenseMacAddress').textContent = data.mac_address || 'N/A';
-      overlay.style.display = 'flex';
-    } else {
-      overlay.style.display = 'none';
-    }
+    data = await api('/api/license/status');
   } catch (e) {
+    // 如果刚刚激活成功，跳过错误提示（页面 reload 后的短暂竞态）
+    try { if(sessionStorage.getItem('hermes_license_activated')){sessionStorage.removeItem('hermes_license_activated');return} }catch(_){}
+    // API 请求失败也显示申请页面
     console.error('License check failed:', e);
-    showToast('License 检查失败: ' + (e.message || e), 4000, 'error');
+    var overlay = document.getElementById('licenseOverlay');
+    var pidEl = document.getElementById('licensePlatformId');
+    var macEl = document.getElementById('licenseMacAddress');
+    if (pidEl) pidEl.textContent = 'N/A';
+    if (macEl) macEl.textContent = 'N/A';
+    if (overlay) overlay.setAttribute('style', 'display:flex !important;visibility:visible !important;z-index:99999;');
+    try { showToast('License 检查失败: ' + (e.message || e), 4000, 'error'); } catch (_) {}
+    return;
+  }
+
+  // not_activated、expired、copied、not_initialized 或 activated=false 都显示申请页面
+  const needsActivation = !data.activated || data.status === 'not_activated' || data.status === 'expired' || data.status === 'copied' || data.status === 'not_initialized';
+  if (needsActivation) {
+    var overlay2 = document.getElementById('licenseOverlay');
+    var pidEl2 = document.getElementById('licensePlatformId');
+    var macEl2 = document.getElementById('licenseMacAddress');
+    if (pidEl2) pidEl2.textContent = data.platform_id || 'N/A';
+    if (macEl2) macEl2.textContent = data.mac_address || 'N/A';
+    if (overlay2) overlay2.setAttribute('style', 'display:flex !important;visibility:visible !important;z-index:99999;');
+  } else {
+    var overlay3 = document.getElementById('licenseOverlay');
+    if (overlay3) overlay3.style.display = 'none';
   }
 }
 
@@ -8082,5 +8109,6 @@ async function loadLicenseAdminInfo() {
   }
 }
 
-// 页面加载时检查 License 状态
+// 页面加载时检查 License 状态；同时立即执行一次（兜底）
 document.addEventListener('DOMContentLoaded', checkLicenseStatus);
+try { if (typeof checkLicenseStatus === 'function') checkLicenseStatus(); } catch(_) {}

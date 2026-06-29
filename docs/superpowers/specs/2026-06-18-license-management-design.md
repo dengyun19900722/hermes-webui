@@ -240,6 +240,49 @@ license_string = base64(encrypted)
 }
 ```
 
+### 4.3 生成 License 调用示例
+
+管理员在服务端执行 curl 命令生成 License：
+
+```bash
+curl -s -X POST http://127.0.0.1:7000/api/admin/license/generate \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "platform_id": "PLAT-57C8FF",
+    "mac_address": "AA:BB:CC:DD:EE:FF",
+    "expires_at": "2026-12-31T23:59:59Z"
+  }'
+```
+
+**响应：**
+```json
+{
+  "ok": true,
+  "license_string": "a1b2c3d4e5f6..."
+}
+```
+
+将 `license_string` 的值保存为 `.lic` 文件，提供给现场用户导入。
+
+**一键生成脚本（自动获取本机信息）：**
+```bash
+# 先获取本机平台 ID 和 MAC
+INFO=$(curl -s http://127.0.0.1:7000/api/license/apply -X POST -H 'Content-Type: application/json' -d '{}')
+PID=$(echo $INFO | python3 -c "import sys,json; print(json.load(sys.stdin)['platform_id'])")
+MAC=$(echo $INFO | python3 -c "import sys,json; print(json.load(sys.stdin)['mac_address'])")
+
+# 用获取到的信息生成 License
+curl -s -X POST http://127.0.0.1:7000/api/admin/license/generate \
+  -H 'Content-Type: application/json' \
+  -d "{\"platform_id\": \"$PID\", \"mac_address\": \"$MAC\", \"expires_at\": \"2026-12-31T23:59:59Z\"}" \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('license_string','ERROR: '+str(d)))" > license.lic
+```
+
+参数说明：
+- `platform_id`：从 License 申请页获取，格式 `PLAT-XXXXXX`
+- `mac_address`：从 License 申请页获取，格式 `AA:BB:CC:DD:EE:FF`
+- `expires_at`：过期时间，ISO 8601 格式（`2026-12-31T23:59:59Z`）
+
 ---
 
 ## 5. 数据存储

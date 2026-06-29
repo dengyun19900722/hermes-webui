@@ -1895,3 +1895,62 @@ function _showServerStopped() {
   var stoppedMsg = (typeof t === 'function' ? t('settings_shutdown_stopped_message') : 'Server stopped. You can close this tab.');
   document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;color:var(--muted);font-family:system-ui,ui-sans-serif;font-size:14px"><p>' + stoppedMsg + '</p></div>';
 }
+
+// ── License check safety net ─────────────────────────────────────────────────
+// Runs independently of panels.js checkLicenseStatus(), using only plain fetch
+// and DOM APIs so it works even if panels.js has a runtime error.
+(function(){
+  if(typeof document==='undefined')return;
+  var _checked=false;
+  function _runLicenseCheck(){
+    if(_checked)return;
+    _checked=true;
+    fetch(new URL('api/license/status',document.baseURI||location.href).href,{credentials:'include'})
+      .then(function(r){
+        if(!r.ok)throw new Error('HTTP '+r.status);
+        return r.json();
+      })
+      .then(function(data){
+        // If license was just activated, skip re-check on this page load
+        if(!_skipIfJustActivated())return;
+        var needsActivation=(
+          !data.activated||
+          data.status==='not_activated'||
+          data.status==='not_initialized'||
+          data.status==='expired'||
+          data.status==='copied'
+        );
+        if(needsActivation)_showLicenseOverlay(data);
+      })
+      .catch(function(e){
+        if(!_skipIfJustActivated())return;
+        console.error('[license] safety-net check failed:',e);
+        _showLicenseOverlay(null);
+      });
+  }
+  function _skipIfJustActivated(){
+    try{
+      if(sessionStorage.getItem('hermes_license_activated')){
+        sessionStorage.removeItem('hermes_license_activated');
+        return false; // skip remaining checks
+      }
+    }catch(_){}
+    return true; // continue
+  }
+  function _showLicenseOverlay(data){
+    var overlay=document.getElementById('licenseOverlay');
+    if(!overlay)return;
+    var pidEl=document.getElementById('licensePlatformId');
+    var macEl=document.getElementById('licenseMacAddress');
+    if(pidEl)pidEl.textContent=(data&&data.platform_id)||'N/A';
+    if(macEl)macEl.textContent=(data&&data.mac_address)||'N/A';
+    overlay.setAttribute('style','display:flex !important;visibility:visible !important;z-index:99999;');
+  }
+  // Run immediately if DOM is ready, otherwise on load event
+  if(document.readyState==='complete'||document.readyState==='interactive'){
+    _runLicenseCheck();
+  }else{
+    document.addEventListener('DOMContentLoaded',_runLicenseCheck);
+    window.addEventListener('load',_runLicenseCheck);
+  }
+})();
