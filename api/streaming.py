@@ -59,6 +59,85 @@ _ENV_LOCK = threading.Lock()
 _KEYLESS_CUSTOM_API_KEY = "dummy-key"
 
 
+class TurnTimer:
+    """智能体单轮对话的阶段计时器，按阶段累积耗时。
+
+    每次阶段切换自动按顺序记录一条条目（含 LLM 思考和工具调用）。
+    工具条目附加 cmd（执行命令摘要）。
+
+    用法:
+        timer = TurnTimer()
+        timer.begin_phase("llm")
+        ... agent 运行, on_tool_start/on_tool_complete 自动埋点 ...
+        result = timer.finish()
+        # -> {"total_ms": ..., "phases": {...}, "ordered_calls": [{...}, ...], "steps": N}
+    """
+
+    def __init__(self):
+        self._t0 = time.time()
+        self._phases: dict[str, float] = {}
+        self._tools: dict[str, float] = {}
+        self._ordered_calls: list[dict] = []   # 按真实执行顺序，llm / tool 交错排列
+        self._steps = 0
+        self._current: str | None = None
+        self._phase_t0: float | None = None
+
+    def begin_phase(self, name: str) -> None:
+        """切换到指定阶段——自动结算上一阶段并记录到 ordered_calls"""
+        self._close_phase()
+        self._current = name
+        self._phase_t0 = time.time()
+
+    def _close_phase(self) -> None:
+        if self._current is not None and self._phase_t0 is not None:
+            elapsed = time.time() - self._phase_t0
+            self._phases[self._current] = self._phases.get(self._current, 0.0) + elapsed
+            # 按真实顺序记录每段耗时
+            entry: dict = {
+                "type": "llm" if self._current == "llm" else "tool",
+                "duration_ms": round(elapsed * 1000, 1),
+            }
+            if self._current != "llm":
+                entry["name"] = self._current.removeprefix("tool:")
+            self._ordered_calls.append(entry)
+        self._current = None
+        self._phase_t0 = None
+
+    def record_tool(self, name: str, duration: float, cmd: str | None = None) -> None:
+        """记录工具执行的耗时和命令摘要，附加到最后一条 tool 条目"""
+        self._tools[name] = self._tools.get(name, 0.0) + duration
+        # 找到最后一条 name 匹配的 tool 条目更新 cmd
+        for entry in reversed(self._ordered_calls):
+            if entry.get("type") == "tool" and entry.get("name") == name:
+                if cmd:
+                    entry["cmd"] = cmd
+                break
+        # 如果没有 match（极低概率），追加一条
+        else:
+            call: dict = {"type": "tool", "name": name, "duration_ms": round(duration * 1000, 1)}
+            if cmd:
+                call["cmd"] = cmd
+            self._ordered_calls.append(call)
+
+    def inc_step(self) -> None:
+        """递增 LLM 调用步数"""
+        self._steps += 1
+
+    def finish(self) -> dict:
+        """结束计时，关闭最后一个阶段，返回完整耗时报告"""
+        self._close_phase()
+        total = time.time() - self._t0
+        accounted = sum(self._phases.values())
+        return {
+            "total_ms": round(total * 1000, 1),
+            "phases": {k: round(v * 1000, 1) for k, v in self._phases.items()},
+            "other_ms": round(max(0.0, total - accounted) * 1000, 1),
+            "tools": {k: round(v * 1000, 1) for k, v in self._tools.items()},
+            "ordered_calls": self._ordered_calls,
+            "steps": self._steps,
+        }
+
+
 def _resolve_custom_provider_runtime_overrides(
     resolved_provider: str | None,
     resolved_api_key: str | None,
@@ -3532,6 +3611,8 @@ def _run_agent_streaming(
         provider=model_provider,
         ephemeral=bool(ephemeral),
     )
+
+    timer = TurnTimer()
     try:
         run_journal = RunJournalWriter(session_id, stream_id)
     except Exception:
@@ -3748,6 +3829,7 @@ def _run_agent_streaming(
             )
         )
         if _is_compression_start:
+            timer.begin_phase("compression")
             put('compressing', {
                 'session_id': session_id,
                 'message': 'Auto-compressing context to continue...',
@@ -4064,6 +4146,8 @@ def _run_agent_streaming(
                 visible = str(text).strip()
                 if not visible:
                     return
+                # 首包 LLM 输出标志着 LLM 推理阶段开始
+                timer.begin_phase("llm")
                 already_streamed = bool(cb_kwargs.get('already_streamed', False)) or _is_visible_output_echo(visible)
                 put('interim_assistant', {
                     'text': visible,
@@ -4237,6 +4321,9 @@ def _run_agent_streaming(
                     return
 
             def on_tool_start(tool_call_id, name, args):
+                timer.begin_phase(f"tool:{name}")
+                if name:
+                    _tool_t0[name] = time.time()
                 try:
                     _record_live_tool_start(tool_call_id, name, args)
                     if tool_call_id and tool_call_id not in _live_tool_event_start_ids:
@@ -4268,7 +4355,18 @@ def _run_agent_streaming(
                 except Exception:
                     logger.debug('Failed to update live prompt estimate on tool start', exc_info=True)
 
+            # Track tool timing via local time measurements
+            _tool_t0: dict[str, float] = {}
+
             def on_tool_complete(tool_call_id, name, args, function_result):
+                # 先切回 LLM 阶段（自动结算 tool 阶段并写入 ordered_calls）
+                timer.begin_phase("llm")
+                timer.inc_step()
+                # 再记录工具详细信息（命令摘要等）
+                if name:
+                    _tool_t0.pop(name, None)  # 清理旧占位
+                    _cmd = (args or {}).get("command") if isinstance(args, dict) else None
+                    timer.record_tool(name, time.time() - _tool_t0.get(name, time.time()), cmd=_cmd)
                 try:
                     _record_live_tool_complete(tool_call_id, name, function_result)
                     if tool_call_id and tool_call_id not in _live_tool_event_complete_ids:
@@ -4833,6 +4931,7 @@ def _run_agent_streaming(
             if _process_notifications:
                 _agent_msg_text = "\n\n".join([*_process_notifications, msg_text]).strip()
             user_message = _build_native_multimodal_message(workspace_ctx, _agent_msg_text, attachments, workspace, cfg=_cfg)
+            timer.begin_phase("llm")
             result = agent.run_conversation(
                 user_message=user_message,
                 system_message=workspace_system_msg,
@@ -4872,12 +4971,18 @@ def _run_agent_streaming(
                         _answer = str(_m.get('content', ''))
                         break
                 # Ephemeral /btw: audit then deliver
+                _timing = timer.finish()
                 _audit.write(
                     category="chat", action="chat:done",
                     session_id=session_id, outcome="success",
                     client_ip=_client_ip,
                     question=msg_text,
-                    metadata={'ephemeral': True, 'answer_len': len(_answer)},
+                    duration_ms=_timing["total_ms"],
+                    timing=_timing,
+                    metadata={
+                        'ephemeral': True, 'answer_len': len(_answer),
+                        'timing': _timing,
+                    },
                 )
 
                 put('done', {
@@ -5800,14 +5905,18 @@ def _run_agent_streaming(
                 logger.debug("Goal continuation hook failed for session %s: %s", session_id, _goal_exc)
             raw_session = s.compact() | {'messages': s.messages, 'tool_calls': tool_calls}
             # Write chat:done audit entry after agent completes successfully
+            _timing = timer.finish()
             _audit.write(
                 category="chat", action="chat:done",
                 session_id=session_id, outcome="success",
                 client_ip=_client_ip,
                 question=msg_text,
+                duration_ms=_timing["total_ms"],
+                timing=_timing,
                 metadata={
                     'usage': usage or {},
                     'msg_count': len(s.messages),
+                    'timing': _timing,
                 },
             )
             put('done', {'session': redact_session_data(raw_session), 'usage': usage})
@@ -6071,6 +6180,26 @@ def _run_agent_streaming(
                         )
                     except Exception:
                         logger.debug("Failed to append interrupted turn journal event", exc_info=True)
+        # Write chat:error audit entry
+        try:
+            _timing_err = timer.finish() if 'timer' in dir() else None
+        except Exception:
+            _timing_err = None
+        _audit.write(
+            category="chat", action="chat:error",
+            session_id=session_id, outcome="failure",
+            client_ip=_client_ip if '_client_ip' in dir() else '-',
+            question=msg_text if 'msg_text' in dir() else '-',
+            duration_ms=_timing_err["total_ms"] if _timing_err else None,
+            timing=_timing_err,
+            error=str(e)[:500] if 'e' in dir() else '-',
+            exc_type=_exc_type if '_exc_type' in dir() else 'unknown',
+            metadata={
+                'error': str(e)[:500] if 'e' in dir() else '-',
+                'exc_type': _exc_type if '_exc_type' in dir() else 'unknown',
+                'timing': _timing_err,
+            },
+        )
         put('apperror', _error_payload)
     finally:
         # Stop the periodic checkpoint thread before the final recovery path.

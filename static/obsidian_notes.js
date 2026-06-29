@@ -979,6 +979,12 @@ async function downloadCurrentKnowledgeNote(){
   const path=_knowledgeCurrentNote.path || '';
   const url=new URL('api/notes/download', document.baseURI || location.href);
   url.searchParams.set('path', path);
+  // 笔记正文有图片引用时自动切换为 ZIP 下载
+  // ![] 是标准 Markdown 图片（路径可能含括号），![[ 是 wikilink 图片
+  const content=_knowledgeCurrentNote.content || '';
+  if(content.indexOf('![') !== -1){
+    url.searchParams.set('zip','1');
+  }
   const a=document.createElement('a');
   a.href=url.href;
   a.download=_knowledgeCurrentNote.name || 'note.md';

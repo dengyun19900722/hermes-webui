@@ -52,6 +52,9 @@ PUBLIC_PATHS = frozenset({
     '/api/auth/passkey/options', '/api/auth/passkey/login',
     '/manifest.json', '/manifest.webmanifest',
     '/session/manifest.json', '/session/manifest.webmanifest',
+    # License admin endpoints — 初始部署时无需登录即可生成/查询 License
+    '/api/admin/license/generate',
+    '/api/admin/license/list',
 })
 
 COOKIE_NAME = 'hermes_session'

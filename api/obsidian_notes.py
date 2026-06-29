@@ -725,19 +725,101 @@ def _path_suffix(parsed_path: str) -> str:
     return unquote(suffix)
 
 
-def send_note_download(handler, raw_path: str) -> bool:
+def _has_image_references(md_text: str) -> bool:
+    """检查 Markdown 正文是否包含图片引用（标准 ![]() 或 wikilink ![][]）。"""
+    import re
+    if re.search(r'!\[.*?\]\(', md_text):
+        return True
+    if re.search(r'!\[\[.*?\]\]', md_text):
+        return True
+    return False
+
+
+def send_note_download(handler, raw_path: str, *, as_zip: bool = False) -> bool:
+    import logging
+    _log = logging.getLogger(__name__)
+    _log.warning("[download] send_note_download 被调用: raw_path=%r, as_zip=%s", raw_path, as_zip)
     target = _resolve_vault_path(raw_path, require_markdown=True)
     if not target.exists() or not target.is_file():
         raise FileNotFoundError("note not found")
-    body = target.read_bytes()
-    handler.send_response(200)
-    handler.send_header("Content-Type", "text/markdown; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body)))
-    handler.send_header("Cache-Control", "no-store")
-    handler.send_header("Content-Disposition", _content_disposition(target.name))
+    md_bytes = target.read_bytes()
+    md_text = md_bytes.decode("utf-8", errors="replace")
+
+    # 后端兜底：即使前端没传 zip=1，只要正文有图片引用就自动切 ZIP
+    if not as_zip and _has_image_references(md_text):
+        _log.warning("[download] 检测到图片引用，自动切换为 ZIP 模式")
+        as_zip = True
+
+    if as_zip:
+        import zipfile
+        import io as _io
+        vault = vault_root()
+        note_dir = target.parent
+        _log.warning("[zip] 笔记路径: %s, note_dir: %s", target, note_dir)
+        buf = _io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(target.name, md_text.encode("utf-8"))
+            # 扫描 MD 中的图片引用: ![alt](path) 和 ![[path]]
+            # 使用平衡括号解析，避免路径中含 ) 时截断
+            _images = []
+            _pos = 0
+            while _pos < len(md_text):
+                _m = re.search(r'!\[([^\]]*)\]\(', md_text[_pos:])
+                if _m:
+                    _alt = _m.group(1)
+                    _start = _pos + _m.end()
+                    _depth = 1
+                    _j = _start
+                    while _j < len(md_text) and _depth > 0:
+                        if md_text[_j] == '(':
+                            _depth += 1
+                        elif md_text[_j] == ')':
+                            _depth -= 1
+                        _j += 1
+                    if _depth == 0:
+                        _dest = md_text[_start:_j-1]
+                        _images.append(_dest)
+                        _log.warning("[zip] 发现标准图片: alt=%r, dest=%r", _alt, _dest)
+                    _pos = _j
+                else:
+                    break
+            # ![[wikilink]] 路径不含括号，可以用简单 regex
+            for _wm in re.finditer(r'!\[\[([^\]]+)\]\]', md_text):
+                _wikilink = _wm.group(1)
+                _parts = _wikilink.split("|", 1)
+                _images.append(_parts[0].strip())
+                _log.warning("[zip] 发现维基链接图片: %r", _parts[0].strip())
+            _log.warning("[zip] 共发现 %d 个图片引用", len(_images))
+            for _img in _images:
+                try:
+                    _img_clean = _img.replace("\\", "/").strip()
+                    _ip = (note_dir / Path(_img_clean)).resolve()
+                    _ip.relative_to(vault)  # 确保不越狱
+                    if _ip.exists() and _ip.is_file():
+                        _arcname = _relative_between(_ip, note_dir)
+                        zf.write(str(_ip), _arcname)
+                        _log.warning("[zip] 已添加图片: %s -> arcname=%s", _ip, _arcname)
+                    else:
+                        _log.warning("[zip] 图片文件不存在: %s", _ip)
+                except Exception as _exc:
+                    _log.warning("[zip] 图片处理失败: %s, 错误: %s", _img, _exc)
+        payload = buf.getvalue()
+        handler.send_response(200)
+        handler.send_header("Content-Type", "application/zip")
+        handler.send_header("Content-Length", str(len(payload)))
+        handler.send_header("Cache-Control", "no-store")
+        _stem = target.stem or "note"
+        handler.send_header("Content-Disposition", f'attachment; filename="{_stem}.zip"')
+    else:
+        payload = md_bytes
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/markdown; charset=utf-8")
+        handler.send_header("Content-Length", str(len(payload)))
+        handler.send_header("Cache-Control", "no-store")
+        handler.send_header("Content-Disposition", _content_disposition(target.name))
     _security_headers(handler)
     handler.end_headers()
-    handler.wfile.write(body)
+    handler.wfile.write(payload)
     return True
 
 
@@ -772,7 +854,8 @@ def handle_notes_get(handler, parsed) -> bool:
         if parsed.path == "/api/notes/search":
             return j(handler, search_notes(qs.get("q", [""])[0])) or True
         if parsed.path == "/api/notes/download":
-            return send_note_download(handler, qs.get("path", [""])[0])
+            _zip_mode = qs.get("zip", [""])[0] in ("1", "true", "yes")
+            return send_note_download(handler, qs.get("path", [""])[0], as_zip=_zip_mode)
         if parsed.path == "/api/notes/media":
             return send_note_media(handler, qs.get("path", [""])[0])
         if parsed.path.startswith("/api/notes/download/"):

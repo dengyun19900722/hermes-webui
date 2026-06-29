@@ -2959,7 +2959,7 @@ button:hover{background:rgba(124,185,255,.25)}
 # ── License activation page (self-contained, no external deps) ──────────────
 _LICENSE_PAGE_HTML = """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Hermes — License 激活</title>
+<title>运维智能体 — License 激活</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#1a1a2e;color:#e8e8f0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
@@ -2983,7 +2983,7 @@ button:hover{background:rgba(124,185,255,.25)}
 .status{font-size:11px;color:#8888aa;margin-top:10px;display:none}
 </style></head><body>
 <div class="card">
-  <h1>{{BOT_NAME}} — License 激活</h1>
+  <h1>运维智能体 — License 激活</h1>
   <p>请将以下信息发送给管理员以获取 License 文件</p>
   <div class="info">
     <div class="field"><label>平台 ID</label><span class="val" id="pid">{{PLATFORM_ID}}</span></div>
@@ -4121,7 +4121,7 @@ def _require_license(handler, parsed) -> bool | None:
         "copied": "License 已被拷贝到其他机器，请联系管理员。",
     }
     message = reasons.get(status["status"], "License 验证失败。")
-    logger.info("[license] 拦截 %s: %s  platform=%s", parsed.path, status["status"], status.get("platform_id", "?"))
+    logger.warning("[license] 拦截 %s: %s  platform=%s", parsed.path, status["status"], status.get("platform_id", "?"))
     j(handler, {
         "error": f"license_{status['status']}",
         "message": message,

@@ -141,26 +141,41 @@ def read_secret_key(workspace: Path) -> str:
 
 
 def load_license_config(workspace: Path) -> dict:
-    """Load license.json, return default structure if not exists."""
-    path = get_license_config_path(workspace)
-    if path.exists():
-        with open(path, "r") as f:
-            return json.load(f)
-    return {
+    """Load license.json, return default structure if not exists or corrupted."""
+    _default = {
         "activated": False,
         "mac_hash": None,
         "expires_at": None,
         "imported_at": None,
     }
+    path = get_license_config_path(workspace)
+    if path.exists():
+        try:
+            with open(path, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            import logging
+            logging.getLogger(__name__).warning("[license] license.json 损坏或为空，回退默认配置: %s", path)
+    return dict(_default)
 
 
 def save_license_config(workspace: Path, config: dict) -> None:
-    """Write license.json."""
+    """Write license.json atomically (temp file + rename)."""
+    import os as _os
     license_dir = get_license_dir(workspace)
     license_dir.mkdir(parents=True, exist_ok=True)
     path = get_license_config_path(workspace)
-    with open(path, "w") as f:
-        json.dump(config, f, indent=2)
+    tmp = path.with_suffix(f".tmp.{_os.getpid()}")
+    try:
+        with open(tmp, "w") as f:
+            json.dump(config, f, indent=2)
+            f.flush()
+            _os.fsync(f.fileno())
+        _os.replace(tmp, path)
+    except BaseException:
+        if tmp.exists():
+            tmp.unlink()
+        raise
 
 
 def init_license_config(workspace: Path) -> dict:
@@ -196,11 +211,17 @@ def init_license_config(workspace: Path) -> dict:
     platform_id = generate_platform_id(secret_key, mac_address)
     mac_hash = compute_mac_hash(secret_key, mac_address)
 
-    config["platform_id"] = platform_id
-    config["mac_hash"] = mac_hash
-    config["mac_address"] = mac_address
-
-    save_license_config(workspace, config)
+    # 仅当值有变化时才写入，避免高并发下每次都覆盖写入
+    changed = (
+        config.get("platform_id") != platform_id
+        or config.get("mac_hash") != mac_hash
+        or config.get("mac_address") != mac_address
+    )
+    if changed:
+        config["platform_id"] = platform_id
+        config["mac_hash"] = mac_hash
+        config["mac_address"] = mac_address
+        save_license_config(workspace, config)
     return config
 
 

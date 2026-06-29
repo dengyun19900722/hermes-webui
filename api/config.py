@@ -4006,63 +4006,72 @@ def get_available_models() -> dict:
                     # when both live fetches fail (offline, transient API error, test env).
                     raw_models = []
                     seen_ids = set()
+                    # 离线环境 DNS 快速检查 — 不可达时跳过 live fetch，避免 WARNING 刷屏和 8s timeout
+                    import socket as _sock
+                    _or_reachable = False
                     try:
-                        from hermes_cli.models import (
-                            fetch_openrouter_models as _fetch_or_models,
-                        )
-                        live_curated = _fetch_or_models() or []
-                        for mid, _desc in live_curated:
-                            if mid and mid not in seen_ids:
-                                seen_ids.add(mid)
-                                raw_models.append({"id": mid, "label": mid})
-                    except Exception:
-                        logger.warning("Failed to load OpenRouter curated catalog from hermes_cli")
-
-                    # Free-tier live fetch — bypasses the tool-support filter so models
-                    # OpenRouter has flagged free but hasn't yet annotated with tools=[]
-                    # (or that have tools=[] but the user explicitly wants to try) appear.
-                    try:
-                        import urllib.request as _urlreq
-                        _req = _urlreq.Request(
-                            "https://openrouter.ai/api/v1/models",
-                            headers={"Accept": "application/json"},
-                        )
-                        with _urlreq.urlopen(_req, timeout=8.0) as _resp:
-                            _payload = json.loads(_resp.read().decode())
-                        _free_count = 0
-                        _free_cap = 30  # don't drown the picker — top 30 free tier
-                        for _item in _payload.get("data", []) or []:
-                            if not isinstance(_item, dict):
-                                continue
-                            _mid = str(_item.get("id") or "").strip()
-                            if not _mid or _mid in seen_ids:
-                                continue
-                            _pricing = _item.get("pricing") or {}
-                            try:
-                                _is_free = (
-                                    float(_pricing.get("prompt", "0") or "0") == 0
-                                    and float(_pricing.get("completion", "0") or "0") == 0
-                                )
-                            except (TypeError, ValueError):
-                                _is_free = False
-                            # Also include explicit `:free` suffix variants
-                            _is_free = _is_free or _mid.endswith(":free")
-                            if not _is_free:
-                                continue
-                            _name = (
-                                str(_item.get("name") or "").strip() or _mid
+                        _sock.getaddrinfo("openrouter.ai", 443)
+                        _or_reachable = True
+                    except _sock.gaierror:
+                        logger.debug("openrouter.ai 不可达（离线环境），跳过 live fetch")
+                    if _or_reachable:
+                        try:
+                            from hermes_cli.models import (
+                                fetch_openrouter_models as _fetch_or_models,
                             )
-                            # Strip provider prefix from name for display, append (free)
-                            _label = _name.split("/")[-1] if "/" in _name else _name
-                            if "(free)" not in _label.lower():
-                                _label = f"{_label} (free)"
-                            seen_ids.add(_mid)
-                            raw_models.append({"id": _mid, "label": _label})
-                            _free_count += 1
-                            if _free_count >= _free_cap:
-                                break
-                    except Exception:
-                        logger.debug("OpenRouter free-tier live fetch unavailable; using fallback")
+                            live_curated = _fetch_or_models() or []
+                            for mid, _desc in live_curated:
+                                if mid and mid not in seen_ids:
+                                    seen_ids.add(mid)
+                                    raw_models.append({"id": mid, "label": mid})
+                        except Exception:
+                            logger.warning("Failed to load OpenRouter curated catalog from hermes_cli")
+
+                        # Free-tier live fetch — bypasses the tool-support filter so models
+                        # OpenRouter has flagged free but hasn't yet annotated with tools=[]
+                        # (or that have tools=[] but the user explicitly wants to try) appear.
+                        try:
+                            import urllib.request as _urlreq
+                            _req = _urlreq.Request(
+                                "https://openrouter.ai/api/v1/models",
+                                headers={"Accept": "application/json"},
+                            )
+                            with _urlreq.urlopen(_req, timeout=8.0) as _resp:
+                                _payload = json.loads(_resp.read().decode())
+                            _free_count = 0
+                            _free_cap = 30  # don't drown the picker — top 30 free tier
+                            for _item in _payload.get("data", []) or []:
+                                if not isinstance(_item, dict):
+                                    continue
+                                _mid = str(_item.get("id") or "").strip()
+                                if not _mid or _mid in seen_ids:
+                                    continue
+                                _pricing = _item.get("pricing") or {}
+                                try:
+                                    _is_free = (
+                                        float(_pricing.get("prompt", "0") or "0") == 0
+                                        and float(_pricing.get("completion", "0") or "0") == 0
+                                    )
+                                except (TypeError, ValueError):
+                                    _is_free = False
+                                # Also include explicit `:free` suffix variants
+                                _is_free = _is_free or _mid.endswith(":free")
+                                if not _is_free:
+                                    continue
+                                _name = (
+                                    str(_item.get("name") or "").strip() or _mid
+                                )
+                                # Strip provider prefix from name for display, append (free)
+                                _label = _name.split("/")[-1] if "/" in _name else _name
+                                if "(free)" not in _label.lower():
+                                    _label = f"{_label} (free)"
+                                seen_ids.add(_mid)
+                                raw_models.append({"id": _mid, "label": _label})
+                                _free_count += 1
+                                if _free_count >= _free_cap:
+                                    break
+                        except Exception:
+                            logger.debug("OpenRouter free-tier live fetch unavailable; using fallback")
 
                     if not raw_models:
                         # Both live fetches failed — fall back to the curated static list.

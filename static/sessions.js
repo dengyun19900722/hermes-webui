@@ -743,9 +743,14 @@ async function loadSession(sid){
       // can cause _ensureMessagesLoaded to throw. Without a try/catch here the
       // "Loading conversation..." div injected at the top of loadSession would
       // persist forever with no recovery path.
+      console.warn('[session] Failed to load messages for', sid, e);
       const _msgInner = $('msgInner');
       if (_msgInner) {
-        _msgInner.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:14px;padding:40px;text-align:center;">Failed to load messages. Try switching sessions or refreshing.</div>';
+        const _errMsg = (e && e.message) || String(e || '');
+        const _isLicense = _errMsg.includes('license') || _errMsg.includes('License') || e && e.status === 403;
+        _msgInner.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:14px;padding:40px;text-align:center;">'
+          + (_isLicense ? _errMsg : 'Failed to load messages. Try switching sessions or refreshing.')
+          + '</div>';
       }
       if (typeof showToast === 'function') showToast('Failed to load conversation messages', 3000, 'error');
       if (_loadingSessionId === sid) _loadingSessionId = null;
