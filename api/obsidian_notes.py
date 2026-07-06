@@ -264,12 +264,61 @@ def list_notes(raw_dir: str | None = None) -> dict:
     return {"dir": "." if directory == vault_root() else _relative(directory), "notes": notes}
 
 
+def _limit_html_table_rows(html: str, max_rows: int = 200) -> str:
+    """限制 HTML 表格 tbody 内数据行数，超出截断 + 提示行，防止浏览器渲染巨量 DOM。"""
+    def _limit_tbody(match):
+        tbody = match.group(0)
+        # 统计 <tr> 出现次数
+        tr_count = len(re.findall(r"<tr[^>]*>", tbody))
+        if tr_count <= max_rows + 2:  # +2 留给 thead 内的表头行
+            return tbody
+        # 找到第 max_rows+2 个 <tr> 的起始位置截断（+2 = 表头行 + 第一行数据偏移）
+        idx = 0
+        count = 0
+        for m in re.finditer(r"<tr[^>]*>", tbody):
+            count += 1
+            if count > max_rows + 2:
+                idx = m.start()
+                break
+        if idx <= 0:
+            return tbody
+        hint = (
+            f'<tr><td colspan="99" style="text-align:center;padding:16px;color:#888;font-size:13px">'
+            f"… 表格数据过多，仅显示前 {max_rows} 行。完整数据请下载笔记文件查看。</td></tr>"
+        )
+        return tbody[:idx] + hint + "</tbody>"
+
+    return re.sub(r"<tbody[^>]*>.*?</tbody>", _limit_tbody, html, flags=re.DOTALL)
+
+
 def read_note(raw_path: str) -> dict:
     target = _resolve_vault_path(raw_path, require_markdown=True)
     if not target.exists() or not target.is_file():
         raise FileNotFoundError("note not found")
     payload = _note_payload(target)
-    payload["content"] = target.read_text(encoding="utf-8")
+    content = target.read_text(encoding="utf-8")
+    payload["content"] = content
+    content_len = len(content)
+    # 超大笔记（>20MB）：连后端预渲染也会卡死，直接返回提示
+    if content_len > 20 * 1024 * 1024:
+        payload["rendered_html"] = (
+            '<div style="padding:40px;text-align:center;color:var(--muted);font-size:14px">'
+            f"<p>笔记过大（{content_len / 1024 / 1024:.0f} MB），无法在浏览器中预览。</p>"
+            '<p style="margin-top:12px;font-size:13px">请下载笔记文件后使用本地编辑器查看。</p>'
+            "</div>"
+        )
+        return payload
+    # 大笔记后端预渲染 HTML，避免前端 renderMd 50 次正则扫描卡死浏览器
+    if content_len > 500 * 1024:
+        try:
+            from markdown_it import MarkdownIt
+            _md = MarkdownIt()
+            rendered = _md.render(content)
+            # 限制表格行数，防止浏览器插入数十万 DOM 节点卡顿
+            rendered = _limit_html_table_rows(rendered, max_rows=200)
+            payload["rendered_html"] = rendered
+        except Exception:
+            pass
     return payload
 
 

@@ -9210,11 +9210,64 @@ async function showAuditDetail(id) {
       `  IP:    ${e.client_ip || '-'}`,
       `  会话:  ${e.session_id || '-'}`,
     ];
-    if (e.question) { lines.push(''); lines.push('── 用户提问 ──'); lines.push(e.question); }
-    if (e.answer) { lines.push(''); lines.push('── 助手回答 ──'); lines.push(e.answer); }
+    // Token 信息（从顶层字段或 metadata.usage 中提取）
+    const meta = e.metadata || {};
+    const usage = meta.usage || {};
+    const inputTokens = e.input_tokens || meta.input_tokens || usage.input_tokens || 0;
+    const outputTokens = usage.output_tokens || 0;
+    const totalTokens = inputTokens + outputTokens;
+    if (inputTokens > 0 || outputTokens > 0) {
+      lines.push('');
+      lines.push('── Token 消耗 ──');
+      lines.push(`  输入:  ${inputTokens.toLocaleString()} tokens`);
+      if (outputTokens > 0) lines.push(`  输出:  ${outputTokens.toLocaleString()} tokens`);
+      lines.push(`  总计:  ${totalTokens.toLocaleString()} tokens`);
+      if (usage.duration_seconds) lines.push(`  耗时:  ${usage.duration_seconds.toFixed(1)} 秒`);
+      if (usage.tps) lines.push(`  速度:  ${usage.tps} tokens/s`);
+      if (usage.estimated_cost) lines.push(`  估算费用: ¥${Number(usage.estimated_cost).toFixed(4)}`);
+      if (usage.cache_read_tokens || usage.cache_write_tokens) {
+        lines.push(`  缓存读: ${(usage.cache_read_tokens||0).toLocaleString()} tokens`);
+        lines.push(`  缓存写: ${(usage.cache_write_tokens||0).toLocaleString()} tokens`);
+      }
+    }
+    // 每次 LLM 调用的明细（从 timing.ordered_calls 提取）
+    const _timing = e.timing || {};
+    const _orderedCalls = Array.isArray(_timing.ordered_calls) ? _timing.ordered_calls : [];
+    if (_orderedCalls.length > 0) {
+      lines.push('');
+      lines.push('── 调用明细 ──');
+      _orderedCalls.forEach((call, idx) => {
+        const prefix = `  #${idx + 1} `;
+        if (call.type === 'llm') {
+          const tok = call.input_tokens ? `, 输入: ${call.input_tokens.toLocaleString()} tokens` : '';
+          const summary = call.input_summary ? `, 摘要: ${call.input_summary.slice(0, 60)}` : '';
+          lines.push(`${prefix}[LLM] ${call.duration_ms}ms${tok}${summary}`);
+        } else if (call.type === 'tool') {
+          const cmd = call.cmd ? `, cmd: ${call.cmd.slice(0, 80)}` : '';
+          lines.push(`${prefix}[工具] ${call.name} ${call.duration_ms}ms${cmd}`);
+        }
+      });
+    }
+    // 输入内容摘要
+    const inputSummary = e.input_summary || '';
+    if (inputSummary) {
+      lines.push('');
+      lines.push('── 输入摘要 ──');
+      lines.push('  ' + inputSummary.replace(/\n/g, '\n  '));
+    }
+    if (e.question) {
+      lines.push('');
+      lines.push('── 用户提问 ──');
+      lines.push(e.question);
+    }
+    if (e.answer) {
+      lines.push('');
+      lines.push('── 助手回答 ──');
+      lines.push(e.answer);
+    }
     if (e.metadata) {
       lines.push('');
-      lines.push('── 详情 ──');
+      lines.push('── 详情（原始 JSON）──');
       lines.push(JSON.stringify(e.metadata, null, 2));
     }
     body.textContent = lines.join('\n');
@@ -9315,20 +9368,49 @@ function filterChangelog() {
     return;
   }
   const t_ = window.t || t;
+  const _sectionClass = s => {
+    const key = String(s || '').toLowerCase().trim();
+    if (key.includes('add') || key.includes('新增')) return 'changelog-section changelog-section--added';
+    if (key.includes('change') || key.includes('变更') || key.includes('更新')) return 'changelog-section changelog-section--changed';
+    if (key.includes('fix') || key.includes('修复')) return 'changelog-section changelog-section--fixed';
+    return 'changelog-section';
+  };
+  const _sectionLabel = s => {
+    const key = String(s || '').toLowerCase().trim();
+    if (key.includes('add')) return '新增';
+    if (key.includes('change')) return '变更';
+    if (key.includes('fix')) return '修复';
+    return s;
+  };
+  // Highlight matched keyword in escaped text.
+  const _escapeRegex = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const _highlight = (text, keyword) => {
+    if (!keyword) return escHtml(text);
+    const safe = escHtml(text);
+    const re = new RegExp('(' + _escapeRegex(keyword) + ')', 'gi');
+    return safe.replace(re, '<mark class="changelog-highlight">$1</mark>');
+  };
   let html = '';
   for (const entry of visible) {
     html += '<div class="changelog-entry">';
     html += '<div class="changelog-entry-header">';
-    html += '<span class="changelog-version">' + escHtml(entry.version) + '</span>';
-    html += '<span class="changelog-date">' + escHtml(entry.date) + '</span>';
+    html += '<span class="changelog-version">' + _highlight(entry.version, q) + '</span>';
+    html += '<span class="changelog-date">' + _highlight(entry.date, q) + '</span>';
     html += '</div>';
     for (const [section, items] of Object.entries(entry.sections || {})) {
       if (!items || !items.length) continue;
-      html += '<div class="changelog-section">';
-      html += '<div class="changelog-section-title">' + escHtml(section) + '</div>';
+      const sectionLabel = _sectionLabel(section);
+      // Only render section if it or any of its items match the query (when filtering)
+      if (q) {
+        const sectionMatches = sectionLabel.toLowerCase().includes(q) || section.toLowerCase().includes(q);
+        const itemMatches = items.some(it => it.toLowerCase().includes(q));
+        if (!sectionMatches && !itemMatches) continue;
+      }
+      html += '<div class="' + _sectionClass(section) + '">';
+      html += '<div class="changelog-section-title"><span class="changelog-section-badge"></span>' + _highlight(sectionLabel, q) + '</div>';
       html += '<ul class="changelog-items">';
       for (const item of items) {
-        html += '<li>' + escHtml(item) + '</li>';
+        html += '<li>' + _highlight(item, q) + '</li>';
       }
       html += '</ul></div>';
     }
@@ -9337,9 +9419,13 @@ function filterChangelog() {
   list.innerHTML = html;
   const total = _changelogCache.length;
   const shown = visible.length;
-  document.getElementById('changelogCount').textContent =
-    shown === total ? (t_ ? t_('changelog_count', total) : '共 ' + total + ' 个版本') :
-                      (t_ ? t_('changelog_count_filtered', shown, total) : '显示 ' + shown + '/' + total + ' 个版本');
+  const countAll = t_ ? t_('changelog_count', total) : ('共 ' + total + ' 个版本');
+  const countFiltered = t_ ? t_('changelog_count_filtered', shown, total) : ('显示 ' + shown + '/' + total + ' 个版本');
+  // Guard against un-translated keys (e.g. stale i18n cache) returning the key name itself.
+  const countText = shown === total
+    ? (countAll && !countAll.includes('changelog_count') ? countAll : '共 ' + total + ' 个版本')
+    : (countFiltered && !countFiltered.includes('changelog_count_filtered') ? countFiltered : '显示 ' + shown + '/' + total + ' 个版本');
+  document.getElementById('changelogCount').textContent = countText;
 }
 
 // ESC closes changelog dialog

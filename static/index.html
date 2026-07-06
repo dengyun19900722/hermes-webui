@@ -1528,15 +1528,6 @@
   </div>
 </div>
 
-<!-- Changelog Dialog (ZKREQ-098) -->
-<div id="changelogDialog" class="app-dialog-overlay" role="dialog" aria-modal="true" aria-labelledby="changelogDialogTitle">
-  <div class="app-dialog" style="max-height:85vh;display:flex;flex-direction:column;">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
-      <span id="changelogDialogTitle" class="dialog-title" data-i18n="changelog_title">版本发布历史</span>
-      <button class="app-dialog-close" onclick="closeChangelogDialog()" aria-label="关闭">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-      </button>
-    </div>
 <!-- Kanban: create-task modal — same overlay pattern as the create-board modal above. -->
 <div class="kanban-modal-overlay" id="kanbanTaskModal" hidden onclick="if(event.target===this)closeKanbanTaskModal()">
   <div class="kanban-modal" role="dialog" aria-modal="true" aria-labelledby="kanbanTaskModalTitle">
@@ -1583,12 +1574,25 @@
     </div>
   </div>
 </div>
-    <input type="text" id="changelogSearch" class="app-dialog-input" placeholder="搜索版本或变更内容…" data-i18n-placeholder="changelog_search_placeholder" oninput="filterChangelog()"/>
-    <div id="changelogList" style="margin-top:12px;overflow-y:auto;flex:1;min-height:0;">
+
+<!-- Changelog Dialog (ZKREQ-098) -->
+<div id="changelogDialog" class="app-dialog-overlay" role="dialog" aria-modal="true" aria-labelledby="changelogDialogTitle">
+  <div class="app-dialog" style="max-height:85vh;display:flex;flex-direction:column;">
+    <div class="app-dialog-header">
+      <span id="changelogDialogTitle" class="app-dialog-title" data-i18n="changelog_title">版本发布历史</span>
+      <button class="app-dialog-close" onclick="closeChangelogDialog()" aria-label="关闭">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="changelog-search-wrap" style="display:flex;align-items:center;gap:8px;">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input type="text" id="changelogSearch" class="changelog-search-input" style="width:100%;background:transparent;border:none;outline:none;" placeholder="搜索版本或变更内容…" data-i18n-placeholder="changelog_search_placeholder" oninput="filterChangelog()"/>
+    </div>
+    <div id="changelogList" class="changelog-list" style="margin-top:12px;overflow-y:auto;flex:1;min-height:0;">
       <div id="changelogLoading" style="text-align:center;color:var(--muted);padding:20px;" data-i18n="loading">加载中…</div>
     </div>
-    <div style="margin-top:12px;text-align:center;">
-      <span id="changelogCount" style="font-size:12px;color:var(--muted);"></span>
+    <div class="changelog-footer" style="margin-top:12px;text-align:center;">
+      <span id="changelogCount" class="changelog-count"></span>
     </div>
   </div>
 </div>

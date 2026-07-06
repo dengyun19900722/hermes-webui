@@ -3884,8 +3884,8 @@ const LOCALES = {
     changelog_title: 'Version History',
     changelog_search_placeholder: 'Search versions or changes…',
     changelog_no_results: 'No matching results.',
-    changelog_count: '共 {0} 个版本',
-    changelog_count_filtered: '显示 {0}/{1} 个版本',
+    changelog_count: '{0} version(s)',
+    changelog_count_filtered: 'Showing {0}/{1} versions',
   },
 
   ru: {
@@ -10045,6 +10045,11 @@ const LOCALES = {
     audit_detail_close: '关闭',
     audit_prev: '上一页',
     audit_next: '下一页',
+    changelog_title: '版本发布历史',
+    changelog_search_placeholder: '搜索版本或变更内容…',
+    changelog_no_results: '未找到匹配结果',
+    changelog_count: '共 {0} 个版本',
+    changelog_count_filtered: '显示 {0}/{1} 个版本',
 
     checkpoint_date: 'Date',  // TODO: translate
     checkpoint_diff_files_changed: (n) => `${n} file${n === 1 ? '' : 's'} changed`,  // TODO: translate

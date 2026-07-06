@@ -46,6 +46,41 @@ from api.usage import prompt_cache_hit_percent
 from api.models import get_state_db_session_messages, reconciled_state_db_messages_for_session
 from api import audit as _audit
 
+
+def _audit_summarize_input(text: str, max_len: int = 200) -> str:
+    """Extract a brief input summary from the user message for audit logs."""
+    if not text:
+        return ''
+    clean = text.replace('\r\n', '\n').replace('\r', '\n').strip()
+    return clean[:max_len] + ('...' if len(clean) > max_len else '')
+
+
+def _build_llm_input_summary(session, agent=None, max_chars: int = 300) -> str:
+    """从会话消息中构建发给 LLM 的完整输入摘要（含系统提示、历史对话、工具结果）。"""
+    msgs = getattr(session, 'messages', None)
+    if not msgs or not isinstance(msgs, list):
+        return ''
+    parts = []
+    # 系统提示词（取前 120 字符）
+    for m in msgs:
+        if m.get('role') == 'system':
+            sys_text = str(m.get('content', ''))[:120].replace('\n', ' ').strip()
+            if sys_text:
+                parts.append(f"[系统] {sys_text}")
+            break
+    # 最近的关键消息（最多 4 条：最近用户+助手+工具结果）
+    recent = [m for m in msgs if m.get('role') != 'system']
+    for m in recent[-4:]:
+        role = m.get('role', '')
+        label = {'user': '用户', 'assistant': '助手', 'tool': '工具结果'}.get(role, role)
+        content = str(m.get('content', ''))[:100].replace('\n', ' ').strip()
+        if content:
+            parts.append(f"[{label}] {content}")
+    result = '\n'.join(parts)
+    if len(result) > max_chars:
+        result = result[:max_chars] + '...'
+    return result
+
 # Global lock for os.environ writes. Per-session locks (_agent_lock) prevent
 # concurrent runs of the SAME session, but two DIFFERENT sessions can still
 # interleave their os.environ writes. This global lock serializes the env
@@ -65,15 +100,18 @@ class TurnTimer:
     每次阶段切换自动按顺序记录一条条目（含 LLM 思考和工具调用）。
     工具条目附加 cmd（执行命令摘要）。
 
+    prompt_tokens_getter 回调用于获取当前累积 prompt_tokens，
+    在切换 LLM 阶段时自动计算增量并写入 ordered_calls。
+
     用法:
-        timer = TurnTimer()
+        timer = TurnTimer(prompt_tokens_getter=..., input_summary=...)
         timer.begin_phase("llm")
         ... agent 运行, on_tool_start/on_tool_complete 自动埋点 ...
         result = timer.finish()
         # -> {"total_ms": ..., "phases": {...}, "ordered_calls": [{...}, ...], "steps": N}
     """
 
-    def __init__(self):
+    def __init__(self, prompt_tokens_getter=None, summary_getter=None):
         self._t0 = time.time()
         self._phases: dict[str, float] = {}
         self._tools: dict[str, float] = {}
@@ -81,6 +119,14 @@ class TurnTimer:
         self._steps = 0
         self._current: str | None = None
         self._phase_t0: float | None = None
+        # 用于在每个 LLM 阶段记录 input_tokens 增量和输入摘要
+        self._prompt_tokens_getter = prompt_tokens_getter
+        self._summary_getter = summary_getter
+        self._prev_prompt_tokens = 0
+
+    def set_session_base_tokens(self, base_tokens: int) -> None:
+        """设置 session 已有的累积 token 数，用于计算本次 turn 的增量。"""
+        self._prev_prompt_tokens = max(0, int(base_tokens))
 
     def begin_phase(self, name: str) -> None:
         """切换到指定阶段——自动结算上一阶段并记录到 ordered_calls"""
@@ -97,7 +143,23 @@ class TurnTimer:
                 "type": "llm" if self._current == "llm" else "tool",
                 "duration_ms": round(elapsed * 1000, 1),
             }
-            if self._current != "llm":
+            if self._current == "llm":
+                # 计算本次 LLM 阶段的 input_tokens 增量
+                if self._prompt_tokens_getter is not None:
+                    current = int(self._prompt_tokens_getter() or 0)
+                    delta = max(0, current - self._prev_prompt_tokens)
+                    if delta > 0:
+                        entry["input_tokens"] = delta
+                    self._prev_prompt_tokens = current
+                # 从会话消息中生成完整输入摘要（每次 LLM 调用时实时生成）
+                if self._summary_getter is not None:
+                    try:
+                        summary = str(self._summary_getter() or '')
+                        if summary:
+                            entry["input_summary"] = summary
+                    except Exception:
+                        pass
+            else:
                 entry["name"] = self._current.removeprefix("tool:")
             self._ordered_calls.append(entry)
         self._current = None
@@ -3612,7 +3674,13 @@ def _run_agent_streaming(
         ephemeral=bool(ephemeral),
     )
 
-    timer = TurnTimer()
+    # mutable container for capturing prompt tokens right before phase switch
+    _llm_capture_tokens = [0]
+
+    timer = TurnTimer(
+        prompt_tokens_getter=lambda: _llm_capture_tokens[0],
+        summary_getter=lambda: _build_llm_input_summary(s, agent=agent),
+    )
     try:
         run_journal = RunJournalWriter(session_id, stream_id)
     except Exception:
@@ -3849,6 +3917,7 @@ def _run_agent_streaming(
     _agent_lock = None
     try:
         s = get_session(session_id)
+        timer.set_session_base_tokens(getattr(s, 'input_tokens', 0) or 0)
         update_active_run(stream_id, phase="running", session_id=session_id)
         _client_ip = getattr(s, 'pending_client_ip', None) or '-'
         # Write chat:start audit entry before agent begins running
@@ -4321,6 +4390,8 @@ def _run_agent_streaming(
                     return
 
             def on_tool_start(tool_call_id, name, args):
+                # 捕获本次 LLM 调用完成的 token 数，供 _close_phase 计算增量
+                _llm_capture_tokens[0] = getattr(agent, 'session_prompt_tokens', 0) or 0
                 timer.begin_phase(f"tool:{name}")
                 if name:
                     _tool_t0[name] = time.time()
@@ -4977,6 +5048,7 @@ def _run_agent_streaming(
                     session_id=session_id, outcome="success",
                     client_ip=_client_ip,
                     question=msg_text,
+                    input_summary=_audit_summarize_input(msg_text),
                     duration_ms=_timing["total_ms"],
                     timing=_timing,
                     metadata={
@@ -5905,16 +5977,23 @@ def _run_agent_streaming(
                 logger.debug("Goal continuation hook failed for session %s: %s", session_id, _goal_exc)
             raw_session = s.compact() | {'messages': s.messages, 'tool_calls': tool_calls}
             # Write chat:done audit entry after agent completes successfully
+            _llm_capture_tokens[0] = getattr(agent, 'session_prompt_tokens', 0) or 0
             _timing = timer.finish()
+            _input_tokens = (usage or {}).get('input_tokens', 0) or 0
+            _input_summary = _build_llm_input_summary(s, agent=agent)
             _audit.write(
                 category="chat", action="chat:done",
                 session_id=session_id, outcome="success",
                 client_ip=_client_ip,
                 question=msg_text,
+                input_tokens=_input_tokens,
+                input_summary=_input_summary,
                 duration_ms=_timing["total_ms"],
                 timing=_timing,
                 metadata={
                     'usage': usage or {},
+                    'input_tokens': _input_tokens,
+                    'input_summary': _input_summary,
                     'msg_count': len(s.messages),
                     'timing': _timing,
                 },

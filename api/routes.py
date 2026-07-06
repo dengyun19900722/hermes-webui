@@ -7440,7 +7440,7 @@ def _serve_static(handler, parsed):
     has_fingerprint = bool(version_values[0])
     cache_control = (
         "public, max-age=31536000, immutable" if has_fingerprint
-        else "public, max-age=300"
+        else "public, max-age=0, must-revalidate"
     )
 
     # 304 short-circuit on conditional GET.

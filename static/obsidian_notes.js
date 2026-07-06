@@ -6,6 +6,9 @@ let _knowledgeCurrentNote = null;
 let _knowledgePreEditSnapshot = null;
 let _knowledgeMode = 'empty'; // empty | read | create | edit
 let _knowledgeDirty = false;
+// 笔记内容缓存：避免多次切换大笔记重复下载 30MB+ 数据
+const _knowledgeNoteCache = new Map();
+const _KNOWLEDGE_CACHE_MAX = 10;  // 最多缓存 10 条笔记
 let _knowledgeActiveDir = '.';
 let _knowledgeActivePath = '';
 let _knowledgeEditorTocTimer = null;
@@ -183,6 +186,22 @@ function _knowledgeImageHtml(alt, resolvedPath){
 
 function _knowledgeReplaceMarkdownImages(markdown, notePath){
   const src=String(markdown||'');
+  // 预扫描：找出所有 ``` 行号，用于判断图片是否在代码块内
+  const _fenceLineNums=[];
+  const _srcLines=src.split('\n');
+  for(let li=0;li<_srcLines.length;li++){
+    if(/^```/.test(_srcLines[li])) _fenceLineNums.push(li);
+  }
+  function _isAtFenceBlock(pos){
+    const lineNum=src.slice(0,pos).split('\n').length-1;
+    let cnt=0;
+    for(const fl of _fenceLineNums){
+      if(fl>=lineNum) break;
+      cnt++;
+    }
+    return cnt%2!==0;
+  }
+
   let out='';
   let i=0;
   while(i<src.length){
@@ -224,7 +243,13 @@ function _knowledgeReplaceMarkdownImages(markdown, notePath){
     const inner=src.slice(altEnd+2,destEnd);
     const destination=_knowledgeMarkdownDestination(inner);
     const resolved=_knowledgeResolveImagePath(destination,notePath);
-    out+=_knowledgeImageHtml(alt,resolved) || src.slice(start,destEnd+1);
+    const imgHtml=_knowledgeImageHtml(alt,resolved);
+    // 检测图片是否在代码块内：如果在，插入关闭/重新打开标记，避免 renderMd 将 <img> 转义为文本
+    if(imgHtml && _isAtFenceBlock(start)){
+      out+='\n```\n'+imgHtml+'\n```\n';
+    }else{
+      out+=imgHtml || src.slice(start,destEnd+1);
+    }
     i=destEnd+1;
   }
   return out;
@@ -327,8 +352,15 @@ function _knowledgeRenderNoteContent(note){
   }
   if(body){
     body.style.display='';
-    const headings=_knowledgeExtractHeadings(note.content||'');
-    const rendered=renderMd(_knowledgeResolveMediaMarkdown(note.content||'', note.path||''));
+    const content=note.content||'';
+    const headings=_knowledgeExtractHeadings(content);
+    // 大笔记：使用后端预渲染的 HTML（避免 renderMd 大量正则扫描卡死浏览器）
+    let rendered;
+    if(note.rendered_html){
+      rendered=_knowledgeResolveRenderedHtml(note.rendered_html, note.path||'');
+    }else{
+      rendered=renderMd(_knowledgeResolveMediaMarkdown(content, note.path||''));
+    }
     body.innerHTML=`
       <div class="knowledge-detail-layout">
         <div class="main-view-content knowledge-note-content">${rendered}</div>
@@ -349,6 +381,15 @@ function _knowledgeRenderNoteContent(note){
   _knowledgeMode='read';
   _knowledgeDirty=false;
   _knowledgeSetHeaderButtons('read');
+}
+
+function _knowledgeResolveRenderedHtml(html, notePath){
+  // 在后端预渲染的 HTML 中将 img src 从相对路径转换为 /api/notes/media?path=... URL
+  return html.replace(/<img\s+([^>]*)src="([^"]+)"([^>]*)>/g, function(match, before, src, after){
+    const resolved=_knowledgeResolveImagePath(src, notePath);
+    if(!resolved) return match;
+    return '<img '+before+'src="api/notes/media?path='+_knowledgeEncodeMediaPath(resolved)+'"'+after+'>';
+  });
 }
 
 function _knowledgeRenderForm({mode, note, content, title, category}){
@@ -617,23 +658,33 @@ async function openKnowledgeNote(path, el, opts={}){
     const ok = await _knowledgeConfirmDiscard();
     if(!ok) return;
   }
-  try{
-    const data = await api('/api/notes/content?path='+encodeURIComponent(notePath));
-    _knowledgeCurrentNote = data;
-    _knowledgeActivePath = notePath;
-    const parts = notePath.split('/');
-    _knowledgeActiveDir = parts.length > 1 ? parts.slice(0, -1).join('/') : '.';
-    _knowledgePreEditSnapshot = null;
+  const _openNote=(data)=>{
+    _knowledgeCurrentNote=data;
+    _knowledgeActivePath=notePath;
+    const parts=notePath.split('/');
+    _knowledgeActiveDir=parts.length>1?parts.slice(0,-1).join('/'):'.';
+    _knowledgePreEditSnapshot=null;
     _knowledgeRenderNoteContent(data);
     _saveKnowledgeLastNote(notePath);
-    if(!(_knowledgeSearchQuery && _knowledgeSearchQuery.trim())) _renderKnowledgeTree();
-    document.querySelectorAll('.knowledge-tree-row.active').forEach(n => n.classList.remove('active'));
+    if(!(_knowledgeSearchQuery&&_knowledgeSearchQuery.trim())) _renderKnowledgeTree();
+    document.querySelectorAll('.knowledge-tree-row.active').forEach(n=>n.classList.remove('active'));
     if(el) el.classList.add('active');
-    if(!opts.silent && _knowledgeSearchQuery){
-      filterKnowledgeNotes(true);
+    if(!opts.silent&&_knowledgeSearchQuery) filterKnowledgeNotes(true);
+  };
+  // 缓存命中：跳过网络请求和 JSON 解析，减少内存压力
+  const cached=_knowledgeNoteCache.get(notePath);
+  if(cached&&!opts.force) return _openNote(cached);
+  try{
+    const data=await api('/api/notes/content?path='+encodeURIComponent(notePath));
+    // 缓存笔记（限制缓存条目数）
+    _knowledgeNoteCache.set(notePath,data);
+    if(_knowledgeNoteCache.size>_KNOWLEDGE_CACHE_MAX){
+      const firstKey=_knowledgeNoteCache.keys().next().value;
+      if(firstKey) _knowledgeNoteCache.delete(firstKey);
     }
+    _openNote(data);
   }catch(e){
-    showToast('加载笔记失败：' + e.message);
+    showToast('加载笔记失败：'+e.message);
   }
 }
 

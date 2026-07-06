@@ -17,7 +17,7 @@ spawn ssh \
   -o BatchMode=no \
   -o NumberOfPasswordPrompts=1 \
   -o StrictHostKeyChecking=accept-new \
-  -- "$env(LOGCTX_USER)@$env(LOGCTX_HOST)" "$env(LOGCTX_REMOTE_COMMAND)"
+  -- "$env(LOG  CTX_USER)@$env(LOGCTX_HOST)" "$env(LOGCTX_REMOTE_COMMAND)"
 
 expect {
   -re "(?i)password:" {

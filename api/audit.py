@@ -197,6 +197,17 @@ def _open_audit_file(path: Path, mode: str):
         return f, None
     lock_type = fcntl.LOCK_EX if "w" in mode or "a" in mode else fcntl.LOCK_SH
     fcntl.flock(f.fileno(), lock_type)
+
+
+_RE_FILENAME_DATE = re.compile(r"^audit-(\d{4}-\d{2}-\d{2})\.jsonl$")
+
+
+def _file_date_from_name(name: str) -> datetime | None:
+    """Extract file date from 'audit-YYYY-MM-DD.jsonl', returning UTC midnight."""
+    m = _RE_FILENAME_DATE.match(name)
+    if m:
+        return datetime.strptime(m.group(1), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    return None
 # ── Sensitive-field redaction ──────────────────────────────────────────────────
 
 # Compiled once at import time.
@@ -340,8 +351,19 @@ def search(
     except Exception:
         return []
 
+    # Pre-filter files by date range using filenames → skip files entirely outside bounds
+    need = offset + limit
+
     results: list[tuple[str, dict]] = []  # (ts, entry)
     for fpath in files:
+        # File-level date pruning: skip files whose day is wholly outside the query range
+        fdate = _file_date_from_name(fpath.name)
+        if fdate is not None:
+            if until_dt and fdate > until_dt:
+                continue  # entire file is after the until bound
+            if since_dt and (fdate + timedelta(days=1)) <= since_dt:
+                break     # files are in reverse order, so older files are all before since
+
         try:
             f, _lock = _open_audit_file(fpath, "r")
         except Exception:
@@ -363,6 +385,10 @@ def search(
                 f.close()
             except Exception:
                 pass
+
+        # Early exit: enough results collected from newest files
+        if need > 0 and len(results) >= need:
+            break
 
     results.sort(key=lambda x: x[0], reverse=True)
     return [entry for _ts, entry in results[offset : offset + limit]]
@@ -405,6 +431,14 @@ def count(
 
     total = 0
     for fpath in files:
+        # 文件名日期剪枝：跳过完全不在查询时间范围内的文件
+        fdate = _file_date_from_name(fpath.name)
+        if fdate is not None:
+            if until_dt and fdate > until_dt:
+                continue
+            if since_dt and (fdate + timedelta(days=1)) <= since_dt:
+                break
+
         try:
             f, _lock = _open_audit_file(fpath, "r")
         except Exception:
@@ -502,15 +536,44 @@ def export_csv(
         "id", "ts", "category", "session_id", "action", "outcome",
         "client_ip", "question", "answer",
         "method", "path", "status", "duration_ms",
-        "model", "workspace", "usage", "tool_calls",
+        "input_tokens", "input_summary",
+        "model", "workspace", "usage", "tool_calls", "tools", "ordered_calls",
         "login_success", "login_reason",
     ]
+    # 中文表头，导出 Excel 后更直观
+    _HEADERS = {
+        "id": "ID",
+        "ts": "时间",
+        "category": "类别",
+        "session_id": "会话ID",
+        "action": "操作",
+        "outcome": "结果",
+        "client_ip": "客户端IP",
+        "question": "用户问题",
+        "answer": "助手回答",
+        "method": "HTTP方法",
+        "path": "请求路径",
+        "status": "状态码",
+        "duration_ms": "耗时(ms)",
+        "input_tokens": "输入Token数",
+        "input_summary": "输入摘要",
+        "model": "模型",
+        "workspace": "工作区",
+        "usage": "用量(JSON)",
+        "tool_calls": "工具调用",
+        "tools": "工具耗时(JSON)",
+        "ordered_calls": "调用明细(JSON)",
+        "login_success": "登录成功",
+        "login_reason": "登录原因",
+    }
 
     buf = io.StringIO()
     # UTF-8 BOM — makes Excel open the file with correct encoding
     buf.write("\ufeff")
-    writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
-    writer.writeheader()
+    # 使用 QUOTE_ALL 确保 JSON 等含特殊字符的字段不会破坏列对齐
+    header_writer = csv.writer(buf, quoting=csv.QUOTE_ALL)
+    header_writer.writerow([_HEADERS[f] for f in fieldnames])
+    writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore", quoting=csv.QUOTE_ALL)
     for entry in entries:
         row = dict(entry)
         # Flatten metadata sub-fields for CSV columns
@@ -518,11 +581,26 @@ def export_csv(
             for _k, _v in row["metadata"].items():
                 if _k not in row:
                     row[_k] = _v
+        # Extract input_tokens from metadata if not at top level
+        if not row.get("input_tokens"):
+            _usage = row.get("usage") or {}
+            if isinstance(_usage, dict):
+                row["input_tokens"] = _usage.get("input_tokens", 0)
+        # Flatten timing sub-fields for CSV columns
+        _timing = row.get("timing") or {}
+        if isinstance(_timing, dict):
+            if "tools" in _timing and "tools" not in row:
+                row["tools"] = _timing["tools"]
+            _calls = _timing.get("ordered_calls")
+            if _calls and isinstance(_calls, list):
+                row["ordered_calls"] = json.dumps(_calls, ensure_ascii=False)
         # Serialize list fields as semicolon-joined strings for CSV readability
         if isinstance(row.get("tool_calls"), list):
             row["tool_calls"] = "; ".join(str(t) for t in row["tool_calls"])
         if isinstance(row.get("usage"), dict):
-            row["usage"] = json.dumps(row["usage"])
+            row["usage"] = json.dumps(row["usage"], ensure_ascii=False)
+        if isinstance(row.get("tools"), dict):
+            row["tools"] = json.dumps(row["tools"], ensure_ascii=False)
         writer.writerow(row)
 
     buf.seek(0)

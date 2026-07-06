@@ -1,5 +1,23 @@
 # ZK 运维智能体 - 版本变更日志
 
+## [v1.1.1] — 2026-07-06
+
+### Added
+
+- ZKREQ-120: 审计日志详情展示每次 LLM 调用输入 Token 数及完整输入摘要 — `TurnTimer` 新增 `prompt_tokens_getter` / `summary_getter`，按 LLM 阶段实时捕获 `session_prompt_tokens` 增量，从会话消息中动态构建含系统提示、历史对话、工具结果的完整输入摘要
+- ZKREQ-121: 审计日志 `ordered_calls` 字段记录每次 LLM 和工具调用的明细（耗时、输入 token 数、输入摘要、命令摘要），导出 CSV 新增 `ordered_calls`、`tools`、`input_tokens`、`input_summary` 列
+- ZKREQ-122: 版本发布历史弹窗（changelog dialog）界面优化 — 卡片式布局、分类色条（新增/变更/修复）、搜索关键词高亮、i18n 中文化
+
+### Changed
+
+- ZKREQ-123: CSV 导出表头中文化（"输入Token数"、"调用明细(JSON)" 等），改用 `QUOTE_ALL` 确保 JSON 列在 Excel 中完整保留
+- ZKREQ-124: 静态文件缓存策略改为 `max-age=0, must-revalidate`，开发时修改 CSS/JS 即时生效，不再受 5 分钟缓存影响
+
+### Fixed
+
+- ZKREQ-125: Knowledge Office 导入图片被包裹在 ``` 代码块内无法渲染 — `_knowledgeReplaceMarkdownImages` 增加代码块感知，自动将 `<img>` 移出代码块
+- ZKREQ-126: 版本发布历史弹窗 DOM 层级修复 — kanban task modal 嵌套移出 changelog dialog 内部；changelog CSS 加载/滚动失效修复
+
 ## [v1.1.0] — 2026-06-29
 
 ### Added
