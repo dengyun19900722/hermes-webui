@@ -485,3 +485,288 @@ def test_handle_graph_not_found():
     status, payload = graph.handle_graph_delete("/graph/unknown")
     assert status == 404
     assert "error" in payload
+
+
+# ── 16. Integration tests: full CRUD cycle ────────────────────────────────────
+
+
+def test_handle_graph_get_topology():
+    """Mock topology endpoint, assert response has ``nodes`` and ``relationships`` lists."""
+    center = _make_node_mock("center-1", ("Person",), {"name": "Alice"})
+    leaf = _make_node_mock("leaf-1", ("Person",), {"name": "Bob"})
+    rel = _make_rel_mock("rel-T", "KNOWS")
+    record = _FakeRecord({"nodes": [center, leaf], "rels": [rel]})
+    result = _FakeResult([record])
+
+    driver, session = _patched_driver()
+    session.run.return_value = result
+
+    with patch.object(graph, "get_driver", return_value=driver):
+        status, payload = graph.handle_graph_get(
+            "GET", "/graph/topology/center-1", {"depth": "2"},
+        )
+
+    assert status == 200
+    assert "nodes" in payload
+    assert "relationships" in payload
+    assert isinstance(payload["nodes"], list)
+    assert isinstance(payload["relationships"], list)
+    assert len(payload["nodes"]) == 2
+    assert len(payload["relationships"]) == 1
+
+
+def test_handle_graph_post_node_then_get():
+    """POST a node, then GET it back by id, verify properties match."""
+    # POST: create_node returns get_node(node_id), which runs a second query
+    created_node = _make_node_mock("new-elem-7", ("Person",), {"name": "Charlie", "age": 25})
+    create_record = _FakeRecord({"id": "new-elem-7", "n": created_node})
+    create_result = _FakeResult([create_record])
+    fetched_node = _make_node_mock("new-elem-7", ("Person",), {"name": "Charlie", "age": 25})
+    fetch_record = _FakeRecord({"n": fetched_node})
+    fetch_result = _FakeResult([fetch_record])
+
+    driver, session = _patched_driver()
+    session.run.side_effect = [create_result, fetch_result]
+
+    with patch.object(graph, "get_driver", return_value=driver):
+        create_status, create_payload = graph.handle_graph_post(
+            "/graph/nodes",
+            {"label": "Person", "properties": {"name": "Charlie", "age": 25}},
+        )
+
+    assert create_status == 201
+    assert create_payload["id"] == "new-elem-7"
+
+    # GET: get_node for the freshly created id
+    driver2, session2 = _patched_driver()
+    session2.run.return_value = _FakeResult([fetch_record])
+
+    with patch.object(graph, "get_driver", return_value=driver2):
+        get_status, get_payload = graph.handle_graph_get(
+            "GET", "/graph/node/new-elem-7", {},
+        )
+
+    assert get_status == 200
+    assert get_payload["id"] == "new-elem-7"
+    assert get_payload["properties"]["name"] == "Charlie"
+    assert get_payload["properties"]["age"] == 25
+    assert "Person" in get_payload["labels"]
+
+
+def test_handle_graph_post_relationship_then_delete():
+    """POST a relationship, then DELETE it, verify 200 response."""
+    # POST: create_relationship returns _rel_to_dict directly (single query)
+    rel = _make_rel_mock("new-rel-99", "KNOWS")
+    create_record = _FakeRecord({
+        "id": "new-rel-99", "r": rel, "sname": "Alice", "ename": "Bob",
+    })
+
+    driver, session = _patched_driver()
+    session.run.return_value = _FakeResult([create_record])
+
+    with patch.object(graph, "get_driver", return_value=driver):
+        create_status, create_payload = graph.handle_graph_post(
+            "/graph/relationships",
+            {
+                "start_node_id": "start-1",
+                "end_node_id": "end-1",
+                "type": "KNOWS",
+                "properties": {"since": 2024},
+            },
+        )
+
+    assert create_status == 201
+    assert create_payload["id"] == "new-rel-99"
+
+    # DELETE: delete_relationship returns True when a row was matched
+    driver2, session2 = _patched_driver()
+    delete_record = _FakeRecord({"deleted": 1})
+    session2.run.return_value = _FakeResult([delete_record])
+
+    with patch.object(graph, "get_driver", return_value=driver2):
+        delete_status, delete_payload = graph.handle_graph_delete(
+            "/graph/relationship/new-rel-99",
+        )
+
+    assert delete_status == 200
+    assert delete_payload == {"deleted": True}
+
+
+def test_handle_graph_delete_node_not_found():
+    """DELETE a non-existent node returns 404."""
+    # The Cypher for delete_node is ``RETURN count(n) AS deleted``. An empty
+    # result set would produce ``.single() -> None`` and crash; the realistic
+    # "no row matched" response from Neo4j is a single row with ``deleted: 0``.
+    driver, session = _patched_driver()
+    session.run.return_value = _FakeResult([{"deleted": 0}])
+
+    with patch.object(graph, "get_driver", return_value=driver):
+        status, payload = graph.handle_graph_delete("/graph/node/nonexistent-id")
+
+    assert status == 404
+    assert "error" in payload
+    assert "nonexistent-id" in payload["error"]
+
+
+def test_handle_graph_post_node_missing_label():
+    """POST node without ``label`` returns 400."""
+    driver, session = _patched_driver()
+
+    with patch.object(graph, "get_driver", return_value=driver):
+        status, payload = graph.handle_graph_post(
+            "/graph/nodes",
+            {"label": "", "properties": {"name": "NoLabel"}},
+        )
+
+    # No session.run() should have been issued — label validation is upstream
+    assert status == 400
+    assert "error" in payload
+    assert "label" in payload["error"].lower()
+
+
+def test_search_graph_no_label():
+    """Call ``search_graph`` with ``label=None`` — searches across all labels."""
+    node_a = _make_node_mock("elem-X", ("Person",), {"name": "Alice"})
+    node_b = _make_node_mock("elem-Y", ("Project",), {"name": "Alpha"})
+    result = _FakeResult([{"n": node_a}, {"n": node_b}])
+
+    driver, session = _patched_driver()
+    session.run.return_value = result
+
+    with patch.object(graph, "get_driver", return_value=driver):
+        data = graph.search_graph("Al", label=None, limit=10)
+
+    assert data["query"] == "Al"
+    assert data["count"] == 2
+    assert isinstance(data["results"], list)
+    assert len(data["results"]) == 2
+    # Both labels present — no filter applied
+    labels = {n["labels"][0] for n in data["results"]}
+    assert labels == {"Person", "Project"}
+
+
+def test_search_graph_with_label():
+    """Call ``search_graph`` with a specific label — filters correctly."""
+    node_a = _make_node_mock("elem-A", ("Person",), {"name": "Alice"})
+    result = _FakeResult([{"n": node_a}])
+
+    driver, session = _patched_driver()
+    session.run.return_value = result
+
+    with patch.object(graph, "get_driver", return_value=driver):
+        data = graph.search_graph("Alice", label="Person", limit=10)
+
+    assert data["query"] == "Alice"
+    assert data["count"] == 1
+    assert data["results"][0]["properties"]["name"] == "Alice"
+    assert "Person" in data["results"][0]["labels"]
+
+
+def test_get_topology_with_depth():
+    """Call ``get_topology`` with ``depth=2`` — verify the topology payload."""
+    n1 = _make_node_mock("n-1", ("Person",), {"name": "A"})
+    n2 = _make_node_mock("n-2", ("Person",), {"name": "B"})
+    n3 = _make_node_mock("n-3", ("Project",), {"name": "C"})
+    rel1 = _make_rel_mock("r-1", "KNOWS")
+    rel2 = _make_rel_mock("r-2", "WORKS_ON")
+    record = _FakeRecord({"nodes": [n1, n2, n3], "rels": [rel1, rel2]})
+    result = _FakeResult([record])
+
+    driver, session = _patched_driver()
+    session.run.return_value = result
+
+    with patch.object(graph, "get_driver", return_value=driver):
+        topo = graph.get_topology("n-1", depth=2)
+
+    assert "nodes" in topo
+    assert "relationships" in topo
+    assert isinstance(topo["nodes"], list)
+    assert isinstance(topo["relationships"], list)
+    assert len(topo["nodes"]) == 3
+    assert len(topo["relationships"]) == 2
+    assert "error" not in topo
+
+
+def test_create_node_then_delete():
+    """Full cycle: create node, delete it, verify graph state is clean."""
+    # Step 1: create_node runs CREATE then get_node(node_id)
+    created = _make_node_mock("cycle-1", ("Person",), {"name": "TempNode"})
+    create_record = _FakeRecord({"id": "cycle-1", "n": created})
+    create_result = _FakeResult([create_record])
+    fetched = _make_node_mock("cycle-1", ("Person",), {"name": "TempNode"})
+    fetch_record = _FakeRecord({"n": fetched})
+    fetch_result = _FakeResult([fetch_record])
+
+    driver, session = _patched_driver()
+    session.run.side_effect = [create_result, fetch_result]
+
+    with patch.object(graph, "get_driver", return_value=driver):
+        created_node = graph.create_node("Person", {"name": "TempNode"})
+
+    assert created_node is not None
+    assert created_node["id"] == "cycle-1"
+    assert "Person" in created_node["labels"]
+
+    # Step 2: delete_node succeeds (count=1)
+    driver2, session2 = _patched_driver()
+    delete_record = _FakeRecord({"deleted": 1})
+    session2.run.return_value = _FakeResult([delete_record])
+
+    with patch.object(graph, "get_driver", return_value=driver2):
+        deleted = graph.delete_node("cycle-1")
+
+    assert deleted is True
+
+    # Step 3: subsequent get_node for the same id returns None → 404
+    driver3, session3 = _patched_driver()
+    session3.run.return_value = _FakeResult([])  # empty — not found
+
+    with patch.object(graph, "get_driver", return_value=driver3):
+        result = graph.get_node("cycle-1")
+
+    assert result is None
+
+
+def test_update_node():
+    """Create node, update it via ``handle_graph_post`` to ``/graph/node/{id}``,
+    then verify updated properties."""
+    # Create: create_node runs CREATE then get_node → 2 calls
+    created = _make_node_mock("upd-1", ("Person",), {"name": "Original", "age": 20})
+    create_record = _FakeRecord({"id": "upd-1", "n": created})
+    create_result = _FakeResult([create_record])
+    fetched_after_create = _make_node_mock("upd-1", ("Person",), {"name": "Original", "age": 20})
+    fetch_record = _FakeRecord({"n": fetched_after_create})
+    fetch_result_after_create = _FakeResult([fetch_record])
+
+    driver, session = _patched_driver()
+    session.run.side_effect = [create_result, fetch_result_after_create]
+
+    with patch.object(graph, "get_driver", return_value=driver):
+        create_payload = graph.create_node("Person", {"name": "Original", "age": 20})
+
+    assert create_payload["properties"]["name"] == "Original"
+
+    # Update: update_node runs SET then get_node → 2 calls
+    updated_node = _make_node_mock("upd-1", ("Person",), {"name": "Updated", "age": 30})
+    update_record = _FakeRecord({"id": "upd-1"})
+    update_result = _FakeResult([update_record])
+    fetch_record_after_update = _FakeRecord({"n": updated_node})
+    fetch_result_after_update = _FakeResult([fetch_record_after_update])
+
+    driver2, session2 = _patched_driver()
+    session2.run.side_effect = [update_result, fetch_result_after_update]
+
+    with patch.object(graph, "get_driver", return_value=driver2):
+        status, payload = graph.handle_graph_post(
+            "/graph/node/upd-1",
+            {"properties": {"name": "Updated", "age": 30}},
+        )
+
+    assert status == 200
+    assert payload["id"] == "upd-1"
+    assert payload["properties"]["name"] == "Updated"
+    assert payload["properties"]["age"] == 30
+    assert "Person" in payload["labels"]
+
+
+# ── End of integration tests ─────────────────────────────────────────────────
