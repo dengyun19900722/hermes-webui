@@ -11907,6 +11907,15 @@ def handle_get(handler, parsed) -> bool:
         logger.info("[license] 管理员查询列表: %d 条记录", len(licenses))
         return j(handler, {"licenses": licenses})
 
+    # ── Graph Management routes ─────────────────────────────────────────────────
+    if parsed.path.startswith("/api/graph"):
+        from api.graph import handle_graph_get
+
+        result = handle_graph_get(handler, parsed)
+        if result is False:
+            return bad(handler, f"unknown graph endpoint: GET {parsed.path}", status=404)
+        return True
+
     # ── Notes routes ───────────────────────────────────────────────────────────
     if parsed.path.startswith("/api/notes"):
         from api.obsidian_notes import handle_notes_get
@@ -14021,6 +14030,13 @@ def handle_post(handler, parsed) -> bool:
         result = handle_kanban_post(handler, parsed, body)
         if result is False:
             return _kanban_unknown_endpoint(handler, parsed, "POST")
+        return True
+    if parsed.path.startswith("/api/graph"):
+        from api.graph import handle_graph_post
+
+        result = handle_graph_post(handler, parsed)
+        if result is False:
+            return bad(handler, f"unknown graph endpoint: POST {parsed.path}", status=404)
         return True
     if parsed.path.startswith("/api/notes"):
         from api.obsidian_notes import handle_notes_post
@@ -16323,6 +16339,13 @@ def handle_delete(handler, parsed) -> bool:
         result = handle_kanban_delete(handler, parsed, body)
         if result is False:
             return _kanban_unknown_endpoint(handler, parsed, "DELETE")
+        return True
+    if parsed.path.startswith("/api/graph"):
+        from api.graph import handle_graph_delete
+
+        result = handle_graph_delete(handler, parsed)
+        if result is False:
+            return bad(handler, f"unknown graph endpoint: DELETE {parsed.path}", status=404)
         return True
     if parsed.path.startswith("/api/notes"):
         from api.obsidian_notes import handle_notes_delete
