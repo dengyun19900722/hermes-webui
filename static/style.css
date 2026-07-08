@@ -7757,3 +7757,285 @@ html[data-conversation-outline="enabled"] #outlineToggleBtn:not([hidden]){displa
   color: var(--text-primary, #e0e0e0);
   font-family: monospace;
 }
+
+/* ── Graph Panel ─────────────────────────────────────────────────────────── */
+#panelGraph, #graph-panel {
+  display: none;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg);
+  font-size: 13px;
+}
+#panelGraph.active, #graph-panel.active {
+  display: flex;
+}
+.panelGraph .graph-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.panelGraph .graph-header h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text);
+  flex: 1;
+}
+.panelGraph .graph-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--surface-subtle);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.panelGraph .graph-layout-selector {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.panelGraph .graph-layout-selector button {
+  padding: 4px 10px;
+  font-size: 12px;
+  border: none;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+.panelGraph .graph-layout-selector button:last-child {
+  border-right: none;
+}
+.panelGraph .graph-layout-selector button:hover {
+  background: var(--hover-bg);
+}
+.panelGraph .graph-layout-selector button.active {
+  background: var(--accent-bg);
+  color: var(--accent-text);
+}
+.panelGraph .graph-search-input {
+  flex: 1;
+  min-width: 150px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 12px;
+}
+.panelGraph .graph-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-bg);
+}
+.panelGraph .graph-btn {
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+}
+.panelGraph .graph-btn:hover {
+  background: var(--hover-bg);
+}
+.panelGraph .graph-btn:active {
+  background: var(--accent-bg);
+}
+#graphCanvas, #graph-canvas {
+  flex: 1 1 auto;
+  background: var(--surface-subtle);
+  overflow: hidden;
+  position: relative;
+}
+.graph-loading::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.graph-loading-spinner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: graph-spin 0.8s linear infinite;
+}
+@keyframes graph-spin {
+  to { transform: translate(-50%, -50%) rotate(360deg); }
+}
+.graph-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--muted);
+  font-size: 14px;
+}
+#graphList, #graph-sidebar, .graph-sidebar {
+  display: none;
+  width: 300px;
+  flex-shrink: 0;
+  flex-direction: column;
+  background: var(--bg);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+}
+#graphList.visible, #graph-sidebar.visible, .graph-sidebar.visible {
+  display: flex;
+}
+.graph-sidebar-header {
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-subtle);
+  position: sticky;
+  top: 0;
+}
+.graph-sidebar-list {
+  flex: 1;
+  overflow-y: auto;
+}
+.graph-node-item, .graph-rel-item {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer;
+}
+.graph-node-item:hover, .graph-rel-item:hover {
+  background: var(--hover-bg);
+}
+.graph-node-item.active, .graph-rel-item.active {
+  background: var(--accent-bg);
+}
+.graph-node-label {
+  display: block;
+  font-weight: 600;
+  color: var(--text);
+  font-size: 12px;
+}
+.graph-node-type {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.graph-rel-meta {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+}
+.graph-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 6px 14px;
+  background: var(--surface-subtle);
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.graph-status-bar span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.graph-detail-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.graph-detail-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0;
+  min-width: 320px;
+  max-width: 500px;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+}
+.graph-detail-header {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.graph-detail-header h3 {
+  margin: 0;
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+}
+.graph-detail-close {
+  background: none;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  color: var(--muted);
+  padding: 0 4px;
+}
+.graph-detail-close:hover { color: var(--text); }
+.graph-detail-props {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.graph-detail-props td {
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.graph-detail-props .prop-key {
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+  width: 40%;
+}
+.graph-detail-props .prop-val {
+  word-break: break-all;
+}
+.graph-detail-actions {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+@media (max-width: 760px) {
+  #graphList, #graph-sidebar, .graph-sidebar {
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: 280px;
+    box-shadow: -4px 0 16px rgba(0,0,0,0.2);
+    z-index: 10;
+  }
+  .graph-toolbar { padding: 6px 10px; }
+  .graph-header h2 { font-size: 12px; }
+}
