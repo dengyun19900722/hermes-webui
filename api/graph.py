@@ -28,7 +28,11 @@ def _get_neo4j_config() -> dict:
 
 
 def get_driver():
-    """Lazily create and return a Neo4j Driver singleton (thread-safe)."""
+    """Lazily create and return a Neo4j Driver singleton (thread-safe).
+
+    On first creation, runs ``RETURN 1`` to verify connectivity.
+    Raises ``RuntimeError`` if the verification query fails.
+    """
     global _driver
     if _driver is not None:
         return _driver
@@ -48,6 +52,14 @@ def get_driver():
             cfg["uri"],
             auth=(cfg["user"], cfg["password"]),
         )
+        # Verify connectivity on first creation
+        try:
+            with _driver.session() as session:
+                session.run("RETURN 1").single()
+        except Exception as exc:
+            _driver.close()
+            _driver = None
+            raise RuntimeError(f"Neo4j connectivity check failed: {exc}")
         return _driver
 
 
@@ -78,52 +90,33 @@ def _run_write(cypher: str, params: dict | None = None) -> dict:
 # ── Schema discovery ─────────────────────────────────────────────────────────
 
 def get_schema() -> dict:
-    """Return all node labels, relationship types, and per-label counts."""
-    try:
-        driver = get_driver()
-    except ConnectionError:
-        return {
-            "node_labels": [],
-            "relationship_types": [],
-            "stats": {},
-            "connected": False,
-        }
+    """Return all node labels, relationship types, and property keys.
 
-    try:
-        with driver.session() as session:
-            # All node labels
-            labels_result = session.run("CALL db.labels() YIELD label RETURN label")
-            node_labels = sorted(set(r["label"] for r in labels_result))
+    Raises ``ConnectionError`` if the driver cannot be initialized.
+    """
+    driver = get_driver()
+    with driver.session() as session:
+        # All node labels
+        labels_result = session.run("CALL db.labels() YIELD label RETURN label")
+        node_labels = sorted(set(r["label"] for r in labels_result))
 
-            # All relationship types
-            rels_result = session.run(
-                "CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType"
-            )
-            rel_types = sorted(set(r["relationshipType"] for r in rels_result))
+        # All relationship types
+        rels_result = session.run(
+            "CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType"
+        )
+        rel_types = sorted(set(r["relationshipType"] for r in rels_result))
 
-            # Per-label counts
-            stats = {}
-            for label in node_labels:
-                count_result = session.run(
-                    f"MATCH (n:`{label}`) RETURN count(n) AS cnt"
-                )
-                stats[label] = count_result.single()["cnt"]
+        # All property keys
+        props_result = session.run(
+            "CALL db.propertyKeys() YIELD propertyKey RETURN propertyKey"
+        )
+        property_keys = sorted(set(r["propertyKey"] for r in props_result))
 
-        return {
-            "node_labels": node_labels,
-            "relationship_types": rel_types,
-            "stats": stats,
-            "connected": True,
-        }
-    except Exception as exc:
-        logger.warning("Neo4j schema query failed: %s", exc)
-        return {
-            "node_labels": [],
-            "relationship_types": [],
-            "stats": {},
-            "connected": False,
-            "error": str(exc),
-        }
+    return {
+        "node_labels": node_labels,
+        "relationship_types": rel_types,
+        "property_keys": property_keys,
+    }
 
 
 # ── Node helpers ──────────────────────────────────────────────────────────────
@@ -142,64 +135,46 @@ def _node_to_dict(node: Any) -> dict:
     }
 
 
-def list_nodes(label: str | None = None, page: int = 1, page_size: int = 50,
-               q: str | None = None) -> dict:
-    """List nodes, optionally filtered by label, with pagination."""
+def list_nodes(label: str, limit: int = 100) -> list[dict]:
+    """List nodes of a given label, returning a list of ``{'id', 'properties'}``."""
     driver = get_driver()
-    skip = (page - 1) * page_size
-
-    where_parts = []
-    params: dict[str, Any] = {"skip": skip, "limit": page_size}
     label_cypher = f":`{label}`" if label else ""
-
-    if q:
-        where_parts.append(
-            "any(k IN keys(n) WHERE toString(n[k]) CONTAINS $q)"
-        )
-        params["q"] = q
-
-    where_clause = "WHERE " + " AND ".join(where_parts) if where_parts else ""
-
-    count_cypher = f"MATCH (n {label_cypher}) {where_clause} RETURN count(n) AS total"
-    data_cypher = (
-        f"MATCH (n {label_cypher}) {where_clause} "
-        f"RETURN n ORDER BY n.name SKIP $skip LIMIT $limit"
+    cypher = (
+        f"MATCH (n {label_cypher}) "
+        f"RETURN n LIMIT $limit"
     )
-
     with driver.session() as session:
-        total = session.run(count_cypher, params).single()["total"]
-        nodes = [_node_to_dict(r["n"]) for r in session.run(data_cypher, params)]
-
-    return {
-        "nodes": nodes,
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "has_more": (skip + len(nodes)) < total,
-    }
+        nodes = [_node_to_dict(r["n"]) for r in session.run(cypher, {"limit": limit})]
+    # Normalize to {"id": ..., "properties": ...} per spec
+    return [{"id": n["id"], "properties": n["properties"]} for n in nodes]
 
 
-def get_node(node_id: str) -> dict | None:
-    """Return a single node by its element_id."""
-    cypher = "MATCH (n) WHERE n.elementId = $node_id RETURN n"
+def get_node(element_id: str) -> dict | None:
+    """Return a single node by its element_id, including its labels list."""
+    cypher = "MATCH (n) WHERE elementId(n) = $element_id RETURN n"
     with get_driver().session() as session:
-        result = session.run(cypher, {"node_id": node_id})
+        result = session.run(cypher, {"element_id": element_id})
         record = result.single()
         if not record:
             return None
-        return _node_to_dict(record["n"])
+        node = record["n"]
+        return {
+            "id": node.element_id,
+            "labels": list(node.labels),
+            "properties": dict(node),
+        }
 
 
-def create_node(labels: list[str], properties: dict) -> dict:
-    """Create a node with the given labels and properties."""
-    label_str = ":" + ":".join(f"`{l}`" for l in labels)
+def create_node(label: str, properties: dict) -> dict:
+    """Create a node with a single label and the given properties."""
+    label_str = f":`{label}`" if label else ""
     props_keys = list(properties.keys())
     params = {"props": properties}
     set_clause = ", ".join(f"n.{k} = $props.{k}" for k in props_keys)
     cypher = (
         f"CREATE (n {label_str} {{}}) "
         f"SET {set_clause} "
-        "RETURN n.elementId AS id, n"
+        "RETURN elementId(n) AS id, n"
     )
     with get_driver().session() as session:
         result = session.run(cypher, params)
@@ -208,36 +183,36 @@ def create_node(labels: list[str], properties: dict) -> dict:
     return get_node(node_id)
 
 
-def update_node(node_id: str, properties: dict) -> dict | None:
+def update_node(element_id: str, properties: dict) -> dict | None:
     """Update a node's properties."""
     props_keys = list(properties.keys())
-    params = {"node_id": node_id, "props": properties}
+    params = {"element_id": element_id, "props": properties}
     set_clause = ", ".join(f"n.{k} = $props.{k}" for k in props_keys)
     cypher = (
-        f"MATCH (n) WHERE n.elementId = $node_id "
+        f"MATCH (n) WHERE elementId(n) = $element_id "
         f"SET {set_clause} "
-        "RETURN n.elementId AS id"
+        "RETURN elementId(n) AS id"
     )
     with get_driver().session() as session:
         result = session.run(cypher, params)
         if result.single() is None:
             return None
-    return get_node(node_id)
+    return get_node(element_id)
 
 
-def delete_node(node_id: str) -> bool:
+def delete_node(element_id: str) -> bool:
     """Delete a node and all its relationships."""
     cypher = (
-        "MATCH (n) WHERE n.elementId = $node_id "
+        "MATCH (n) WHERE elementId(n) = $element_id "
         "DETACH DELETE n "
         "RETURN count(n) AS deleted"
     )
     with get_driver().session() as session:
-        deleted = session.run(cypher, {"node_id": node_id}).single()["deleted"]
+        deleted = session.run(cypher, {"element_id": element_id}).single()["deleted"]
     return deleted > 0
 
 
-def expand_node(node_id: str, depth: int = 1, direction: str = "both",
+def expand_node(element_id: str, depth: int = 1, direction: str = "both",
                rel_types: list[str] | None = None) -> dict:
     """Return the center node plus its neighbors and relationships within depth."""
     driver = get_driver()
@@ -254,8 +229,8 @@ def expand_node(node_id: str, depth: int = 1, direction: str = "both",
         rel_clause = f"AND type(r) IN [{rel_patterns}]"
 
     cypher = (
-        f"MATCH path = (center) WHERE center.elementId = $node_id "
-        f"F CALL {{ "
+        f"MATCH path = (center) WHERE elementId(center) = $element_id "
+        f"CALL {{ "
         f"  WITH center "
         f"  MATCH path = (center){dir_pattern}(neighbor) "
         f"  WHERE true {rel_clause} "
@@ -265,15 +240,15 @@ def expand_node(node_id: str, depth: int = 1, direction: str = "both",
     )
 
     with driver.session() as session:
-        result = session.run(cypher, {"node_id": node_id, "depth": depth})
+        result = session.run(cypher, {"element_id": element_id, "depth": depth})
         records = list(result)
 
     if not records:
-        center = get_node(node_id)
+        center = get_node(element_id)
         return {"center": center, "nodes": [], "relationships": []}
 
     rec = records[0]
-    center_node = _node_to_dict(rec["center"]) if rec["center"] else get_node(node_id)
+    center_node = _node_to_dict(rec["center"]) if rec["center"] else get_node(element_id)
     all_nodes = {_node_to_dict(n)["id"]: _node_to_dict(n) for n in rec["nodes"]}
     relationships = []
     for rel in rec["rels"]:
@@ -308,45 +283,42 @@ def _rel_to_dict(rel: Any, start_name: str = "", end_name: str = "") -> dict:
     }
 
 
-def list_relationships(page: int = 1, page_size: int = 50,
-                      rel_type: str | None = None) -> dict:
-    """List relationships with pagination, optionally filtered by type."""
-    driver = get_driver()
-    skip = (page - 1) * page_size
+def list_relationships(element_id: str, direction: str = "both") -> list[dict]:
+    """List relationships for a given node element_id, paginated by the node.
 
-    type_clause = f"WHERE type(r) = $rel_type" if rel_type else ""
-    count_cypher = f"MATCH ()-[r]->() {type_clause} RETURN count(r) AS total"
-    data_cypher = (
-        f"MATCH (s)-[r]->(e) {type_clause} "
-        f"RETURN r, s.elementId AS sid, s.name AS sname, e.elementId AS eid, e.name AS ename "
-        f"ORDER BY type(r) SKIP $skip LIMIT $limit"
+    ``direction`` is one of ``'both'``, ``'in'``, ``'out'``.
+    """
+    driver = get_driver()
+    if direction == "out":
+        dir_pattern = "-[r]->"
+    elif direction == "in":
+        dir_pattern = "<-[r]-"
+    else:
+        dir_pattern = "-[r]-"
+
+    cypher = (
+        f"MATCH (n) WHERE elementId(n) = $element_id "
+        f"MATCH (n){dir_pattern}(m) "
+        f"RETURN r, elementId(n) AS sid, n.name AS sname, "
+        f"elementId(m) AS eid, m.name AS ename, "
+        f"elementId(startNode(r)) AS start_id, "
+        f"elementId(endNode(r)) AS end_id"
     )
 
-    params: dict[str, Any] = {"skip": skip, "limit": page_size}
-    if rel_type:
-        params["rel_type"] = rel_type
-
     with driver.session() as session:
-        total = session.run(count_cypher, params).single()["total"]
         rels = []
-        for rec in session.run(data_cypher, params):
+        for rec in session.run(cypher, {"element_id": element_id}):
             rels.append(_rel_to_dict(
                 rec["r"],
                 start_name=rec["sname"] or "",
                 end_name=rec["ename"] or "",
             ))
 
-    return {
-        "relationships": rels,
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "has_more": (skip + len(rels)) < total,
-    }
+    return rels
 
 
-def create_relationship(rel_type: str, start_node_id: str,
-                        end_node_id: str, properties: dict) -> dict | None:
+def create_relationship(start_node_id: str, end_node_id: str, rel_type: str,
+                        properties: dict) -> dict | None:
     """Create a relationship between two nodes."""
     params = {
         "rel_type": rel_type,
@@ -356,11 +328,11 @@ def create_relationship(rel_type: str, start_node_id: str,
     }
     props_set = ", ".join(f"r.{k} = $props.{k}" for k in properties.keys())
     cypher = (
-        "MATCH (s) WHERE s.elementId = $start_node_id "
-        "MATCH (e) WHERE e.elementId = $end_node_id "
+        "MATCH (s) WHERE elementId(s) = $start_node_id "
+        "MATCH (e) WHERE elementId(e) = $end_node_id "
         f"CREATE (s)-[r:`{rel_type}`]->(e) "
         f"SET {props_set} "
-        "RETURN r.elementId AS id, s.name AS sname, e.name AS ename"
+        "RETURN elementId(r) AS id, s.name AS sname, e.name AS ename, r"
     )
     with get_driver().session() as session:
         result = session.run(cypher, params)
@@ -374,14 +346,14 @@ def create_relationship(rel_type: str, start_node_id: str,
         )
 
 
-def update_relationship(rel_id: str, properties: dict) -> dict | None:
+def update_relationship(element_id: str, properties: dict) -> dict | None:
     """Update a relationship's properties."""
-    params = {"rel_id": rel_id, "props": properties}
+    params = {"element_id": element_id, "props": properties}
     props_set = ", ".join(f"r.{k} = $props.{k}" for k in properties.keys())
     cypher = (
-        "MATCH ()-[r]->() WHERE r.elementId = $rel_id "
+        "MATCH ()-[r]->() WHERE elementId(r) = $element_id "
         f"SET {props_set} "
-        "RETURN r.elementId AS id"
+        "RETURN elementId(r) AS id"
     )
     with get_driver().session() as session:
         result = session.run(cypher, params)
@@ -389,36 +361,36 @@ def update_relationship(rel_id: str, properties: dict) -> dict | None:
             return None
     # Fetch full rel
     cypher2 = (
-        "MATCH (s)-[r]->(e) WHERE r.elementId = $rel_id "
+        "MATCH (s)-[r]->(e) WHERE elementId(r) = $element_id "
         "RETURN r, s.name AS sname, e.name AS ename"
     )
     with get_driver().session() as session:
-        rec = session.run(cypher2, {"rel_id": rel_id}).single()
+        rec = session.run(cypher2, {"element_id": element_id}).single()
         if rec is None:
             return None
         return _rel_to_dict(rec["r"], rec["sname"] or "", rec["ename"] or "")
 
 
-def delete_relationship(rel_id: str) -> bool:
+def delete_relationship(element_id: str) -> bool:
     """Delete a relationship by its element_id."""
     cypher = (
-        "MATCH ()-[r]->() WHERE r.elementId = $rel_id "
+        "MATCH ()-[r]->() WHERE elementId(r) = $element_id "
         "DELETE r "
         "RETURN count(r) AS deleted"
     )
     with get_driver().session() as session:
-        deleted = session.run(cypher, {"rel_id": rel_id}).single()["deleted"]
+        deleted = session.run(cypher, {"element_id": element_id}).single()["deleted"]
     return deleted > 0
 
 
-def get_relationship(rel_id: str) -> dict | None:
+def get_relationship(element_id: str) -> dict | None:
     """Return a single relationship by its element_id."""
     cypher = (
-        "MATCH (s)-[r]->(e) WHERE r.elementId = $rel_id "
+        "MATCH (s)-[r]->(e) WHERE elementId(r) = $element_id "
         "RETURN r, s.name AS sname, e.name AS ename"
     )
     with get_driver().session() as session:
-        rec = session.run(cypher, {"rel_id": rel_id}).single()
+        rec = session.run(cypher, {"element_id": element_id}).single()
         if rec is None:
             return None
         return _rel_to_dict(rec["r"], rec["sname"] or "", rec["ename"] or "")
@@ -426,63 +398,40 @@ def get_relationship(rel_id: str) -> dict | None:
 
 # ── Search and topology ──────────────────────────────────────────────────────
 
-def search_graph(q: str, types: list[str] | None = None,
-                limit: int = 20) -> dict:
+def search_graph(query: str, label: str | None = None, limit: int = 50) -> dict:
     """Search nodes by keyword across name and all property values."""
     driver = get_driver()
-    params: dict[str, Any] = {"q": q, "limit": limit}
+    params: dict[str, Any] = {"query": query, "limit": limit}
 
-    type_clause = ""
-    if types:
-        label_conds = " OR ".join(f"'{t}' IN labels(n)" for t in types)
-        type_clause = f"WHERE ({label_conds})"
+    label_clause = ""
+    if label:
+        label_clause = f"AND '{label}' IN labels(n)"
 
     cypher = (
-        f"MATCH (n) {type_clause} "
-        f"WHERE any(k IN keys(n) WHERE toString(n[k]) CONTAINS $q) "
+        f"MATCH (n) "
+        f"WHERE any(k IN keys(n) WHERE toString(n[k]) CONTAINS $query) "
+        f"{label_clause} "
         f"RETURN n LIMIT $limit"
     )
 
     with driver.session() as session:
         nodes = [_node_to_dict(r["n"]) for r in session.run(cypher, params)]
 
-    return {"results": nodes, "q": q, "count": len(nodes)}
+    return {"results": nodes, "query": query, "count": len(nodes)}
 
 
-def get_topology(center_id: str | None = None, depth: int = 2,
-                node_types: list[str] | None = None,
-                rel_types: list[str] | None = None) -> dict:
-    """Return a subgraph for topology view, optionally centered on a node."""
+def get_topology(element_id: str, depth: int = 1) -> dict:
+    """Return a subgraph centered on the given node element_id, within depth."""
     driver = get_driver()
-
-    label_filter = ""
-    if node_types:
-        label_conds = " OR ".join(f"'{t}' IN labels(n)" for t in node_types)
-        label_filter = f"AND ({label_conds})"
-
-    rel_filter = ""
-    if rel_types:
-        rel_conds = " OR ".join(f"type(r) = '{rt}'" for rt in rel_types)
-        rel_filter = f"AND ({rel_conds})"
-
-    if center_id:
-        cypher = (
-            f"MATCH path = (center)-[r*1..{depth}]-(leaf) "
-            f"WHERE center.elementId = $center_id {label_filter} {rel_filter} "
-            f"WITH nodes(path) AS ns, rels(path) AS rs "
-            f"UNWIND ns AS n WITH collect(DISTINCT n) AS uniq, rs "
-            f"UNWIND rs AS r "
-            f"RETURN uniq AS nodes, collect(DISTINCT r) AS rels"
-        )
-        params = {"center_id": center_id}
-    else:
-        cypher = (
-            f"MATCH (n) {label_filter} "
-            f"WITH n LIMIT 50 "
-            f"MATCH path = (n)-[r]-(m) {rel_filter} "
-            f"RETURN collect(DISTINCT n) AS nodes, collect(DISTINCT r) AS rels"
-        )
-        params = {}
+    cypher = (
+        f"MATCH path = (center)-[r*1..{depth}]-(leaf) "
+        f"WHERE elementId(center) = $element_id "
+        f"WITH nodes(path) AS ns, rels(path) AS rs "
+        f"UNWIND ns AS n WITH collect(DISTINCT n) AS uniq, rs "
+        f"UNWIND rs AS r "
+        f"RETURN uniq AS nodes, collect(DISTINCT r) AS rels"
+    )
+    params = {"element_id": element_id}
 
     try:
         with driver.session() as session:
@@ -511,136 +460,129 @@ def get_topology(center_id: str | None = None, depth: int = 2,
 
 # ── HTTP Handlers (called from routes.py) ───────────────────────────────────
 
-def handle_graph_get(handler, parsed):
-    """Route all GET /api/graph/* requests."""
-    path = parsed.path
-    qs = {}
-    if parsed.query:
-        import urllib.parse
-        qs = dict(urllib.parse.parse_qsl(parsed.query))
+def handle_graph_get(method: str, parsed_path: str, query_params: dict) -> tuple:
+    """Route all GET /graph/* requests.
 
-    if path == "/api/graph/schema":
-        data = get_schema()
-        return j(handler, data)
+    Returns a ``(status, data)`` tuple.
+    """
+    path = parsed_path
 
-    if path == "/api/graph/topology":
-        center_id = qs.get("center_id")
-        depth = int(qs.get("depth", 2))
-        node_types = qs.get("node_types", "").split(",") if qs.get("node_types") else None
-        rel_types = qs.get("rel_types", "").split(",") if qs.get("rel_types") else None
-        data = get_topology(center_id, depth, node_types, rel_types)
-        return j(handler, data)
+    if path == "/graph/schema":
+        return 200, get_schema()
 
-    if path == "/api/graph/search":
-        q = qs.get("q", "")
-        types = qs.get("types", "").split(",") if qs.get("types") else None
-        limit = int(qs.get("limit", 20))
-        if not q:
-            return bad(handler, "q parameter is required", status=400)
-        data = search_graph(q, types, limit)
-        return j(handler, data)
+    if path == "/graph/search":
+        query = query_params.get("q", "")
+        label = query_params.get("label") or None
+        limit = int(query_params.get("limit", 50))
+        if not query:
+            return 400, {"error": "q parameter is required"}
+        return 200, search_graph(query, label, limit)
 
-    if path.startswith("/api/graph/nodes/"):
-        node_id = path.split("/api/graph/nodes/")[1]
-        data = get_node(node_id)
+    if path == "/graph/nodes":
+        label = query_params.get("label", "")
+        if not label:
+            return 400, {"error": "label parameter is required"}
+        limit = int(query_params.get("limit", 100))
+        return 200, list_nodes(label, limit)
+
+    if path.startswith("/graph/node/"):
+        element_id = path.split("/graph/node/")[1]
+        data = get_node(element_id)
         if data is None:
-            return bad(handler, f"Node not found: {node_id}", status=404)
-        return j(handler, data)
+            return 404, {"error": f"Node not found: {element_id}"}
+        return 200, data
 
-    if path == "/api/graph/nodes":
-        label = qs.get("type") or None
-        page = int(qs.get("page", 1))
-        page_size = min(int(qs.get("page_size", 50)), 200)
-        q = qs.get("q") or None
-        data = list_nodes(label, page, page_size, q)
-        return j(handler, data)
-
-    if path.startswith("/api/graph/relationships/"):
-        rel_id = path.split("/api/graph/relationships/")[1]
-        data = get_relationship(rel_id)
+    if path.startswith("/graph/relationship/"):
+        element_id = path.split("/graph/relationship/")[1]
+        data = get_relationship(element_id)
         if data is None:
-            return bad(handler, f"Relationship not found: {rel_id}", status=404)
-        return j(handler, data)
+            return 404, {"error": f"Relationship not found: {element_id}"}
+        return 200, data
 
-    if path == "/api/graph/relationships":
-        rel_type = qs.get("type") or None
-        page = int(qs.get("page", 1))
-        page_size = min(int(qs.get("page_size", 50)), 200)
-        data = list_relationships(page, page_size, rel_type)
-        return j(handler, data)
+    if path.startswith("/graph/relationships/"):
+        element_id = path.split("/graph/relationships/")[1]
+        direction = query_params.get("direction", "both")
+        return 200, list_relationships(element_id, direction)
 
-    return bad(handler, f"Unknown graph endpoint: GET {path}", status=404)
+    if path.startswith("/graph/topology/"):
+        element_id = path.split("/graph/topology/")[1]
+        depth = int(query_params.get("depth", 1))
+        return 200, get_topology(element_id, depth)
+
+    return 404, {"error": f"Unknown graph endpoint: GET {path}"}
 
 
-def handle_graph_post(handler, parsed):
-    """Route all POST /api/graph/* requests."""
-    import json as _json
-    body = _json.loads(handler.rfile.read(int(handler.headers.get("Content-Length", 0))))
-    path = parsed.path
+def handle_graph_post(parsed_path: str, body: dict) -> tuple:
+    """Route all POST /graph/* requests.
 
-    if path == "/api/graph/nodes":
-        labels = body.get("labels", [])
+    Returns a ``(status, data)`` tuple.
+    """
+    path = parsed_path
+
+    if path == "/graph/nodes":
+        label = body.get("label", "")
         properties = body.get("properties", {})
-        if not labels:
-            return bad(handler, "labels is required", status=400)
-        data = create_node(labels, properties)
-        return j(handler, data, status=201)
+        if not label:
+            return 400, {"error": "label is required"}
+        return 201, create_node(label, properties)
 
-    if path == "/api/graph/relationships":
-        rel_type = body.get("type")
+    if path == "/graph/relationships":
         start_id = body.get("start_node_id")
         end_id = body.get("end_node_id")
+        rel_type = body.get("type")
         properties = body.get("properties", {})
         if not rel_type or not start_id or not end_id:
-            return bad(handler, "type, start_node_id, and end_node_id are required", status=400)
-        data = create_relationship(rel_type, start_id, end_id, properties)
+            return 400, {"error": "type, start_node_id, and end_node_id are required"}
+        data = create_relationship(start_id, end_id, rel_type, properties)
         if data is None:
-            return bad(handler, "Failed to create relationship — check node IDs", status=400)
-        return j(handler, data, status=201)
+            return 400, {"error": "Failed to create relationship — check node IDs"}
+        return 201, data
 
-    if path.startswith("/api/graph/nodes/") and path.endswith("/expand"):
-        node_id = path.split("/api/graph/nodes/")[1].replace("/expand", "")
+    if path.startswith("/graph/node/") and path.endswith("/expand"):
+        element_id = path.split("/graph/node/")[1].replace("/expand", "")
         depth = int(body.get("depth", 1))
         direction = body.get("direction", "both")
         rel_types = body.get("relationship_types")
-        data = expand_node(node_id, depth, direction, rel_types)
-        return j(handler, data)
+        return 200, expand_node(element_id, depth, direction, rel_types)
 
-    if path.startswith("/api/graph/nodes/"):
-        node_id = path.split("/api/graph/nodes/")[1]
+    if path.startswith("/graph/node/"):
+        element_id = path.split("/graph/node/")[1]
         properties = body.get("properties", {})
-        data = update_node(node_id, properties)
+        data = update_node(element_id, properties)
         if data is None:
-            return bad(handler, f"Node not found: {node_id}", status=404)
-        return j(handler, data)
+            return 404, {"error": f"Node not found: {element_id}"}
+        return 200, data
 
-    if path.startswith("/api/graph/relationships/"):
-        rel_id = path.split("/api/graph/relationships/")[1]
+    if path.startswith("/graph/relationship/"):
+        element_id = path.split("/graph/relationship/")[1]
         properties = body.get("properties", {})
-        data = update_relationship(rel_id, properties)
+        data = update_relationship(element_id, properties)
         if data is None:
-            return bad(handler, f"Relationship not found: {rel_id}", status=404)
-        return j(handler, data)
+            return 404, {"error": f"Relationship not found: {element_id}"}
+        return 200, data
 
-    return bad(handler, f"Unknown graph endpoint: POST {path}", status=404)
+    return 404, {"error": f"Unknown graph endpoint: POST {path}"}
 
 
-def handle_graph_delete(handler, parsed):
-    """Route all DELETE /api/graph/* requests."""
-    path = parsed.path
+def handle_graph_delete(parsed_path: str) -> tuple:
+    """Route all DELETE /graph/* requests.
 
-    if path.startswith("/api/graph/nodes/"):
-        node_id = path.split("/api/graph/nodes/")[1]
-        deleted = delete_node(node_id)
+    Returns a ``(status, data)`` tuple.
+    """
+    path = parsed_path
+
+    if path.startswith("/graph/node/"):
+        element_id = path.split("/graph/node/")[1]
+        deleted = delete_node(element_id)
         if not deleted:
-            return bad(handler, f"Node not found: {node_id}", status=404)
-        return j(handler, {"deleted": True})
+            return 404, {"error": f"Node not found: {element_id}"}
+        return 200, {"deleted": True}
 
-    if path.startswith("/api/graph/relationships/"):
-        rel_id = path.split("/api/graph/relationships/")[1]
-        deleted = delete_relationship(rel_id)
+    if path.startswith("/graph/relationship/"):
+        element_id = path.split("/graph/relationship/")[1]
+        deleted = delete_relationship(element_id)
         if not deleted:
-            return bad(handler, f"Relationship not found: {rel_id}", status=404)
-        return j(handler, {"deleted": True})
+            return 404, {"error": f"Relationship not found: {element_id}"}
+        return 200, {"deleted": True}
 
-    return bad(handler, f"Unknown graph endpoint: DELETE {path}", status=404)
+    return 404, {"error": f"Unknown graph endpoint: DELETE {path}"}
