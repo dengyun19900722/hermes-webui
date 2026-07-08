@@ -5,12 +5,18 @@ import api.updates as updates
 
 
 def _fake_git_for_release_fetch_failure(args, cwd, timeout=10):
+    if args == ['diff-index', '--quiet', 'HEAD', '--']:
+        return '', True  # clean tree
     if args == ['fetch', 'origin', '--tags', '--force']:
         return 'would clobber existing tag v0.50.294', False
     if args == ['tag', '--list', 'v*', '--sort=-v:refname']:
         return 'v0.51.106\nv0.51.103', True
     if args == ['describe', '--tags', '--abbrev=0']:
         return 'v0.51.103', True
+    if args == ['merge-base', '--is-ancestor', 'v0.51.106', 'HEAD']:
+        return '', False
+    if args == ['merge-base', '--is-ancestor', 'HEAD', 'v0.51.106']:
+        return '', True
     if args == ['remote', 'get-url', 'origin']:
         return 'https://github.com/nesquena/hermes-webui.git', True
     raise AssertionError(f'unexpected git args: {args!r}')
@@ -28,6 +34,9 @@ def test_check_repo_reports_release_gap_even_when_tag_fetch_fails(tmp_path):
     assert info['latest_version'] == 'v0.51.106'
     assert info['stale_check'] is True
     assert 'would clobber existing tag' in info['error']
+    # Issue #4085: the dirty flag must ride along on every payload shape.
+    # The mock returns ('', True) for the dirty probe, so the tree is clean.
+    assert info['dirty'] is False
 
 
 def test_check_repo_redacts_credentialed_fetch_failure(tmp_path):
@@ -41,6 +50,8 @@ def test_check_repo_redacts_credentialed_fetch_failure(tmp_path):
     )
 
     def fake_git(args, cwd, timeout=10):
+        if args == ['diff-index', '--quiet', 'HEAD', '--']:
+            return '', True
         if args == ['fetch', 'origin', '--tags', '--force']:
             return raw_error, False
         if args == ['tag', '--list', 'v*', '--sort=-v:refname']:
@@ -64,6 +75,8 @@ def test_check_repo_fetch_failure_without_tags_is_not_up_to_date(tmp_path):
     (tmp_path / '.git').mkdir()
 
     def fake_git(args, cwd, timeout=10):
+        if args == ['diff-index', '--quiet', 'HEAD', '--']:
+            return '', True
         if args == ['fetch', 'origin', '--tags', '--force']:
             return 'network unavailable', False
         if args == ['tag', '--list', 'v*', '--sort=-v:refname']:
@@ -77,6 +90,152 @@ def test_check_repo_fetch_failure_without_tags_is_not_up_to_date(tmp_path):
     assert info['behind'] is None
     assert info['stale_check'] is True
     assert info['error'] == 'fetch failed: network unavailable'
+
+
+def test_apply_force_update_fetch_failure_reports_local_diagnostic(tmp_path):
+    """Force update should surface local git fetch failures."""
+    (tmp_path / '.git').mkdir()
+
+    def fake_git(args, cwd, timeout=10):
+        if args == ['fetch', 'origin', '--quiet', '--tags', '--force']:
+            return "fatal: cannot lock ref 'refs/tags/v0.51.106': is at 123 but expected 456", False
+        raise AssertionError(f'unexpected git args: {args!r}')
+
+    with patch.object(updates, '_run_git', side_effect=fake_git), \
+         patch.object(updates, 'REPO_ROOT', tmp_path), \
+         patch.object(updates, '_restart_blocker_snapshot', return_value={'restart_blocked': False, 'active_streams': 0, 'active_runs': 0}):
+        result = updates.apply_force_update('webui')
+
+    assert result == {
+        'ok': False,
+        'message': "fetch failed: fatal: cannot lock ref 'refs/tags/v0.51.106': is at 123 but expected 456",
+    }
+
+
+def test_apply_update_fetch_failure_reports_local_diagnostic(tmp_path):
+    """Update should surface local git fetch failures."""
+    (tmp_path / '.git').mkdir()
+
+    def fake_git(args, cwd, timeout=10):
+        if args == ['fetch', 'origin', '--quiet', '--tags', '--force']:
+            return "fatal: cannot lock ref 'refs/tags/v0.51.106': is at 123 but expected 456", False
+        raise AssertionError(f'unexpected git args: {args!r}')
+
+    with patch.object(updates, '_run_git', side_effect=fake_git), \
+         patch.object(updates, 'REPO_ROOT', tmp_path), \
+         patch.object(updates, '_restart_blocker_snapshot', return_value={'restart_blocked': False, 'active_streams': 0, 'active_runs': 0}):
+        result = updates.apply_update('webui')
+
+    assert result == {
+        'ok': False,
+        'message': "fetch failed: fatal: cannot lock ref 'refs/tags/v0.51.106': is at 123 but expected 456",
+    }
+
+
+def test_apply_fetch_failure_keeps_connectivity_guidance_for_network_errors(tmp_path):
+    """Known network fetch failures should keep the connectivity guidance."""
+    (tmp_path / '.git').mkdir()
+
+    def fake_git(args, cwd, timeout=10):
+        if args == ['fetch', 'origin', '--quiet', '--tags', '--force']:
+            return 'fatal: unable to access https://github.com/nesquena/hermes-webui.git/: Could not resolve host: github.com', False
+        raise AssertionError(f'unexpected git args: {args!r}')
+
+    cases = [
+        (updates.apply_force_update, 'Could not reach the remote repository. Check your connection.'),
+        (updates.apply_update, 'Could not reach the remote repository. Check your internet connection and try again.'),
+    ]
+
+    for apply_fn, expected_message in cases:
+        with patch.object(updates, '_run_git', side_effect=fake_git), \
+             patch.object(updates, 'REPO_ROOT', tmp_path), \
+             patch.object(updates, '_restart_blocker_snapshot', return_value={'restart_blocked': False, 'active_streams': 0, 'active_runs': 0}):
+            result = apply_fn('webui')
+
+        assert result == {'ok': False, 'message': expected_message}
+
+
+def test_apply_fetch_failure_keeps_connectivity_guidance_for_timeout_shape(tmp_path):
+    """The _run_git timeout string should stay on the network-guidance branch."""
+    (tmp_path / '.git').mkdir()
+
+    def fake_git(args, cwd, timeout=10):
+        if args == ['fetch', 'origin', '--quiet', '--tags', '--force']:
+            return 'git fetch origin --quiet --tags --force timed out after 15s', False
+        raise AssertionError(f'unexpected git args: {args!r}')
+
+    cases = [
+        (updates.apply_force_update, 'Could not reach the remote repository. Check your connection.'),
+        (updates.apply_update, 'Could not reach the remote repository. Check your internet connection and try again.'),
+    ]
+
+    for apply_fn, expected_message in cases:
+        with patch.object(updates, '_run_git', side_effect=fake_git), \
+             patch.object(updates, 'REPO_ROOT', tmp_path), \
+             patch.object(updates, '_restart_blocker_snapshot', return_value={'restart_blocked': False, 'active_streams': 0, 'active_runs': 0}):
+            result = apply_fn('webui')
+
+        assert result == {'ok': False, 'message': expected_message}
+
+
+def test_apply_force_update_fetch_failure_redacts_credentials(tmp_path):
+    """Apply-path fetch diagnostics must redact credential-bearing URLs."""
+    (tmp_path / '.git').mkdir()
+    secret = 'ghp_' + 'A' * 36
+
+    def fake_git(args, cwd, timeout=10):
+        if args == ['fetch', 'origin', '--quiet', '--tags', '--force']:
+            return (
+                "fatal: cannot lock ref 'refs/tags/v0.51.106': is at 123 but expected 456 "
+                f"from https://ash:{secret}@github.com/private/repo.git/"
+            ), False
+        raise AssertionError(f'unexpected git args: {args!r}')
+
+    with patch.object(updates, '_run_git', side_effect=fake_git), \
+         patch.object(updates, 'REPO_ROOT', tmp_path), \
+         patch.object(updates, '_restart_blocker_snapshot', return_value={'restart_blocked': False, 'active_streams': 0, 'active_runs': 0}):
+        result = updates.apply_force_update('webui')
+
+    assert secret not in result['message']
+    assert 'ash:' not in result['message']
+    assert result['message'] == (
+        "fetch failed: fatal: cannot lock ref 'refs/tags/v0.51.106': is at 123 but expected 456 "
+        'from https://<redacted>@github.com/private/repo.git/'
+    )
+
+
+def test_apply_force_update_fetch_failure_redacts_query_secrets(tmp_path):
+    """Apply-path diagnostics must redact secret-bearing query params, not just
+    credential-in-URL and GitHub tokens. The apply path now surfaces sanitized
+    non-network stderr, so query secrets like client_secret/private_token/
+    oauth_token/api_key must be redacted before reaching the user."""
+    (tmp_path / '.git').mkdir()
+    secrets = {
+        'client_secret': 'CS_s3cr3t',
+        'private_token': 'PT_s3cr3t',
+        'oauth_token': 'OA_s3cr3t',
+        'api_key': 'AK_s3cr3t',
+    }
+    remote = (
+        'https://gitlab.example.com/group/repo.git/?'
+        + '&'.join(f'{k}={v}' for k, v in secrets.items())
+    )
+
+    def fake_git(args, cwd, timeout=10):
+        if args == ['fetch', 'origin', '--quiet', '--tags', '--force']:
+            return (f"fatal: repository not found at {remote}"), False
+        raise AssertionError(f'unexpected git args: {args!r}')
+
+    with patch.object(updates, '_run_git', side_effect=fake_git), \
+         patch.object(updates, 'REPO_ROOT', tmp_path), \
+         patch.object(updates, '_restart_blocker_snapshot', return_value={'restart_blocked': False, 'active_streams': 0, 'active_runs': 0}):
+        result = updates.apply_force_update('webui')
+
+    for name, value in secrets.items():
+        assert value not in result['message'], f'{name} value leaked: {result["message"]!r}'
+    # The fetch failure (non-network) is still surfaced as a diagnostic.
+    assert result['message'].startswith('fetch failed:')
+    assert '<redacted>' in result['message']
 
 
 def test_check_for_updates_can_skip_agent_repo(tmp_path):
@@ -129,7 +288,8 @@ def test_update_cache_is_scoped_by_agent_inclusion(tmp_path):
 
 def test_run_git_returns_stderr_on_failure(tmp_path):
     """When a git command fails, _run_git should return stderr (not empty string)."""
-    with patch('subprocess.run') as mock_run:
+    with patch.object(updates.shutil, 'which', return_value='C:/Tools/git.exe'), \
+         patch('subprocess.run') as mock_run:
         mock_run.return_value = MagicMock(
             returncode=1,
             stdout='',
@@ -143,7 +303,8 @@ def test_run_git_returns_stderr_on_failure(tmp_path):
 
 def test_run_git_returns_stdout_when_no_stderr(tmp_path):
     """If stderr is empty on failure, fall back to stdout."""
-    with patch('subprocess.run') as mock_run:
+    with patch.object(updates.shutil, 'which', return_value='C:/Tools/git.exe'), \
+         patch('subprocess.run') as mock_run:
         mock_run.return_value = MagicMock(
             returncode=128,
             stdout='Already up to date.',
@@ -157,7 +318,8 @@ def test_run_git_returns_stdout_when_no_stderr(tmp_path):
 
 def test_run_git_returns_exit_code_when_no_output(tmp_path):
     """If both stdout and stderr are empty, report the exit code."""
-    with patch('subprocess.run') as mock_run:
+    with patch.object(updates.shutil, 'which', return_value='C:/Tools/git.exe'), \
+         patch('subprocess.run') as mock_run:
         mock_run.return_value = MagicMock(
             returncode=1,
             stdout='',
@@ -167,6 +329,33 @@ def test_run_git_returns_exit_code_when_no_output(tmp_path):
 
     assert ok is False
     assert 'status 1' in out
+
+
+def test_run_git_uses_utf8_replacement_for_windows_console_output(tmp_path):
+    """Git output can contain Unicode even when Windows' active code page cannot."""
+    with patch.object(updates.shutil, 'which', return_value='C:/Tools/git.exe'), \
+         patch('subprocess.run') as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout='v0.51.184\n', stderr=None)
+
+        out, ok = updates._run_git(['describe', '--tags'], tmp_path)
+
+    assert ok is True
+    assert out == 'v0.51.184'
+    kwargs = mock_run.call_args.kwargs
+    assert kwargs['encoding'] == 'utf-8'
+    assert kwargs['errors'] == 'replace'
+
+
+def test_run_git_handles_missing_stdout_after_decode_thread_failure(tmp_path):
+    """A subprocess reader failure must not make version detection crash on import."""
+    with patch.object(updates.shutil, 'which', return_value='C:/Tools/git.exe'), \
+         patch('subprocess.run') as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=None, stderr=None)
+
+        out, ok = updates._run_git(['diff', '--binary', 'HEAD', '--'], tmp_path)
+
+    assert ok is True
+    assert out == ''
 
 
 def test_split_remote_ref_splits_tracking_ref():
@@ -196,6 +385,8 @@ def test_check_repo_fetches_tags_with_force(tmp_path):
 
     def fake_git(args, cwd, timeout=10):
         seen_args.append(args)
+        if args == ['diff-index', '--quiet', 'HEAD', '--']:
+            return '', True
         if args[:2] == ['fetch', 'origin']:
             # Force a fetch failure path so we don't have to mock the rest of
             # the release/branch logic; the assertion is about the args shape.
@@ -231,7 +422,7 @@ def test_apply_force_update_fetches_tags_with_force(tmp_path):
 
     with patch.object(updates, '_run_git', side_effect=fake_git), \
          patch.object(updates, 'REPO_ROOT', tmp_path), \
-         patch.object(updates, '_active_stream_count', return_value=0):
+         patch.object(updates, '_restart_blocker_snapshot', return_value={'restart_blocked': False, 'active_streams': 0, 'active_runs': 0}):
         updates.apply_force_update('webui')
 
     fetch_calls = [a for a in seen_args if a[:2] == ['fetch', 'origin']]
@@ -256,7 +447,7 @@ def test_apply_update_fetches_tags_with_force(tmp_path):
 
     with patch.object(updates, '_run_git', side_effect=fake_git), \
          patch.object(updates, 'REPO_ROOT', tmp_path), \
-         patch.object(updates, '_active_stream_count', return_value=0):
+         patch.object(updates, '_restart_blocker_snapshot', return_value={'restart_blocked': False, 'active_streams': 0, 'active_runs': 0}):
         updates.apply_update('webui')
 
     fetch_calls = [a for a in seen_args if a[:2] == ['fetch', 'origin']]
@@ -553,6 +744,58 @@ def test_check_and_apply_paths_agree_when_head_is_past_tag(tmp_path):
     )
 
 
+def test_check_repo_release_falls_through_when_head_contains_newer_tag(tmp_path):
+    """#3140: main-tracking HEAD can already contain the newest release tag.
+
+    The nearest reachable tag is older, so the tag-name gap is positive, but
+    applying the latest tag would not fast-forward because HEAD already contains
+    it. The release check should fall through to the branch comparison instead
+    of advertising a release update.
+    """
+    (tmp_path / '.git').mkdir()
+
+    def fake_git(args, cwd, timeout=10):
+        if args == ['tag', '--list', 'v*', '--sort=-v:refname']:
+            return 'v2026.5.29.2\nv2026.5.29', True
+        if args == ['describe', '--tags', '--abbrev=0']:
+            return 'v2026.5.29', True
+        if args == ['merge-base', '--is-ancestor', 'v2026.5.29.2', 'HEAD']:
+            return '', True
+        raise AssertionError(f'unexpected git args: {args!r}')
+
+    with patch.object(updates, '_run_git', side_effect=fake_git):
+        result = updates._check_repo_release(tmp_path, 'agent')
+
+    assert result is None, (
+        'when HEAD already contains the latest release tag, the release check '
+        'must fall through to the branch check instead of reporting a tag gap (#3140)'
+    )
+
+
+def test_select_apply_compare_ref_falls_through_when_head_contains_newer_tag(tmp_path):
+    """#3140: apply path mirrors the check-side fall-through for ahead-of-tag HEAD."""
+    (tmp_path / '.git').mkdir()
+
+    def fake_git(args, cwd, timeout=10):
+        if args == ['tag', '--list', 'v*', '--sort=-v:refname']:
+            return 'v2026.5.29.2\nv2026.5.29', True
+        if args == ['describe', '--tags', '--abbrev=0']:
+            return 'v2026.5.29', True
+        if args == ['merge-base', '--is-ancestor', 'v2026.5.29.2', 'HEAD']:
+            return '', True
+        if args == ['rev-parse', '--abbrev-ref', '@{upstream}']:
+            return 'origin/main', True
+        raise AssertionError(f'unexpected git args: {args!r}')
+
+    with patch.object(updates, '_run_git', side_effect=fake_git):
+        ref = updates._select_apply_compare_ref(tmp_path)
+
+    assert ref == 'origin/main', (
+        'Update Now must not target a release tag that HEAD already contains; '
+        'it should use the branch comparison path instead (#3140)'
+    )
+
+
 def test_select_apply_compare_ref_case_d_older_tag_with_commits_and_newer_tag_exists(tmp_path):
     """Case D — HEAD on older tag + commits + newer tag exists → advance to newer tag.
 
@@ -576,8 +819,11 @@ def test_select_apply_compare_ref_case_d_older_tag_with_commits_and_newer_tag_ex
             # HEAD's nearest reachable tag (older one)
             return 'v2026.5.10', True
         if args == ['describe', '--tags', '--always']:
-            # HEAD has 3 commits past v2026.5.10
+            # HEAD has 3 commits past v2026.5.10, but it does not contain
+            # the newer v2026.5.16 release tag.
             return 'v2026.5.10-3-gabcdef12', True
+        if args == ['merge-base', '--is-ancestor', 'v2026.5.16', 'HEAD']:
+            return '', False
         if args == ['rev-parse', '--abbrev-ref', '@{upstream}']:
             return 'origin/main', True
         return '', True
@@ -592,4 +838,58 @@ def test_select_apply_compare_ref_case_d_older_tag_with_commits_and_newer_tag_ex
         'should advance to the newer tag, not silently fall through to '
         'origin/<branch>. Regression for Opus-flagged drift in #2855.'
     )
+
+
+def test_check_repo_release_falls_through_when_latest_tag_is_not_ff_reachable(tmp_path):
+    """Main-tracking HEAD past an older tag cannot ff to a patch release tag.
+
+    Repro: installer puts agent on main at v2026.5.29+N-g..., maintainers cut
+    v2026.5.29.2 from a side branch. Tag gap is positive, but
+    ``git pull --ff-only v2026.5.29.2`` fails with diverging branches.
+    The release check must fall through to the upstream branch comparison.
+    """
+    (tmp_path / '.git').mkdir()
+
+    def fake_git(args, cwd, timeout=10):
+        if args == ['tag', '--list', 'v*', '--sort=-v:refname']:
+            return 'v2026.5.29.2\nv2026.5.29', True
+        if args == ['describe', '--tags', '--abbrev=0']:
+            return 'v2026.5.29', True
+        if args == ['describe', '--tags', '--always']:
+            return 'v2026.5.29-265-g5921d6678', True
+        if args == ['merge-base', '--is-ancestor', 'v2026.5.29.2', 'HEAD']:
+            return '', False
+        if args == ['merge-base', '--is-ancestor', 'HEAD', 'v2026.5.29.2']:
+            return '', False
+        raise AssertionError(f'unexpected git args: {args!r}')
+
+    with patch.object(updates, '_run_git', side_effect=fake_git):
+        result = updates._check_repo_release(tmp_path, 'agent')
+
+    assert result is None
+
+
+def test_select_apply_compare_ref_falls_through_when_latest_tag_is_not_ff_reachable(tmp_path):
+    """Apply path mirrors the ff-unreachable release-tag fall-through."""
+    (tmp_path / '.git').mkdir()
+
+    def fake_git(args, cwd, timeout=10):
+        if args == ['tag', '--list', 'v*', '--sort=-v:refname']:
+            return 'v2026.5.29.2\nv2026.5.29', True
+        if args == ['describe', '--tags', '--abbrev=0']:
+            return 'v2026.5.29', True
+        if args == ['describe', '--tags', '--always']:
+            return 'v2026.5.29-265-g5921d6678', True
+        if args == ['merge-base', '--is-ancestor', 'v2026.5.29.2', 'HEAD']:
+            return '', False
+        if args == ['merge-base', '--is-ancestor', 'HEAD', 'v2026.5.29.2']:
+            return '', False
+        if args == ['rev-parse', '--abbrev-ref', '@{upstream}']:
+            return 'origin/main', True
+        raise AssertionError(f'unexpected git args: {args!r}')
+
+    with patch.object(updates, '_run_git', side_effect=fake_git):
+        ref = updates._select_apply_compare_ref(tmp_path)
+
+    assert ref == 'origin/main'
 
