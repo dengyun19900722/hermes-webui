@@ -4125,8 +4125,13 @@ async function toggleModelDropdown(){
   if(typeof closeReasoningDropdown==='function') closeReasoningDropdown();
   if(typeof closeToolsetsDropdown==='function') closeToolsetsDropdown();
   if(typeof window._ensureModelDropdownReady==='function'){
-    const ready=window._ensureModelDropdownReady();
-    if(ready&&typeof ready.catch==='function') ready.catch(()=>{});
+    // Must await the populate promise — otherwise renderModelDropdown() below
+    // reads from the stale <select> while /api/models is still in flight
+    // (#WebUI custom-model-config: new custom provider not visible after save).
+    try{
+      const ready=window._ensureModelDropdownReady();
+      if(ready&&typeof ready.then==='function') await ready;
+    }catch(_){ /* populate failed — renderModelDropdown will fall back to whatever's in <select> */ }
   }
   if(dd.classList.contains('open')) return;
   renderModelDropdown();
