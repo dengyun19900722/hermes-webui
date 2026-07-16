@@ -55,3 +55,76 @@ def register_plugin_slugs(slugs: Iterable[str]) -> None:
     """Called at startup to register plugin provider slugs."""
     global _PLUGIN_SLUGS
     _PLUGIN_SLUGS = frozenset(s.lower() for s in slugs if s)
+
+
+# === Validation (Task 2) ================================================
+
+
+class ValidationError(ValueError):
+    """Raised when a provider body fails validation.
+
+    The exception message is the stable error code (e.g.
+    ``"name_required"``) that the frontend uses for i18n lookup.
+    """
+
+
+def _validate_base_url(url: str) -> str:
+    url = (url or "").strip()
+    if not url:
+        raise ValidationError("base_url_required")
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise ValidationError("base_url_invalid")
+    # Strip trailing slash
+    while url.endswith("/"):
+        url = url[:-1]
+    return url
+
+
+def _validate_slug(slug: str) -> str:
+    slug = (slug or "").strip().lower()
+    # Strip accidental "custom:" prefix from user input
+    if slug.startswith("custom:"):
+        slug = slug[len("custom:"):]
+    if not slug:
+        raise ValidationError("slug_required")
+    if not re.fullmatch(r"[a-z0-9._-]{1,64}", slug):
+        raise ValidationError("slug_invalid")
+    if slug in _BUILTIN_SLUGS:
+        raise ValidationError("slug_collides_builtin")
+    if slug in _PLUGIN_SLUGS:
+        raise ValidationError("slug_collides_plugin")
+    return slug
+
+
+def _validate_models(models: list) -> list:
+    if not models:
+        raise ValidationError("models_empty")
+    seen = []
+    for m in models:
+        m = (m or "").strip()
+        if m and m not in seen:
+            seen.append(m)
+    if not seen:
+        raise ValidationError("models_empty")
+    return seen
+
+
+def validate_provider_body(body: dict) -> dict:
+    """Validate and normalize a provider body in-place.  Returns the body."""
+    if not isinstance(body, dict):
+        raise ValidationError("invalid_body")
+
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise ValidationError("name_required")
+
+    body["name"] = name
+    body["slug"] = _validate_slug(body.get("slug") or slug_from_name(name))
+    body["base_url"] = _validate_base_url(body.get("base_url", ""))
+    body["models"] = _validate_models(body.get("models") or [])
+
+    # api_key is optional; if present, coerce to str (allow None to keep unset).
+    if "api_key" in body and body["api_key"] is not None:
+        body["api_key"] = str(body["api_key"])
+
+    return body
