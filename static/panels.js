@@ -10547,6 +10547,98 @@ async function _fetchProviderQuotaStatus(force=false){
   return status;
 }
 
+// === Custom providers section (see spec §2.2 + §2.8) ===
+let _customProviders = [];
+let _customProvidersLoaded = false;
+
+async function _loadCustomProviders() {
+  try {
+    const data = await api('/api/custom_providers');
+    _customProviders = (data && data.providers) || [];
+  } catch (e) {
+    console.warn('Failed to load custom providers:', e);
+    _customProviders = [];
+  }
+  _customProvidersLoaded = true;
+}
+
+// Fallback card used until Task 9 adds the real _buildCustomProviderCard.
+// Renders a minimal read-only summary (name + slug + base_url) so the section
+// still displays existing custom providers without crashing.
+function _renderPlaceholderCard(p) {
+  const card = document.createElement('div');
+  card.className = 'custom-provider-card';
+  card.style.cssText = 'background:#fff;border:1px solid #f0d080;border-radius:6px;padding:10px;margin-bottom:8px';
+  card.innerHTML = `
+    <div style="font-weight:600">${esc(p.name || p.slug || '')}</div>
+    <div style="color:#888;font-size:12px">${esc(p.slug || '')}</div>
+    <div style="color:#888;font-size:12px;word-break:break-all">${esc(p.base_url || '')}</div>
+  `;
+  return card;
+}
+
+function _renderCustomProvidersSection(container) {
+  const section = document.createElement('div');
+  section.className = 'custom-providers-section';
+  section.style.cssText = 'background:#fff8e1;border:2px solid #f5b800;border-radius:8px;padding:14px;margin-bottom:14px';
+
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:10px';
+  header.innerHTML = `
+    <b style="font-size:16px;color:#7a4a00">⭐ ${esc(t('custom_providers_title'))}</b>
+    <button class="mock-button" data-action="add-custom-provider"
+      style="margin:0;background:#f5b800;border-color:#f5b800;color:#fff">
+      ${esc(t('custom_providers_add_btn'))}
+    </button>
+  `;
+  section.appendChild(header);
+
+  if (_customProviders.length === 0) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'text-align:center;color:#888;padding:10px;font-size:13px';
+    empty.textContent = t('custom_providers_empty');
+    section.appendChild(empty);
+  } else {
+    for (const p of _customProviders) {
+      // _buildCustomProviderCard is added in Task 9; fall back to a
+      // read-only placeholder until then so the section still renders.
+      const card = (typeof _buildCustomProviderCard === 'function')
+        ? _buildCustomProviderCard(p)
+        : _renderPlaceholderCard(p);
+      section.appendChild(card);
+    }
+  }
+
+  // Wire up the add button (modal handler added in Task 10)
+  const addBtn = section.querySelector('[data-action="add-custom-provider"]');
+  if (addBtn) addBtn.addEventListener('click', () => {
+    if (typeof _openCustomProviderModal === 'function') _openCustomProviderModal(null);
+  });
+  container.appendChild(section);
+}
+
+function _renderBuiltInProvidersSection(container) {
+  // Wrap Built-in section in <details> so it collapses by default (per plan §2.2).
+  const details = document.createElement('details');
+  details.className = 'builtin-providers-details';
+  details.open = false;
+
+  const summary = document.createElement('summary');
+  summary.style.cssText = 'display:flex;justify-content:space-between;align-items:center;cursor:pointer;padding:6px 0;list-style:none';
+  summary.innerHTML = `
+    <b style="font-size:14px;color:#666">Built-in providers</b>
+    <span style="color:#888;font-size:12px">${esc(t('custom_providers_subtitle'))}</span>
+  `;
+  details.appendChild(summary);
+
+  const body = document.createElement('div');
+  body.className = 'builtin-providers-section';
+  details.appendChild(body);
+
+  container.appendChild(details);
+  return body;  // caller appends quota card + built-in cards into this
+}
+
 async function loadProvidersPanel(){
   const list=$('providersList');
   const empty=$('providersEmpty');
@@ -10554,12 +10646,21 @@ async function loadProvidersPanel(){
   try{
     const data=await api('/api/providers');
     const quota=await _fetchProviderQuotaStatus(false).catch(e=>({ok:false,status:'unavailable',quota:null,message:e.message||t('provider_quota_unavailable'),client_fetched_at:new Date().toISOString()}));
-    const providers=(data.providers||[]).filter(p=>p.configurable||p.is_oauth||p.is_custom||p.is_plugin_provider||p.is_self_hosted);
+    // Filter out is_custom from built-in list — they now live in the Custom section above
+    const providers=(data.providers||[]).filter(p=>!p.is_custom&&(p.configurable||p.is_oauth||p.is_plugin_provider||p.is_self_hosted));
     list.innerHTML='';
     _providerCardEls.clear();
+
+    // Load custom providers, then render Custom section first (highlighted yellow box)
+    await _loadCustomProviders();
+    _renderCustomProvidersSection(list);
+
+    // Render Built-in section (collapsed by default), then existing built-in cards into it
+    const builtIn = _renderBuiltInProvidersSection(list);
+
     const quotaCard=_buildProviderQuotaCard(quota);
     if(quotaCard){
-      list.appendChild(quotaCard);
+      builtIn.appendChild(quotaCard);
       renderProviderCostChart(quotaCard); // async, fire-and-forget
     }
     if(providers.length===0){
@@ -10570,7 +10671,7 @@ async function loadProvidersPanel(){
     if(empty) empty.style.display='none';
     list.style.display='';
     for(const p of providers){
-      list.appendChild(_buildProviderCard(p));
+      builtIn.appendChild(_buildProviderCard(p));
     }
   }catch(e){
     list.innerHTML='<div style="color:var(--error);padding:12px;font-size:13px">Failed to load providers: '+esc(e.message||String(e))+'</div>';
