@@ -164,6 +164,21 @@ def test_auto_probe_models_posts_to_probe_endpoint():
         "_autoProbeModels must use POST"
 
 
+def test_auto_probe_models_populates_chips_on_success():
+    """Regression: probe results must populate the chip list so the submit
+    payload isn't empty. Previously the probe cached models but never added
+    them as chips, so users who didn't manually type model ids hit a 400
+    "models_empty" on save even though the banner said "Found N models"."""
+    src = _load_panels_js()
+    body = _extract_function(src, "_autoProbeModels") or ""
+    assert "_addModelChip" in body, \
+        "_autoProbeModels must call _addModelChip to populate the chip list"
+    assert "probedModelsCache" in body, \
+        "_autoProbeModels must keep probedModelsCache in sync with chips"
+    assert "probedKey" in body, \
+        "_autoProbeModels must record probedKey so submit can validate the cache"
+
+
 # ---------------------------------------------------------------------------
 # 5. _submitCustomProvider
 # ---------------------------------------------------------------------------
@@ -188,6 +203,20 @@ def test_submit_custom_provider_handles_partial_failure():
     body = _extract_function(src, "_submitCustomProvider") or ""
     assert "failed_profiles" in body or "succeeded_count" in body, \
         "_submitCustomProvider must handle partial-failure response"
+
+
+def test_submit_custom_provider_falls_back_to_probed_cache():
+    """Regression: if user clicks 保存 without manually typing any model ids,
+    submit must fall back to the probed cache (when key still matches) so we
+    don't 400 with "models_empty" right after a successful "Found N models"
+    probe. Key check prevents using a stale cache from a previous base_url."""
+    src = _load_panels_js()
+    body = _extract_function(src, "_submitCustomProvider") or ""
+    assert "probedModelsCache" in body, \
+        "_submitCustomProvider must consult probedModelsCache as a fallback"
+    assert "probedKey" in body, \
+        "_submitCustomProvider must validate probedKey matches the current " \
+        "base_url+api_key before using the cache"
 
 
 # ---------------------------------------------------------------------------

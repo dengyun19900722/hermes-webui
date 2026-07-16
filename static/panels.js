@@ -11570,9 +11570,19 @@ async function _autoProbeModels(card, force) {
       body: JSON.stringify({ base_url: baseUrl, api_key: apiKeyVal || null }),
     });
     if (probe && probe.ok) {
-      _customProviderModalState.probedModelsCache = probe.models || [];
+      const probedModels = probe.models || [];
+      _customProviderModalState.probedModelsCache = probedModels;
+      _customProviderModalState.probedKey = key;
       banner.className = 'probe-banner success';
-      banner.textContent = `Found ${(probe.models || []).length} models (${probe.latency_ms || 0}ms)`;
+      banner.textContent = `Found ${probedModels.length} models (${probe.latency_ms || 0}ms)`;
+      // Auto-populate the chips when the chip list is currently empty so the
+      // user can see what they're saving. Skip when the user has manually
+      // entered any chip — we don't want to clobber their input (#WebUI
+      // custom-model-config, "models_empty" regression after successful probe).
+      const modelsList = card.querySelector('#cpModelsList');
+      if (modelsList && !modelsList.querySelector('.model-row input')) {
+        for (const mid of probedModels) _addModelChip(modelsList, mid);
+      }
     } else {
       banner.className = 'probe-banner error';
       const errKey = probe && probe.error ? 'custom_provider_probe_' + probe.error : null;
@@ -11595,6 +11605,18 @@ async function _submitCustomProvider(card, probeFirst) {
   for (const inp of modelInputs) {
     const v = inp.value.trim();
     if (v) models.push(v);
+  }
+  // Safety net: if the user has no chips but the probe already populated the
+  // cache for the current base_url+api_key, fall back to the cached probe
+  // results. The probe banner says "Found N models" so users reasonably expect
+  // those to be saved when they click "直接保存" (#WebUI custom-model-config,
+  // "models_empty" 400 regression). Key check prevents using a stale cache
+  // from a previous base_url after the user has typed a new one.
+  if (!models.length && Array.isArray(_customProviderModalState.probedModelsCache)) {
+    const currentKey = (card.querySelector('#cpBaseUrl').value || '').trim() + '|' + ((card.querySelector('#cpApiKey').value || '').trim() || '');
+    if (_customProviderModalState.probedKey === currentKey) {
+      models.push(..._customProviderModalState.probedModelsCache);
+    }
   }
 
   const body = {
