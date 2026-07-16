@@ -3924,13 +3924,11 @@ function _injectComposerQuickAdd(dd){
   if(!dd || dd.querySelector('.composer-quickadd')) return;
   const sep=document.createElement('div');
   sep.className='model-quickadd-sep';
-  sep.style.cssText='border-top:1px solid #eee;margin-top:8px;padding-top:6px';
   const row=document.createElement('div');
   row.className='composer-quickadd';
   // Strip the leading "➕ " from the label since the icon is rendered inline
   const labelText=String(t('custom_provider_composer_quickadd_label')||'+ Add custom model').replace(/^[+\s➕]+/,'').trim();
-  row.style.cssText='padding:8px 12px;cursor:pointer;color:#37c;font-size:13px;display:flex;align-items:center;gap:6px;user-select:none';
-  row.innerHTML=`<span style="font-size:14px">➕</span><span>${esc(labelText)}</span>`;
+  row.innerHTML=`<span class="cp-qa-icon">➕</span><span>${esc(labelText)}</span>`;
   row.addEventListener('click', ()=>{
     if(typeof closeModelDropdown==='function') closeModelDropdown();
     if(typeof _openComposerQuickAddModal==='function'){
@@ -3948,26 +3946,28 @@ function _openComposerQuickAddModal(){
   if(_composerQuickAddModal) return;
   const overlay=document.createElement('div');
   overlay.className='composer-quickadd-overlay';
-  overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center';
 
   const card=document.createElement('div');
   card.className='composer-quickadd-modal';
-  card.style.cssText='background:#fff;border-radius:8px;padding:18px;max-width:420px;width:90%';
   card.innerHTML=`
-    <h3 style="margin:0 0 8px">${esc(t('custom_provider_quickadd_title'))}</h3>
-    <p style="font-size:12px;color:#888;margin:0 0 12px">${esc(t('custom_provider_quickadd_subtitle'))}</p>
-    <div style="display:grid;grid-template-columns:90px 1fr;gap:8px;align-items:center">
+    <h3>${esc(t('custom_provider_quickadd_title'))}</h3>
+    <p class="cp-qa-subtitle">${esc(t('custom_provider_quickadd_subtitle'))}</p>
+    <div class="form-row">
       <label>${esc(t('custom_provider_field_name'))}</label>
       <input id="qaName" type="text" placeholder="(optional)" />
-      <label>${esc(t('custom_provider_field_base_url'))} <span style="color:#c44">*</span></label>
+    </div>
+    <div class="form-row">
+      <label>${esc(t('custom_provider_field_base_url'))}<span class="required">*</span></label>
       <input id="qaBaseUrl" type="text" placeholder="https://relay.example.com/v1" />
+    </div>
+    <div class="form-row">
       <label>${esc(t('custom_provider_field_api_key'))}</label>
       <input id="qaApiKey" type="password" autocomplete="off" />
     </div>
-    <div id="qaBanner" style="margin-top:12px;display:none"></div>
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;border-top:1px solid #eee;padding-top:14px">
-      <button data-action="cancel">${esc(t('cancel'))}</button>
-      <button data-action="add" style="background:#37c;color:#fff;border-color:#37c">${esc(t('add'))} &amp; switch</button>
+    <div id="qaBanner" class="probe-banner" style="display:none"></div>
+    <div class="actions">
+      <button type="button" class="btn-ghost" data-action="cancel">${esc(t('cancel'))}</button>
+      <button type="button" class="btn-primary" data-action="add">${esc(t('add'))} &amp; switch</button>
     </div>
   `;
   overlay.appendChild(card);
@@ -4085,8 +4085,8 @@ function _showQaBanner(card, kind, msg){
   const banner=card.querySelector('#qaBanner');
   if(!banner) return;
   banner.style.display='block';
-  const isErr=kind==='error';
-  banner.style.cssText=`margin-top:12px;padding:8px;border-radius:4px;font-size:12px;background:${isErr ? '#fde7e9' : '#e6f4ea'};color:${isErr ? '#a00' : '#0a4'}`;
+  const cls = kind === 'error' ? 'probe-banner error' : 'probe-banner success';
+  banner.className = cls;
   banner.textContent=msg;
 }
 

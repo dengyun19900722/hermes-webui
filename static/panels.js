@@ -10565,22 +10565,18 @@ async function _loadCustomProviders() {
 function _renderCustomProvidersSection(container) {
   const section = document.createElement('div');
   section.className = 'custom-providers-section';
-  section.style.cssText = 'background:#fff8e1;border:2px solid #f5b800;border-radius:8px;padding:14px;margin-bottom:14px';
 
   const header = document.createElement('div');
-  header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:10px';
+  header.className = 'cp-section-header';
   header.innerHTML = `
-    <b style="font-size:16px;color:#7a4a00">⭐ ${esc(t('custom_providers_title'))}</b>
-    <button class="mock-button" data-action="add-custom-provider"
-      style="margin:0;background:#f5b800;border-color:#f5b800;color:#fff">
-      ${esc(t('custom_providers_add_btn'))}
-    </button>
+    <span class="cp-section-title">⭐ ${esc(t('custom_providers_title'))}</span>
+    <button class="cp-add-btn" data-action="add-custom-provider">${esc(t('custom_providers_add_btn'))}</button>
   `;
   section.appendChild(header);
 
   if (_customProviders.length === 0) {
     const empty = document.createElement('div');
-    empty.style.cssText = 'text-align:center;color:#888;padding:10px;font-size:13px';
+    empty.className = 'cp-section-empty';
     empty.textContent = t('custom_providers_empty');
     section.appendChild(empty);
   } else {
@@ -10604,10 +10600,9 @@ function _renderBuiltInProvidersSection(container) {
   details.open = false;
 
   const summary = document.createElement('summary');
-  summary.style.cssText = 'display:flex;justify-content:space-between;align-items:center;cursor:pointer;padding:6px 0;list-style:none';
   summary.innerHTML = `
-    <b style="font-size:14px;color:#666">Built-in providers</b>
-    <span style="color:#888;font-size:12px">${esc(t('custom_providers_subtitle'))}</span>
+    <span class="cp-builtin-title">Built-in providers</span>
+    <span class="cp-builtin-sub">${esc(t('custom_providers_subtitle'))}</span>
   `;
   details.appendChild(summary);
 
@@ -11373,43 +11368,41 @@ function _buildProviderCard(p){
 function _buildCustomProviderCard(p) {
   const card = document.createElement('div');
   card.className = 'custom-provider-card';
-  card.style.cssText = 'background:#fff;border:1px solid #ddd;border-radius:6px;padding:10px;margin:8px 0';
   card.setAttribute('data-slug', p.slug);
 
   const header = document.createElement('div');
-  header.style.cssText = 'display:flex;justify-content:space-between;align-items:center';
-  const title = document.createElement('b');
-  title.textContent = p.name;
-  const slugHint = document.createElement('span');
-  slugHint.style.cssText = 'color:#888;font-size:12px;margin-left:6px';
-  slugHint.textContent = `(custom:${esc(p.slug)})`;
-  title.appendChild(slugHint);
+  header.className = 'cp-card-header';
+
+  const title = document.createElement('div');
+  title.className = 'cp-card-title';
+  title.innerHTML = `<span>${esc(p.name || '')}</span><span class="cp-slug-hint">custom:${esc(p.slug || '')}</span>`;
   header.appendChild(title);
 
   const actions = document.createElement('span');
+  actions.className = 'cp-card-actions';
   actions.innerHTML = `
-    <a href="#" data-action="probe" style="color:#3a6;margin-right:8px">${esc(t('custom_provider_card_probe'))}</a>
-    <a href="#" data-action="edit" style="color:#37c;margin-right:8px">${esc(t('custom_provider_card_edit'))}</a>
-    <a href="#" data-action="delete" style="color:#c44">${esc(t('custom_provider_card_delete'))}</a>
+    <a href="#" data-action="probe">${esc(t('custom_provider_card_probe'))}</a>
+    <a href="#" data-action="edit">${esc(t('custom_provider_card_edit'))}</a>
+    <a href="#" data-action="delete">${esc(t('custom_provider_card_delete'))}</a>
   `;
   header.appendChild(actions);
   card.appendChild(header);
 
   const meta = document.createElement('div');
-  meta.style.cssText = 'font-size:12px;color:#444;margin-top:4px';
+  meta.className = 'cp-card-meta';
   const keyLabel = p.has_key
     ? t('providers_status_configured') || t('custom_provider_field_api_key_hint')
     : t('providers_status_not_configured_label') || '';
   const modelCount = Array.isArray(p.models) ? p.models.length : 0;
-  meta.textContent = `base_url = ${p.base_url} · key ${p.has_key ? '✓' : '✗'} ${keyLabel} · ${modelCount} models`;
+  meta.innerHTML = `<code>${esc(p.base_url || '')}</code> · key ${p.has_key ? '✓' : '✗'} ${esc(keyLabel)} · ${modelCount} models`;
   card.appendChild(meta);
 
-  // Set as default button
+  // Set as default link
   const setDefault = document.createElement('a');
   setDefault.href = '#';
-  setDefault.style.cssText = 'display:inline-block;margin-top:6px;color:#f5b800;font-size:12px';
+  setDefault.className = 'cp-set-default';
   setDefault.setAttribute('data-action', 'set-default');
-  setDefault.textContent = t('custom_provider_card_set_default');
+  setDefault.textContent = '⭐ ' + t('custom_provider_card_set_default');
   card.appendChild(setDefault);
 
   // Wire actions — each handler is guarded because they arrive in Tasks 10/11.
@@ -11446,35 +11439,39 @@ function _openCustomProviderModal(existing) {
   };
   const overlay = document.createElement('div');
   overlay.className = 'custom-provider-modal-overlay';
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center';
 
   const card = document.createElement('div');
   card.className = 'custom-provider-modal';
-  card.style.cssText = 'background:#fff;border-radius:8px;padding:20px;max-width:560px;width:90%;max-height:90vh;overflow:auto';
   const titleText = existing
     ? (t('edit_title') || 'Edit') + ': ' + esc(existing.name || existing.slug || '')
     : t('custom_providers_add_btn');
   card.innerHTML = `
-    <h3 style="margin:0 0 14px">${titleText}</h3>
-    <div style="display:grid;grid-template-columns:120px 1fr;gap:10px;align-items:center">
+    <h3>${titleText}</h3>
+    <div class="form-row">
       <label>${esc(t('custom_provider_field_name'))}</label>
       <input id="cpName" type="text" value="${esc(existing && existing.name || '')}" />
+    </div>
+    <div class="form-row">
       <label>${esc(t('custom_provider_field_slug'))}</label>
       <input id="cpSlug" type="text" value="${esc(existing && existing.slug || '')}" ${existing ? 'disabled' : ''} placeholder="my-openai" />
-      <label>${esc(t('custom_provider_field_base_url'))} <span style="color:#c44">*</span></label>
-      <input id="cpBaseUrl" type="text" value="${esc(existing && existing.base_url || '')}" placeholder="https://relay.example.com/v1" />
-      <label>${esc(t('custom_provider_field_api_key'))}</label>
-      <div>
-        <input id="cpApiKey" type="password" placeholder="${existing && existing.has_key ? esc(t('custom_provider_field_api_key_hint')) : ''}" autocomplete="off" />
-      </div>
-      <label style="align-self:start;padding-top:6px">${esc(t('custom_provider_field_models'))}</label>
-      <div id="cpModelsList"></div>
     </div>
-    <div id="cpProbeBanner" style="margin-top:12px;display:none"></div>
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;border-top:1px solid #eee;padding-top:14px">
-      <button data-action="cancel">${esc(t('cancel'))}</button>
-      <button data-action="probe-save">${esc(t('custom_provider_btn_probe_save'))}</button>
-      <button data-action="save">${esc(t('custom_provider_btn_save_direct'))}</button>
+    <div class="form-row">
+      <label>${esc(t('custom_provider_field_base_url'))}<span class="required">*</span></label>
+      <input id="cpBaseUrl" type="text" value="${esc(existing && existing.base_url || '')}" placeholder="https://relay.example.com/v1" />
+    </div>
+    <div class="form-row">
+      <label>${esc(t('custom_provider_field_api_key'))}</label>
+      <input id="cpApiKey" type="password" placeholder="${existing && existing.has_key ? esc(t('custom_provider_field_api_key_hint')) : ''}" autocomplete="off" />
+    </div>
+    <div class="form-row">
+      <label>${esc(t('custom_provider_field_models'))}</label>
+      <div class="models-list" id="cpModelsList"></div>
+    </div>
+    <div id="cpProbeBanner" class="probe-banner" style="display:none"></div>
+    <div class="actions">
+      <button type="button" class="btn-ghost" data-action="cancel">${esc(t('cancel'))}</button>
+      <button type="button" class="btn-secondary" data-action="probe-save">${esc(t('custom_provider_btn_probe_save'))}</button>
+      <button type="button" class="btn-primary" data-action="save">${esc(t('custom_provider_btn_save_direct'))}</button>
     </div>
   `;
   overlay.appendChild(card);
@@ -11521,10 +11518,10 @@ function _closeCustomProviderModal() {
 
 function _addModelChip(container, value) {
   const row = document.createElement('div');
-  row.style.cssText = 'display:flex;gap:6px;margin-bottom:6px';
+  row.className = 'model-row';
   row.innerHTML = `
-    <input type="text" value="${esc(value)}" style="flex:1" />
-    <button data-remove>×</button>
+    <input type="text" value="${esc(value)}" />
+    <button type="button" class="remove-btn" data-remove aria-label="remove">×</button>
   `;
   row.querySelector('[data-remove]').addEventListener('click', () => row.remove());
   container.appendChild(row);
@@ -11532,20 +11529,22 @@ function _addModelChip(container, value) {
 
 function _addModelAddButton(container) {
   const btn = document.createElement('button');
-  btn.textContent = t('custom_provider_btn_add_model');
-  btn.style.marginRight = '6px';
+  btn.type = 'button';
+  btn.className = 'btn-secondary';
+  btn.textContent = '+ ' + t('custom_provider_btn_add_model');
   btn.addEventListener('click', () => {
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex;gap:6px;margin-bottom:6px';
-    row.innerHTML = '<input type="text" placeholder="model id" style="flex:1" /><button data-remove>×</button>';
+    row.className = 'model-row';
+    row.innerHTML = '<input type="text" placeholder="model id" /><button type="button" class="remove-btn" data-remove aria-label="remove">×</button>';
     row.querySelector('[data-remove]').addEventListener('click', () => row.remove());
     container.insertBefore(row, btn);
   });
   container.appendChild(btn);
 
   const fetchBtn = document.createElement('button');
-  fetchBtn.textContent = t('custom_provider_btn_fetch_models');
-  fetchBtn.style.cssText = 'background:#3a6;color:#fff;border-color:#3a6';
+  fetchBtn.type = 'button';
+  fetchBtn.className = 'btn-secondary';
+  fetchBtn.textContent = '⟳ ' + t('custom_provider_btn_fetch_models');
   fetchBtn.addEventListener('click', async () => {
     const card = container.closest('.custom-provider-modal');
     if (card) await _autoProbeModels(card, true);
@@ -11563,7 +11562,7 @@ async function _autoProbeModels(card, force) {
   if (!force && _customProviderModalState.probedKey === key) return;
   _customProviderModalState.probedKey = key;
   banner.style.display = 'block';
-  banner.style.cssText = 'margin-top:12px;padding:8px;background:#eef;color:#446;border-radius:4px;font-size:12px';
+  banner.className = 'probe-banner info';
   banner.textContent = '… ' + (t('custom_provider_btn_probe_save') || 'Probing');
   try {
     const probe = await api('/api/custom_providers/probe_models', {
@@ -11572,15 +11571,15 @@ async function _autoProbeModels(card, force) {
     });
     if (probe && probe.ok) {
       _customProviderModalState.probedModelsCache = probe.models || [];
-      banner.style.cssText = 'margin-top:12px;padding:8px;background:#e6f4ea;color:#0a4;border-radius:4px;font-size:12px';
+      banner.className = 'probe-banner success';
       banner.textContent = `Found ${(probe.models || []).length} models (${probe.latency_ms || 0}ms)`;
     } else {
-      banner.style.cssText = 'margin-top:12px;padding:8px;background:#fde7e9;color:#a00;border-radius:4px;font-size:12px';
+      banner.className = 'probe-banner error';
       const errKey = probe && probe.error ? 'custom_provider_probe_' + probe.error : null;
       banner.textContent = (errKey && t(errKey)) || (probe && probe.error) || 'Probe failed';
     }
   } catch (e) {
-    banner.style.cssText = 'margin-top:12px;padding:8px;background:#fde7e9;color:#a00;border-radius:4px;font-size:12px';
+    banner.className = 'probe-banner error';
     banner.textContent = String(e && e.message || e);
   }
 }
