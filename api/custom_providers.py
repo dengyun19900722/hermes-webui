@@ -6,7 +6,10 @@ keys are stored literally in that section (custom providers have no
 """
 
 import re
+import time
 from collections.abc import Iterable
+
+import requests
 
 # Built-in provider slugs (must NOT collide with custom slugs).
 # Subset of common built-in slugs sourced from ``api/config.py:_PROVIDER_DISPLAY``
@@ -128,3 +131,74 @@ def validate_provider_body(body: dict) -> dict:
         body["api_key"] = str(body["api_key"])
 
     return body
+
+
+# === Probe (Task 3) =====================================================
+
+
+class ProbeError(Exception):
+    """Raised when a model probe fails in an unexpected way.
+
+    The frontend receives structured dicts (with a stable ``error`` code)
+    from :func:`probe_models`; this exception is reserved for internal
+    failure paths that should never propagate to the route layer.
+    """
+
+
+def probe_models(base_url: str, api_key: str | None = None, timeout: float = 4.0) -> dict:
+    """Probe ``<base_url>/models`` and return available model IDs.
+
+    Returns:
+        ``{"ok": True, "models": [...], "latency_ms": int}``
+        ``{"ok": False, "error": <code>, "latency_ms": int, "detail": str}``
+
+    Error codes: ``unreachable``, ``timeout``, ``auth_failed``,
+    ``not_found``, ``upstream_error``, ``invalid_response``.
+    """
+    base = (base_url or "").rstrip("/")
+    if not base:
+        return {"ok": False, "error": "invalid_url", "latency_ms": 0}
+    url = f"{base}/models"
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    t0 = time.monotonic()
+    try:
+        resp = requests.get(url, headers=headers, timeout=timeout)
+    except requests.exceptions.Timeout:
+        return {"ok": False, "error": "timeout", "latency_ms": int((time.monotonic() - t0) * 1000)}
+    except requests.exceptions.ConnectionError as e:
+        return {"ok": False, "error": "unreachable", "latency_ms": int((time.monotonic() - t0) * 1000), "detail": str(e)}
+    except requests.exceptions.RequestException as e:
+        return {"ok": False, "error": "unreachable", "latency_ms": int((time.monotonic() - t0) * 1000), "detail": str(e)}
+
+    latency = int((time.monotonic() - t0) * 1000)
+
+    if resp.status_code in (401, 403):
+        return {"ok": False, "error": "auth_failed", "status": resp.status_code, "latency_ms": latency}
+    if resp.status_code == 404:
+        return {"ok": False, "error": "not_found", "latency_ms": latency}
+    if resp.status_code >= 500:
+        return {"ok": False, "error": "upstream_error", "status": resp.status_code, "latency_ms": latency}
+
+    try:
+        data = resp.json()
+    except ValueError:
+        return {"ok": False, "error": "invalid_response", "latency_ms": latency}
+
+    items = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return {"ok": False, "error": "invalid_response", "latency_ms": latency}
+
+    seen = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        mid = item.get("id") or item.get("model")
+        if mid and mid not in seen:
+            seen.append(str(mid))
+    if not seen:
+        return {"ok": False, "error": "invalid_response", "latency_ms": latency}
+
+    return {"ok": True, "models": seen, "latency_ms": latency}
