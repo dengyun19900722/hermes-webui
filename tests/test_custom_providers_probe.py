@@ -1,6 +1,5 @@
-import pytest
 import responses
-from api.custom_providers import probe_models, ProbeError
+from api.custom_providers import probe_models
 
 
 @responses.activate
@@ -85,3 +84,38 @@ def test_probe_passes_api_key_in_authorization_header():
     probe_models("https://x/v1", api_key="sk-test", timeout=4.0)
     sent = responses.calls[0].request
     assert sent.headers.get("Authorization") == "Bearer sk-test"
+
+
+@responses.activate
+def test_probe_403_returns_auth_failed():
+    responses.add(responses.GET, "https://x/v1/models", status=403, body="Forbidden")
+    result = probe_models("https://x/v1", api_key="bad", timeout=4.0)
+    assert result["ok"] is False
+    assert result["error"] == "auth_failed"
+
+
+@responses.activate
+def test_probe_timeout_returns_timeout_error():
+    import requests as _r
+    responses.add(
+        responses.GET,
+        "https://x/v1/models",
+        body=_r.exceptions.Timeout("read timed out"),
+    )
+    result = probe_models("https://x/v1", timeout=4.0)
+    assert result["ok"] is False
+    assert result["error"] == "timeout"
+
+
+@responses.activate
+def test_probe_500_returns_upstream_error():
+    responses.add(responses.GET, "https://x/v1/models", status=500, body="boom")
+    result = probe_models("https://x/v1", timeout=4.0)
+    assert result["ok"] is False
+    assert result["error"] == "upstream_error"
+
+
+def test_probe_empty_base_url_returns_invalid_url():
+    result = probe_models("", timeout=4.0)
+    assert result["ok"] is False
+    assert result["error"] == "invalid_url"

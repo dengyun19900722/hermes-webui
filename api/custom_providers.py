@@ -6,10 +6,7 @@ keys are stored literally in that section (custom providers have no
 """
 
 import re
-import time
 from collections.abc import Iterable
-
-import requests
 
 # Built-in provider slugs (must NOT collide with custom slugs).
 # Subset of common built-in slugs sourced from ``api/config.py:_PROVIDER_DISPLAY``
@@ -135,14 +132,9 @@ def validate_provider_body(body: dict) -> dict:
 
 # === Probe (Task 3) =====================================================
 
+import time
 
-class ProbeError(Exception):
-    """Raised when a model probe fails in an unexpected way.
-
-    The frontend receives structured dicts (with a stable ``error`` code)
-    from :func:`probe_models`; this exception is reserved for internal
-    failure paths that should never propagate to the route layer.
-    """
+import requests
 
 
 def probe_models(base_url: str, api_key: str | None = None, timeout: float = 4.0) -> dict:
