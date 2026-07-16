@@ -11947,6 +11947,10 @@ def handle_get(handler, parsed) -> bool:
             except Exception:
                 csrf_token = ""
 
+            from urllib.parse import quote
+            from api.updates import WEBUI_VERSION
+            version_token = quote(WEBUI_VERSION, safe="")
+
             html = (
                 _INDEX_HTML_PATH.read_text(encoding="utf-8")
                 .replace("__WEBUI_VERSION__", version_token)
@@ -14315,6 +14319,82 @@ def handle_post(handler, parsed) -> bool:
             return j(handler, apply_self_hosted_provider_setup(body))
         except ValueError as exc:
             return bad(handler, str(exc), 400)
+
+    # --- /api/custom_providers (Custom OpenAI-compatible providers) ---
+    if parsed.path == "/api/custom_providers":
+        if method == "GET":
+            try:
+                from api.custom_providers import list_custom_providers
+                return j(handler, {"providers": list_custom_providers()})
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("custom_providers list failed")
+                return bad(handler, f"list failed: {exc}", status=500)
+
+        # POST: action = upsert | delete
+        action = (body.get("action") or "upsert").strip().lower()
+        if action == "delete":
+            slug = (body.get("slug") or "").strip().lower()
+            if not slug:
+                return bad(handler, "slug is required")
+            from api.custom_providers import delete_custom_provider_across_profiles
+            from api.config import invalidate_models_cache
+            result = delete_custom_provider_across_profiles(slug=slug)
+            invalidate_models_cache()
+            return j(handler, result)
+
+        # action == "upsert" (default)
+        provider = body.get("provider")
+        if not isinstance(provider, dict):
+            return bad(handler, "provider body required")
+        try:
+            from api.custom_providers import (
+                validate_provider_body,
+                upsert_custom_provider_across_profiles,
+                probe_models,
+                ValidationError,
+            )
+            validate_provider_body(provider)
+        except ValidationError as e:
+            return bad(handler, str(e), status=400)
+
+        # Optional pre-save probe (skip when client says skip_probe=true)
+        skip_probe = bool(body.get("skip_probe"))
+        if not skip_probe and provider.get("api_key"):
+            probe = probe_models(provider["base_url"], api_key=provider["api_key"])
+            if not probe.get("ok"):
+                return bad(handler, probe.get("error", "probe_failed"), status=400)
+
+        try:
+            from api.config import invalidate_models_cache
+            result = upsert_custom_provider_across_profiles(provider=provider)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("custom_providers upsert failed")
+            return bad(handler, f"upsert failed: {exc}", status=500)
+        invalidate_models_cache()
+        return j(handler, result)
+
+
+    if parsed.path == "/api/custom_providers/probe_models":
+        base_url = (body.get("base_url") or "").strip()
+        api_key = body.get("api_key")
+        if not base_url:
+            return bad(handler, "base_url required")
+        from api.custom_providers import probe_models
+        return j(handler, probe_models(base_url, api_key=api_key, timeout=4.0))
+
+
+    if parsed.path == "/api/custom_providers/set_default":
+        slug = (body.get("slug") or "").strip().lower()
+        model = (body.get("model") or "").strip()
+        if not slug or not model:
+            return bad(handler, "slug and model required")
+        from api.custom_providers import set_default_across_profiles
+        from api.config import invalidate_models_cache
+        result = set_default_across_profiles(slug=slug, model=model)
+        if result.get("error"):
+            return bad(handler, result["error"], status=400)
+        invalidate_models_cache()
+        return j(handler, result)
 
     if parsed.path == "/api/models/refresh":
         provider_id = (body.get("provider") or "").strip().lower()
@@ -20295,29 +20375,59 @@ def _active_stream_blocks_chat_start(session, stream_id: str | None) -> bool:
     very fresh pending turn must also block duplicate chat_start requests. If we
     only check STREAMS here, a second request can race through the registration
     gap and overwrite the sidecar owner.
+
+    Grace semantics: once ``pending_started_at`` is older than
+    `_REPAIR_STALE_PENDING_GRACE_SECONDS` (default 30s), any matching entry in
+    STREAMS / ACTIVE_RUNS / pending_user_message is treated as a presumed
+    STUCK-ORPHAN worker that did not release the lock in time (e.g. long
+    C-level tool call, refresh + crashed SSE consumer, agent.interrupt()
+    blocked in foreign code) and the new chat_start is allowed to proceed
+    with proactive cancel_stream() in the caller. This matches the original
+    pending_user_message grace and prevents permanent 409s after a refresh +
+    retry cycle. (Codex brick-gate hardening, #5345 / #5198 follow-up.)
     """
     if not stream_id:
         return False
+    try:
+        from api.models import _REPAIR_STALE_PENDING_GRACE_SECONDS
+        grace_seconds = float(_REPAIR_STALE_PENDING_GRACE_SECONDS)
+    except Exception:
+        grace_seconds = 30.0
+    try:
+        pending_started_at = float(getattr(session, "pending_started_at", None) or 0)
+    except Exception:
+        pending_started_at = 0.0
+    # Fallback: if pending_started_at is unset/zero, use ACTIVE_RUNS[stream_id]
+    # ["started_at"] (always set by register_active_run). This handles older
+    # sessions loaded without the pending_started_at field, and stuck turns
+    # where the worker is still alive in STREAMS / ACTIVE_RUNS after their
+    # pending_* fields were cleared.
+    active_run_started_at = 0.0
+    if not pending_started_at:
+        try:
+            from api import config as _live_cfg_for_blocks
+            with _live_cfg_for_blocks.ACTIVE_RUNS_LOCK:
+                _entry = (_live_cfg_for_blocks.ACTIVE_RUNS or {}).get(stream_id) or {}
+            active_run_started_at = float((_entry or {}).get("started_at") or 0)
+        except Exception:
+            active_run_started_at = 0.0
+    effective_started_at = pending_started_at or active_run_started_at
+    # Past grace: ANY registration in STREAMS / ACTIVE_RUNS / pending_* is
+    # presumed-orphan (the worker did not release within the grace window),
+    # so the lock does NOT block. The caller's proactive cancel path is
+    # responsible for tearing the orphan down before a new stream starts.
+    past_grace = bool(effective_started_at) and (time.time() - effective_started_at) >= grace_seconds
     with STREAMS_LOCK:
-        if stream_id in STREAMS:
+        if stream_id in STREAMS and not past_grace:
             return True
     try:
         from api import config as _live_config
         with _live_config.ACTIVE_RUNS_LOCK:
-            if stream_id in (_live_config.ACTIVE_RUNS or {}):
+            if stream_id in (_live_config.ACTIVE_RUNS or {}) and not past_grace:
                 return True
     except Exception:
         pass
     if getattr(session, "pending_user_message", None):
-        try:
-            from api.models import _REPAIR_STALE_PENDING_GRACE_SECONDS
-            grace_seconds = float(_REPAIR_STALE_PENDING_GRACE_SECONDS)
-        except Exception:
-            grace_seconds = 30.0
-        try:
-            pending_started_at = float(getattr(session, "pending_started_at", None) or 0)
-        except Exception:
-            pending_started_at = 0.0
         if pending_started_at and time.time() - pending_started_at < grace_seconds:
             return True
     return False
@@ -20412,12 +20522,159 @@ def _start_chat_stream_for_session(
     diag.stage("active_stream_check") if diag else None
     current_stream_id = getattr(s, "active_stream_id", None)
     if current_stream_id:
-        if _active_stream_blocks_chat_start(s, current_stream_id):
+        # ── Stuck-orphan auto-recovery (#5345 / #5198 follow-up) ──
+        # If the active_stream_id has been pending past the grace period
+        # with no progress, the worker is almost certainly a zombie from
+        # a tab refresh / cancelled prior turn that did not release the
+        # lock in time (a long tool-call C syscall can block the worker's
+        # `finally` for minutes). Proactively cancel_stream() it so the
+        # follow-up chat_start can proceed without a manual Stop click.
+        # Threshold = _REPAIR_STALE_PENDING_GRACE_SECONDS exactly, so the
+        # orphan-recovery window matches the existing pending_user_message
+        # grace that operators already understand. (#5345)
+        try:
+            from api.models import _REPAIR_STALE_PENDING_GRACE_SECONDS
+            _orphan_grace_seconds = float(_REPAIR_STALE_PENDING_GRACE_SECONDS or 30)
+        except Exception:
+            _orphan_grace_seconds = 30.0
+        try:
+            _pending_started_at_for_age = float(getattr(s, "pending_started_at", None) or 0)
+        except Exception:
+            _pending_started_at_for_age = 0.0
+        # Fallback: if pending_started_at is unset/zero (older sessions loaded
+        # before the field existed, or a stuck turn that already had its
+        # pending_* cleared while the worker is still alive in STREAMS), use
+        # ACTIVE_RUNS[stream_id]["started_at"] as the proxy. That field is
+        # always set by register_active_run() when the worker starts, so it
+        # is the most reliable "how long has this worker been alive" signal.
+        _active_run_started_at = 0.0
+        if not _pending_started_at_for_age:
+            try:
+                from api import config as _live_cfg_for_age
+                with _live_cfg_for_age.ACTIVE_RUNS_LOCK:
+                    _entry = (_live_cfg_for_age.ACTIVE_RUNS or {}).get(current_stream_id) or {}
+                _active_run_started_at = float((_entry or {}).get("started_at") or 0)
+            except Exception:
+                _active_run_started_at = 0.0
+        _effective_started_at = _pending_started_at_for_age or _active_run_started_at
+        _past_grace = bool(_effective_started_at) and (time.time() - _effective_started_at) >= _orphan_grace_seconds
+        if _past_grace and current_stream_id:
+            diag.stage("orphan_auto_cancel") if diag else None
+            try:
+                from api.streaming import cancel_stream as _auto_cancel_stream
+                _auto_cancel_stream(current_stream_id)
+            except Exception:
+                logger.debug(
+                    "auto-cancel of stuck active stream %s failed",
+                    current_stream_id, exc_info=True,
+                )
+            # Drop the orphan from local session state so the session_lock
+            # path below sees a clean slate. cancel_stream() tears down
+            # STREAMS / ACTIVE_RUNS / session.active_stream_id (DB) for us;
+            # _clear_stale_stream_state mirrors that into the local handle.
+            _clear_stale_stream_state(s)
+            current_stream_id = None
+        # ── Fresh-stream dedupe (rapid double-fire mitigation) ──
+        # When the blocking active_stream_id was set within the last ~2s and the
+        # worker is still in the "starting" phase, a second chat_start within
+        # milliseconds is almost certainly a frontend double-fire (Enter + click,
+        # auto-retry on a hung request, SSE reconnect race) — NOT a legitimate
+        # user action. Returning 409 here forces the JS into its queue+toast path
+        # which shows "Current session is still running. Reconnected and queued
+        # your message." — confusing for a brand-new "first input on new session"
+        # UX (v2 diag: pending_age_s ≈ 0.01–0.5s, active_run_phase="starting").
+        #
+        # Instead, return 200 with the EXISTING stream_id and `_deduped: true` so
+        # the frontend can silently attach to the in-flight turn and the user
+        # does not see an error. The original 409 path still fires for older
+        # streams (≥2s) so genuine "user typed after long wait" cases are still
+        # caught.
+        # Hoist the diag age computation so the dedupe path and the 409 path
+        # share the same probe — both can read in_streams / active_runs / age.
+        _in_streams = current_stream_id in STREAMS if current_stream_id else False
+        _in_active_runs = False
+        _active_run_started_at_diag = 0.0
+        _active_run_phase = None
+        _active_run_session_id = None
+        try:
+            from api import config as _live_cfg
+            with _live_cfg.ACTIVE_RUNS_LOCK:
+                _ar_entry = (_live_cfg.ACTIVE_RUNS or {}).get(current_stream_id) or {}
+            _in_active_runs = bool(_ar_entry)
+            _active_run_started_at_diag = float((_ar_entry or {}).get("started_at") or 0)
+            _active_run_phase = (_ar_entry or {}).get("phase")
+            _active_run_session_id = (_ar_entry or {}).get("session_id")
+        except Exception:
+            pass
+        _pending_user_msg = bool(getattr(s, "pending_user_message", None))
+        _pending_started_at_diag = 0.0
+        try:
+            _pending_started_at_diag = float(getattr(s, "pending_started_at", None) or 0)
+        except Exception:
+            _pending_started_at_diag = 0.0
+        _now = time.time()
+        try:
+            from api.models import _REPAIR_STALE_PENDING_GRACE_SECONDS as _g
+            _grace_diag = float(_g or 30)
+        except Exception:
+            _grace_diag = 30.0
+        _effective_diag = _pending_started_at_diag or _active_run_started_at_diag
+        _pending_age = (_now - _pending_started_at_diag) if _pending_started_at_diag else None
+        _active_age = (_now - _active_run_started_at_diag) if _active_run_started_at_diag else None
+        _eff_age = (_now - _effective_diag) if _effective_diag else None
+        _past_grace_diag = bool(_effective_diag) and _eff_age is not None and _eff_age >= _grace_diag
+        # Fresh-dup detection: only dedupe while the worker is still in
+        # "starting" (i.e. has not yet emitted its first SSE event). Once it
+        # transitions to "running" / "tool_calling" / etc. a duplicate request
+        # really is a separate user action and should 409 normally.
+        _dedupe_window_seconds = 2.0
+        _dedupe_age = _eff_age if _eff_age is not None else _active_age if _active_age is not None else _pending_age
+        _is_fresh_dup = (
+            current_stream_id
+            and _dedupe_age is not None
+            and _dedupe_age < _dedupe_window_seconds
+            and (_active_run_phase is None or _active_run_phase == "starting")
+        )
+        if _is_fresh_dup:
+            diag.stage("dedupe_fresh_dup") if diag else None
+            logger.info(
+                "chat_start deduped into fresh stream: session=%s stream=%s age=%.3fs phase=%s",
+                getattr(s, "session_id", "?"), current_stream_id,
+                _dedupe_age or 0.0, _active_run_phase,
+            )
+            return {
+                "stream_id": current_stream_id,
+                "session_id": s.session_id,
+                "pending_started_at": _pending_started_at_diag,
+                "turn_id": None,
+                "title": getattr(s, "title", None),
+                "_deduped": True,
+                "_dedup_reason": "fresh_stream_within_2s",
+                "_dedup_age_s": _dedupe_age,
+            }
+        elif _active_stream_blocks_chat_start(s, current_stream_id):
             diag.stage("response_write") if diag else None
             return {
                 "error": "session already has an active stream",
                 "active_stream_id": current_stream_id,
+                "_source": "session_active_stream_id",
                 "_status": 409,
+                "_diag": {
+                    "diag_version": 2,
+                    "in_streams": _in_streams,
+                    "in_active_runs": _in_active_runs,
+                    "has_pending_user_message": _pending_user_msg,
+                    "pending_started_at": _pending_started_at_diag,
+                    "pending_age_s": _pending_age,
+                    "active_run_started_at": _active_run_started_at_diag,
+                    "active_run_age_s": _active_age,
+                    "active_run_phase": _active_run_phase,
+                    "active_run_session_id": _active_run_session_id,
+                    "effective_started_at": _effective_diag,
+                    "effective_age_s": _eff_age,
+                    "orphan_grace_s": _grace_diag,
+                    "past_grace": _past_grace_diag,
+                },
             }
         # Stale stream id from a previous run; clear and continue.
         diag.stage("stale_stream_cleanup") if diag else None
@@ -20446,20 +20703,37 @@ def _start_chat_stream_for_session(
             if locked_stream_id:
                 if _active_stream_blocks_chat_start(s, locked_stream_id):
                     diag.stage("response_write") if diag else None
+                    _diag = {"in_streams": False, "in_active_runs": False, "has_pending_user_message": False}
+                    try:
+                        _diag["in_streams"] = locked_stream_id in STREAMS
+                        from api import config as _cfg2
+                        _diag["in_active_runs"] = locked_stream_id in (_cfg2.ACTIVE_RUNS or {})
+                        _diag["has_pending_user_message"] = bool(getattr(s, "pending_user_message", None))
+                    except Exception:
+                        pass
                     return {
                         "error": "session already has an active stream",
                         "active_stream_id": locked_stream_id,
+                        "_source": "session_active_stream_id_locked",
                         "_status": 409,
+                        "_diag": _diag,
                     }
                 needs_stale_cleanup = True
             else:
                 blocking_run_stream_id = _active_run_stream_for_session(s.session_id)
                 if blocking_run_stream_id:
                     diag.stage("response_write") if diag else None
+                    _diag = {"in_streams": False, "in_active_runs": blocking_run_stream_id is not None}
+                    try:
+                        _diag["in_streams"] = blocking_run_stream_id in STREAMS if blocking_run_stream_id else False
+                    except Exception:
+                        pass
                     return {
                         "error": "session already has an active stream",
                         "active_stream_id": blocking_run_stream_id,
+                        "_source": "active_runs",
                         "_status": 409,
+                        "_diag": _diag,
                     }
                 needs_stale_cleanup = False
                 stream_id = uuid.uuid4().hex
@@ -20484,6 +20758,7 @@ def _start_chat_stream_for_session(
                 return {
                     "error": "session already has an active stream",
                     "active_stream_id": getattr(s, "active_stream_id", None),
+                    "_source": "stale_cleanup_failed",
                     "_status": 409,
                 }
     if was_hidden_empty_session:
@@ -21321,7 +21596,6 @@ def _handle_chat_start(handler, body, diag=None):
             if restore_err is not None:
                 return bad(handler, f"failed to restore compression recovery: {_sanitize_error(restore_err)}", 500)
             return j(handler, {"error": response["error"]}, status=501)
-        )
         client_ip = _client_ip_for_audit(handler)
         s.pending_client_ip = client_ip if client_ip and client_ip != "-" else None
         from api.runtime_adapter import (
