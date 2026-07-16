@@ -11713,9 +11713,13 @@ async function _probeCustomProvider(p) {
   overlay.style.cssText = 'position:fixed;top:20px;right:20px;background:#333;color:#fff;padding:10px;border-radius:4px;z-index:9999;font-size:12px';
   document.body.appendChild(overlay);
   try {
+    // Send `slug` so the server uses the stored api_key for the upstream auth
+    // header (the client doesn't hold the raw key in memory). Sending
+    // `api_key: null` previously caused `auth_failed` on every authenticated
+    // upstream (#WebUI custom-model-config).
     const probe = await api('/api/custom_providers/probe_models', {
       method: 'POST',
-      body: JSON.stringify({ base_url: p.base_url, api_key: null }),
+      body: JSON.stringify({ base_url: p.base_url, slug: p.slug }),
     });
     if (probe && probe.ok) {
       overlay.textContent = `✓ ${esc(p.name || p.slug || '')}: ${(probe.models || []).length} models`;

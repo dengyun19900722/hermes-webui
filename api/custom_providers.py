@@ -137,16 +137,35 @@ import time
 import requests
 
 
-def probe_models(base_url: str, api_key: str | None = None, timeout: float = 4.0) -> dict:
+def probe_models(base_url: str, api_key: str | None = None, slug: str | None = None,
+                  timeout: float = 4.0) -> dict:
     """Probe ``<base_url>/models`` and return available model IDs.
+
+    If ``slug`` is provided and ``api_key`` is None, the stored key for that
+    provider is loaded from config so the upstream call is authenticated the
+    same way as when the user originally saved it (#WebUI custom-model-config:
+    probe "探测" button on a saved provider was sending api_key=null which
+    caused auth_failed on every authenticated upstream).
 
     Returns:
         ``{"ok": True, "models": [...], "latency_ms": int}``
         ``{"ok": False, "error": <code>, "latency_ms": int, "detail": str}``
 
     Error codes: ``unreachable``, ``timeout``, ``auth_failed``,
-    ``not_found``, ``upstream_error``, ``invalid_response``.
+    ``not_found``, ``upstream_error``, ``invalid_response``, ``unknown_slug``.
     """
+    # Resolve stored key when slug is provided and the client didn't pass a
+    # key (e.g. the "探测" button on a saved provider card).
+    if api_key is None and slug:
+        stored = _load_custom_provider_by_slug(slug)
+        if stored is None:
+            return {"ok": False, "error": "unknown_slug", "latency_ms": 0,
+                    "detail": f"no custom provider with slug={slug!r}"}
+        api_key = stored.get("api_key") or None
+        # If client passed base_url explicitly, trust it (lets us probe after
+        # a base_url change before re-saving). Otherwise use the stored value.
+        if not base_url:
+            base_url = stored.get("base_url") or ""
     base = (base_url or "").rstrip("/")
     if not base:
         return {"ok": False, "error": "invalid_url", "latency_ms": 0}
@@ -426,3 +445,27 @@ def list_custom_providers() -> list[dict]:
             "models": list(p.get("models") or []),
         })
     return out
+
+
+def _load_custom_provider_by_slug(slug: str) -> dict | None:
+    """Return the raw stored provider dict (with api_key value) for ``slug``.
+
+    Internal helper for server-side flows that need the real key — currently
+    only ``probe_models`` (so the "探测" button on a saved card can re-auth
+    against the upstream without bouncing the key through the client).
+
+    Returns ``None`` if the slug isn't found in any profile. All profiles
+    should hold identical entries (kept in sync by upsert), so reading the
+    first profile is enough.
+    """
+    if not slug:
+        return None
+    homes = list_all_profile_homes()
+    if not homes:
+        return None
+    cfg = _load_yaml(homes[0] / "config.yaml")
+    target = (slug or "").strip().lower()
+    for p in (cfg.get("custom_providers") or []):
+        if str(p.get("slug") or "").strip().lower() == target:
+            return p
+    return None

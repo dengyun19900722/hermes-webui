@@ -14377,10 +14377,12 @@ def handle_post(handler, parsed) -> bool:
     if parsed.path == "/api/custom_providers/probe_models":
         base_url = (body.get("base_url") or "").strip()
         api_key = body.get("api_key")
-        if not base_url:
-            return bad(handler, "base_url required")
+        slug = (body.get("slug") or "").strip().lower() or None
+        if not base_url and not slug:
+            return bad(handler, "base_url or slug required")
         from api.custom_providers import probe_models
-        return j(handler, probe_models(base_url, api_key=api_key, timeout=4.0))
+        return j(handler, probe_models(
+            base_url, api_key=api_key, slug=slug, timeout=4.0))
 
 
     if parsed.path == "/api/custom_providers/set_default":
