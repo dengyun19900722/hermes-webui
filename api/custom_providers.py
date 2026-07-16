@@ -194,3 +194,174 @@ def probe_models(base_url: str, api_key: str | None = None, timeout: float = 4.0
         return {"ok": False, "error": "invalid_response", "latency_ms": latency}
 
     return {"ok": True, "models": seen, "latency_ms": latency}
+
+
+# === Broadcast writes (Task 4) ===========================================
+#
+# Imports kept inside this section per the append-only discipline enforced
+# after Task 3 review (do not promote one-off imports to the top-of-file
+# block).  ``yaml`` and ``os`` are first-introduced here; ``Path`` is also
+# first used here.
+import os
+import yaml as _yaml
+from pathlib import Path
+
+
+def list_all_profile_homes() -> list[Path]:
+    """Return all profile home directories.
+
+    Real implementation enumerates ``~/.hermes/profiles/*`` and the default
+    home.  Tests override this via ``monkeypatch.setattr`` (see
+    ``tests/test_custom_providers_broadcast.py::multi_profile_homes``).
+    """
+    # Placeholder; production wiring is out of scope for this unit.
+    return [Path.home() / ".hermes"]
+
+
+def _load_yaml(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    return _yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def _save_yaml_atomic(path: Path, data: dict) -> None:
+    """Atomic write via tmp-file rename (POSIX and Windows ≥ Python 3.3)."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        _yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    os.replace(tmp, path)
+
+
+def _profile_name(home: Path) -> str:
+    return home.name if home.name != ".hermes" else "default"
+
+
+def _upsert_in_cfg(cfg: dict, provider: dict) -> dict:
+    items = list(cfg.get("custom_providers") or [])
+    items = [p for p in items if p.get("slug") != provider["slug"]]
+    items.append(
+        {
+            "name": provider["name"],
+            "slug": provider["slug"],
+            "base_url": provider["base_url"],
+            "api_key": provider.get("api_key"),
+            "models": provider["models"],
+        }
+    )
+    cfg["custom_providers"] = items
+    return cfg
+
+
+def _broadcast(mutator) -> dict:
+    """Run ``mutator(cfg) → cfg`` against every profile's ``config.yaml``.
+
+    Returns a result dict with ``ok``, ``succeeded_count``, ``total_count``,
+    ``failed_profiles``.  Per-profile failures are collected, not raised,
+    so a single read-only profile doesn't abort the whole broadcast.
+    """
+    homes = list_all_profile_homes()
+    failed = []
+    for home in homes:
+        path = home / "config.yaml"
+        try:
+            cfg = _load_yaml(path)
+            new_cfg = mutator(cfg)
+            _save_yaml_atomic(path, new_cfg)
+        except PermissionError as e:
+            failed.append(
+                {
+                    "profile": _profile_name(home),
+                    "home": str(home),
+                    "error": "permission_denied",
+                    "detail": str(e),
+                }
+            )
+        except _yaml.YAMLError as e:
+            failed.append(
+                {
+                    "profile": _profile_name(home),
+                    "home": str(home),
+                    "error": "yaml_corrupt",
+                    "detail": str(e),
+                }
+            )
+        except OSError as e:
+            failed.append(
+                {
+                    "profile": _profile_name(home),
+                    "home": str(home),
+                    "error": "io_error",
+                    "detail": str(e),
+                }
+            )
+    return {
+        "ok": len(failed) == 0,
+        "succeeded_count": len(homes) - len(failed),
+        "total_count": len(homes),
+        "failed_profiles": failed,
+    }
+
+
+def upsert_custom_provider_across_profiles(provider: dict) -> dict:
+    """Upsert a custom provider into every profile's ``config.yaml``.
+
+    Returns a broadcast result that includes ``slug`` for callers
+    (e.g., the composer quick-add modal needs it to auto-select the new
+    model after save).  Same-slug upserts overwrite the existing entry
+    in-place rather than appending a duplicate.
+    """
+    result = _broadcast(lambda cfg: _upsert_in_cfg(cfg, provider))
+    result["slug"] = provider["slug"]
+    return result
+
+
+def delete_custom_provider_across_profiles(slug: str) -> dict:
+    """Remove a custom provider from every profile's ``config.yaml``.
+
+    Idempotent: a profile that doesn't contain the slug is left untouched
+    (the mutator returns the same ``cfg``), and the broadcast reports
+    ``ok=True`` with no failed profiles.
+    """
+    def mutator(cfg: dict) -> dict:
+        items = [p for p in (cfg.get("custom_providers") or []) if p.get("slug") != slug]
+        if items:
+            cfg["custom_providers"] = items
+        elif "custom_providers" in cfg:
+            del cfg["custom_providers"]
+        return cfg
+    return _broadcast(mutator)
+
+
+def set_default_across_profiles(slug: str, model: str) -> dict:
+    """Set ``model`` as the default for provider ``slug`` across profiles.
+
+    Writes the ``model: { provider: 'custom:<slug>', default: <model> }``
+    block.  Refuses (returns ``ok=False``) if the slug is unknown or if
+    ``model`` is not in the provider's ``models`` list — those checks
+    raise ``ValueError`` which the wrapper translates into a failed result
+    so the broadcast itself can still report per-profile I/O outcomes.
+    """
+    def mutator(cfg: dict) -> dict:
+        items = cfg.get("custom_providers") or []
+        match = next((p for p in items if p.get("slug") == slug), None)
+        if match is None:
+            raise ValueError(f"unknown slug: {slug}")
+        if model not in (match.get("models") or []):
+            raise ValueError(f"model not in provider: {model}")
+        cfg["model"] = {
+            "provider": f"custom:{slug}",
+            "default": model,
+        }
+        return cfg
+    try:
+        return _broadcast(mutator)
+    except ValueError as e:
+        return {
+            "ok": False,
+            "error": str(e),
+            "succeeded_count": 0,
+            "total_count": len(list_all_profile_homes()),
+            "failed_profiles": [],
+        }
