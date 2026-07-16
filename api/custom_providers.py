@@ -201,8 +201,11 @@ def probe_models(base_url: str, api_key: str | None = None, timeout: float = 4.0
 # Imports kept inside this section per the append-only discipline enforced
 # after Task 3 review (do not promote one-off imports to the top-of-file
 # block).  ``yaml`` and ``os`` are first-introduced here; ``Path`` is also
-# first used here.
+# first used here.  ``threading`` was added with the per-file lock fix in
+# Task 12 (see ``_file_lock`` below and
+# ``tests/test_custom_providers_concurrency.py``).
 import os
+import threading
 import yaml as _yaml
 from pathlib import Path
 
@@ -225,13 +228,18 @@ def _load_yaml(path: Path) -> dict:
 
 
 def _save_yaml_atomic(path: Path, data: dict) -> None:
-    """Atomic yaml write via tmp + os.replace. Cleans up the tmp on failure."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    """Atomic yaml write via tmp + os.replace. Cleans up the tmp on failure.
+
+    Uses a unique tmp filename (path + uuid4 + .tmp) so concurrent writers to the
+    same target don't overwrite each other's tmp files. The previous fixed-name
+    `.tmp` would race under concurrent profile writes (#5692).
+    """
+    import uuid as _uuid
+    tmp = path.with_name(f"{path.name}.{_uuid.uuid4().hex}.tmp")
     try:
         tmp.write_text(_yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
         os.replace(tmp, path)
     except OSError:
-        # Replace failed (cross-device, IsADirectoryError, etc.); don't leave a stray .tmp
         try:
             tmp.unlink()
         except OSError:
@@ -241,6 +249,24 @@ def _save_yaml_atomic(path: Path, data: dict) -> None:
 
 def _profile_name(home: Path) -> str:
     return home.name if home.name != ".hermes" else "default"
+
+
+# Per-file locks, lazily populated.  Used by ``_broadcast`` to serialize the
+# read → mutator → write cycle on a given ``config.yaml`` so concurrent
+# upserts/deletes can't drop writes (#5692 — atomic tmp filename fixed the
+# on-disk race; this fixes the in-memory read-modify-write race).
+_file_locks: dict[Path, threading.Lock] = {}
+_file_locks_guard = threading.Lock()
+
+
+def _file_lock(path: Path) -> threading.Lock:
+    """Return the lock unique to ``path``, creating it on first request."""
+    with _file_locks_guard:
+        lock = _file_locks.get(path)
+        if lock is None:
+            lock = threading.Lock()
+            _file_locks[path] = lock
+        return lock
 
 
 def _upsert_in_cfg(cfg: dict, provider: dict) -> dict:
@@ -265,42 +291,47 @@ def _broadcast(mutator) -> dict:
     Returns a result dict with ``ok``, ``succeeded_count``, ``total_count``,
     ``failed_profiles``.  Per-profile failures are collected, not raised,
     so a single read-only profile doesn't abort the whole broadcast.
+
+    Each profile's read → mutator → write cycle is held under a per-file
+    lock (``_file_lock``) so concurrent broadcasts don't lose writes via a
+    read-modify-write race.
     """
     homes = list_all_profile_homes()
     failed = []
     for home in homes:
         path = home / "config.yaml"
-        try:
-            cfg = _load_yaml(path)
-            new_cfg = mutator(cfg)
-            _save_yaml_atomic(path, new_cfg)
-        except PermissionError as e:
-            failed.append(
-                {
-                    "profile": _profile_name(home),
-                    "home": str(home),
-                    "error": "permission_denied",
-                    "detail": str(e),
-                }
-            )
-        except _yaml.YAMLError as e:
-            failed.append(
-                {
-                    "profile": _profile_name(home),
-                    "home": str(home),
-                    "error": "yaml_corrupt",
-                    "detail": str(e),
-                }
-            )
-        except OSError as e:
-            failed.append(
-                {
-                    "profile": _profile_name(home),
-                    "home": str(home),
-                    "error": "io_error",
-                    "detail": str(e),
-                }
-            )
+        with _file_lock(path):
+            try:
+                cfg = _load_yaml(path)
+                new_cfg = mutator(cfg)
+                _save_yaml_atomic(path, new_cfg)
+            except PermissionError as e:
+                failed.append(
+                    {
+                        "profile": _profile_name(home),
+                        "home": str(home),
+                        "error": "permission_denied",
+                        "detail": str(e),
+                    }
+                )
+            except _yaml.YAMLError as e:
+                failed.append(
+                    {
+                        "profile": _profile_name(home),
+                        "home": str(home),
+                        "error": "yaml_corrupt",
+                        "detail": str(e),
+                    }
+                )
+            except OSError as e:
+                failed.append(
+                    {
+                        "profile": _profile_name(home),
+                        "home": str(home),
+                        "error": "io_error",
+                        "detail": str(e),
+                    }
+                )
     return {
         "ok": len(failed) == 0,
         "succeeded_count": len(homes) - len(failed),

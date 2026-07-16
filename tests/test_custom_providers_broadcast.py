@@ -183,23 +183,29 @@ def test_set_default_rejects_unknown_model(multi_profile_homes):
 def test_save_yaml_atomic_cleans_tmp_on_replace_failure(
     multi_profile_homes, monkeypatch
 ):
-    """When ``os.replace`` fails the stray ``.tmp`` must be unlinked."""
+    """When ``os.replace`` fails the stray ``.tmp`` must be unlinked.
+
+    ``_save_yaml_atomic`` uses uuid-based tmp filenames
+    (``config.yaml.<uuid>.tmp``) so concurrent writers don't clobber each
+    other's tmp files (#5692); the cleanup test therefore fails on any
+    replace targeting the target's path rather than a fixed tmp name.
+    """
     import api.custom_providers as cp
     target = multi_profile_homes[0] / "config.yaml"
-    tmp = target.with_suffix(target.suffix + ".tmp")
 
     # Make sure no leftover .tmp from a previous run
-    if tmp.exists():
-        tmp.unlink()
+    for stray in target.parent.glob(f"{target.name}.*.tmp"):
+        stray.unlink()
 
     real_replace = cp.os.replace
 
     def failing_replace(src, dst):
-        if str(src) == str(tmp) and str(dst) == str(target):
+        if str(dst) == str(target):
             raise OSError("simulated cross-device move")
         return real_replace(src, dst)
 
     monkeypatch.setattr(cp.os, "replace", failing_replace)
     with pytest.raises(OSError):
         cp._save_yaml_atomic(target, {"x": 1})
-    assert not tmp.exists(), "orphan .tmp was not cleaned up"
+    strays = list(target.parent.glob(f"{target.name}.*.tmp"))
+    assert not strays, f"orphan .tmp files were not cleaned up: {strays}"
