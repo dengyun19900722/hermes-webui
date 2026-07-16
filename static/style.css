@@ -7740,9 +7740,9 @@ html[data-conversation-outline="enabled"] #outlineToggleBtn:not([hidden]){displa
   background:color-mix(in srgb,var(--bg) 60%,transparent);
 }
 .custom-providers-section .cp-add-btn{
-  background:var(--accent);color:#fff;border:1px solid var(--accent);
+  background:var(--accent);color:var(--strong);border:1px solid var(--accent);
   border-radius:8px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;
-  transition:background .15s,border-color .15s;
+  transition:background .15s,border-color .15s,color .15s;
 }
 .custom-providers-section .cp-add-btn:hover{
   background:var(--accent-hover);border-color:var(--accent-hover);
@@ -7875,10 +7875,10 @@ html[data-conversation-outline="enabled"] #outlineToggleBtn:not([hidden]){displa
   display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;
 }
 .custom-provider-modal .btn-primary{
-  background:var(--accent);color:#fff;border:1px solid var(--accent);
+  background:var(--accent);color:var(--strong);border:1px solid var(--accent);
   border-radius:8px;padding:8px 16px;cursor:pointer;
   font-weight:600;font-size:13px;
-  transition:background .15s,border-color .15s;
+  transition:background .15s,border-color .15s,color .15s;
 }
 .custom-provider-modal .btn-primary:hover{background:var(--accent-hover);border-color:var(--accent-hover);}
 .custom-provider-modal .btn-secondary{
@@ -7909,9 +7909,9 @@ html[data-conversation-outline="enabled"] #outlineToggleBtn:not([hidden]){displa
   border:1px solid var(--accent-bg-strong);color:var(--accent-text);
 }
 .custom-provider-modal .probe-banner.success{
-  background:color-mix(in srgb,#3a6 12%,transparent);
-  border:1px solid color-mix(in srgb,#3a6 30%,transparent);
-  color:#3a6;
+  background:color-mix(in srgb,var(--success) 14%,transparent);
+  border:1px solid color-mix(in srgb,var(--success) 32%,transparent);
+  color:var(--success);
 }
 .custom-provider-modal .probe-banner.error{
   background:color-mix(in srgb,var(--error,#f87171) 12%,transparent);
@@ -7972,10 +7972,10 @@ html[data-conversation-outline="enabled"] #outlineToggleBtn:not([hidden]){displa
   margin-top:14px;padding-top:12px;border-top:1px solid var(--border);
 }
 .composer-quickadd-modal .btn-primary{
-  background:var(--accent);color:#fff;border:1px solid var(--accent);
+  background:var(--accent);color:var(--strong);border:1px solid var(--accent);
   border-radius:8px;padding:7px 14px;cursor:pointer;
   font-weight:600;font-size:12px;
-  transition:background .15s,border-color .15s;
+  transition:background .15s,border-color .15s,color .15s;
 }
 .composer-quickadd-modal .btn-primary:hover{background:var(--accent-hover);border-color:var(--accent-hover);}
 .composer-quickadd-modal .btn-ghost{
@@ -7993,9 +7993,9 @@ html[data-conversation-outline="enabled"] #outlineToggleBtn:not([hidden]){displa
   border:1px solid var(--accent-bg-strong);color:var(--accent-text);
 }
 .composer-quickadd-modal .probe-banner.success{
-  background:color-mix(in srgb,#3a6 12%,transparent);
-  border:1px solid color-mix(in srgb,#3a6 30%,transparent);
-  color:#3a6;
+  background:color-mix(in srgb,var(--success) 14%,transparent);
+  border:1px solid color-mix(in srgb,var(--success) 32%,transparent);
+  color:var(--success);
 }
 .composer-quickadd-modal .probe-banner.error{
   background:color-mix(in srgb,var(--error,#f87171) 12%,transparent);

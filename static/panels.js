@@ -11639,11 +11639,31 @@ async function _submitCustomProvider(card, probeFirst) {
       showToast(t('custom_provider_save_ok')(result.succeeded_count || 0, result.total_count || 0), 3000);
     }
     await loadProvidersPanel();
+    // Refresh the chat composer dropdown so the new provider appears without
+    // requiring a page reload (server cache is already invalidated by the
+    // upsert handler in api/routes.py).
+    _refreshComposerModelCatalog();
   } catch (e) {
     _showModalError(card, String(e && e.message || e));
     if (submitBtn) submitBtn.disabled = false;
     if (probeBtn) probeBtn.disabled = false;
   }
+}
+
+// Trigger a fresh fetch of /api/models so the chat composer dropdown shows
+// newly added / deleted custom providers without a page reload. No-op if the
+// helper isn't on window yet (older boot order).
+function _refreshComposerModelCatalog() {
+  try {
+    // Force a fresh fetch — _ensureModelDropdownReady caches the boot-time
+    // promise on window._modelDropdownReady, so a subsequent upsert/delete
+    // would otherwise reuse the stale response and the picker would still
+    // miss the new provider (#WebUI custom-model-config).
+    window._modelDropdownReady = null;
+    if (typeof window._ensureModelDropdownReady === 'function') {
+      Promise.resolve(window._ensureModelDropdownReady()).catch(() => {});
+    }
+  } catch (_) { /* swallow — the dropdown will refresh on next open */ }
 }
 
 function _showModalError(card, msg, failed) {
@@ -11716,6 +11736,7 @@ async function _deleteCustomProvider(p) {
         showToast(`${esc(p.name || p.slug || '')} deleted`, 3000);
       }
       await loadProvidersPanel();
+      _refreshComposerModelCatalog();
     } else {
       const failed = (result && result.failed_profiles) || [];
       const msg = (result && result.error) || t('custom_provider_save_failed');
@@ -11755,6 +11776,7 @@ async function _setDefaultCustomProvider(p) {
       }
       if (typeof loadProfileActive === 'function') await loadProfileActive();
       await loadProvidersPanel();
+      _refreshComposerModelCatalog();
     } else {
       const msg = (result && result.error) || t('custom_provider_save_failed');
       if (typeof showToast === 'function') {
