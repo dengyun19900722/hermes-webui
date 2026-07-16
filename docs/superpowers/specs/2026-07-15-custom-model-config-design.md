@@ -69,7 +69,7 @@
 | `_buildProviderCard(p)` | `static/panels.js` | 10971 | 新增变体 `_buildCustomProviderCard(item)` |
 | `_saveSelfHostedProvider()` | `static/panels.js` | 11418 | 新增 `_saveCustomProvider(payload, mode)` |
 | `_testSelfHostedConnection()` | `static/panels.js` | 11356 | 新增 `_probeCustomProvider(payload)` |
-| Composer model dropdown | `static/ui.js` | 4011 | 无需改 |
+| Composer model dropdown | `static/ui.js` | 4011 | 新增：下拉底部追加「➕ 添加自定义模型…」入口；点击触发 mini modal（见 §2.8） |
 | `_populateProfileFormModelSelect()` | `static/panels.js` | 7220 | 无需改（`data-provider="custom:<slug>"` 已能筛） |
 
 #### 后端（最小改动）
@@ -159,6 +159,64 @@ POST /api/custom_providers/set_default { slug: "my-openai", model: "gpt-4o" }
 | Probe / Fetch-models | 仅内存（不写盘） |
 
 不暴露「仅当前 / 全部」切换——已确认默认全部，未来要扩展加 radio。
+
+### 2.8 Composer 快捷入口（Quick-add）
+
+**入口**：Composer 模型下拉（`static/ui.js:4011` 附近）底部追加一行：
+
+```
+─────────────────────────
+➕ 添加自定义模型…
+```
+
+**触发**：点击 ➕ → 打开 mini modal（不是 Settings Providers 面板的全量 modal）。
+
+**Mini modal 字段**（极简版）：
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| 显示名 | 否 | 留空则按 baseurl 自动派生（host 段） |
+| Base URL | **是** | http(s):// 开头，自动 strip 尾部 `/` |
+| API Key | 否 | 留空表示无 key 中转（公开端点） |
+
+**Model id 探测**：mini modal 打开后，输入 baseurl debounce 300ms → 自动调 `/api/custom_providers/probe_models` 拉候选 models → 填进下拉让用户选（或默认第一个）。探测失败（4s 超时/网络错误）→ 用 `"default"` 作为唯一 model id 占位。
+
+**「添加并切换」语义**：
+
+```
+User 填 baseurl + (可选) apikey + (可选) name
+点 "添加并切换"
+  → POST /api/custom_providers {action: upsert, provider: {name, slug, base_url, api_key, models}}
+    # 与 §2.3 Add 走完全相同接口 + 校验 + 广播 + invalidate
+    # slug 自动从 name 派生；name 留空时从 baseurl host 派生
+  ← {ok, provider, models_count, has_key, failed_profiles[]}
+  ├─ 关闭 mini modal
+  ├─ 刷新 composer 下拉（GET /api/custom_providers + GET /api/models）
+  ├─ 自动选中刚加 provider 的 models[0]
+  ├─ 顶部 toast: "已添加 <name>，下一次发送使用"
+```
+
+**与 Settings Providers 面板的关系**：
+
+- mini modal 创建的条目**持久化到 config.yaml（广播所有 profile）**
+- 与 Providers 面板的「+ Add custom provider」**写入完全相同的 `custom_providers[]` 条目**
+- 用户后续可在 Settings Providers 面板里编辑/删除/设为默认（同一份数据）
+- mini modal 是「快速入口」，不是「临时机制」—— 数据生命周期与全量表单一致
+
+**与现有下拉行为的差异**：
+
+- 现有 composer 下拉刷新策略不变（依赖 `/api/models`）
+- 「➕」一行在所有 custom provider 已存在/不存在时都显示（始终可见）
+- 点击 ➕ 不关闭下拉，直接打开 mini modal
+
+**i18n 新增键**（在 §4.1 附录 A 增加 4 条）：
+
+```js
+custom_provider_composer_quickadd_label: '➕ 添加自定义模型…',
+custom_provider_quickadd_title: '快速添加自定义模型',
+custom_provider_quickadd_subtitle: '保存后会出现在下拉里，可后续在 Providers 面板编辑',
+custom_provider_quickadd_added_toast: (name) => `已添加 ${name}，下一次发送使用`,
+```
 
 ---
 
@@ -268,7 +326,7 @@ POST /api/custom_providers { action: "upsert", ... }
 
 ### 4.1 i18n 键（新增到 `static/i18n.js` `LOCALES.zh` 和 `LOCALES.en`）
 
-完整 35 键（中英平行，详见附录 A）：
+完整 39 键（中英平行，详见附录 A）：
 
 ```js
 // zh-CN
@@ -428,6 +486,13 @@ slug 派生 / 校验         部分失败 + failed_profiles 回流
 | | `test_get_providers_includes_custom` | `/api/providers` 返回 custom 条目 |
 | `tests/test_custom_providers_concurrency.py` | `test_lock_timeout_under_parallel` | 2 个 POST 并发 → 1 成功 1 lock_timeout |
 | | `test_atomic_yaml_write` | 写时中断 → 不留下半截 yaml |
+| `tests/test_custom_providers_quickadd.py` | `test_quickadd_minimal_body_creates_entry` | 仅 baseurl 也能成功（name/models 派生） |
+| | `test_quickadd_name_optional_derived_from_baseurl_host` | baseurl 派生 display_name + slug |
+| | `test_quickadd_models_probed_on_200` | 探测成功 → 填 models[] |
+| | `test_quickadd_models_default_placeholder_on_probe_failure` | 探测失败 → models=["default"] |
+| | `test_quickadd_persists_to_all_profiles` | 与全量表单一致广播 |
+| | `test_quickadd_visible_in_providers_panel_after` | mini 创建后 Settings Providers 面板立即可见 |
+| | `test_quickadd_auto_selects_first_model_in_composer` | 返回 models[0] |
 
 #### 安全（`tests/test_custom_providers_security.py`）
 
@@ -469,6 +534,10 @@ slug 派生 / 校验         部分失败 + failed_profiles 回流
 - [ ] Slug 冲突：填 "anthropic" → 被拒
 - [ ] 反复刷新页面：custom 区数据持久
 - [ ] **离线环境**：仅 custom provider，所有 built-in 折叠，仍可用
+- [ ] **Composer ➕ 快捷入口**：composer 下拉底部「➕ 添加自定义模型…」可见
+- [ ] **Mini modal 添加**：仅 baseurl + 可选 apikey → 添加成功 → 下拉自动选中
+- [ ] **Mini modal 添加后去面板**：在 Settings Providers 面板能看到刚加的条目，可编辑
+- [ ] **Mini modal 探测失败**：无 `/v1/models` 时仍能用（占位 model）
 
 ### 5.6 性能 / 稳定性
 
@@ -490,12 +559,13 @@ slug 派生 / 校验         部分失败 + failed_profiles 回流
 | Endpoint 路径 `/api/custom_providers` | `/api/providers/custom` | 用户确认，与 `_PROVIDER_*` 命名风格区分更清晰 |
 | Probe 复用 `onboarding.py:362` | 新写 | 不重新造 |
 | 不引入 model-level overrides（方案 C） | 重型方案 | 与用户回答不匹配 |
-| i18n 35 键 | 减少到 10 | 体验一致性 + 复用现有 inline fallback 模式 |
+| i18n 39 键 | 减少到 10 | 体验一致性 + 复用现有 inline fallback 模式 |
 | 写盘失败部分成功（不阻断） | 全成功或全失败 | 容错更好，UI 引导用户处理 |
 | Probe 失败允许"直接保存" | 必须 probe 才保存 | 已知靠谱中转场景 |
 | RBAC 钩子留 hook | 现在就接全 RBAC | 不阻塞当前 PR |
 | 不写前端 JS unit / e2e | 全写 | 项目无基础设施，不重起 |
 | Edit 模式 slug 禁用 | 允许改 slug | slug 是主键，改名风险大 |
+| Composer ➕ 快捷入口（mini modal） | 仅 Settings Providers 面板 | 减少操作路径，「点下拉选不到 → 加一个」一步到位；持久化与全量表单同源 |
 
 ---
 
@@ -572,6 +642,10 @@ slug 派生 / 校验         部分失败 + failed_profiles 回流
 | `custom_provider_models_empty` | 至少添加 1 个 model id | At least 1 model id required |
 | `custom_provider_retry_failed_btn` | 重试失败的 profile | Retry failed profiles |
 | `custom_provider_lock_timeout` | 配置正被占用，请重试 | Config busy, please retry |
+| `custom_provider_composer_quickadd_label` | ➕ 添加自定义模型… | ➕ Add custom model… |
+| `custom_provider_quickadd_title` | 快速添加自定义模型 | Quick add custom model |
+| `custom_provider_quickadd_subtitle` | 保存后会出现在下拉里，可后续在 Providers 面板编辑 | Saved entry will appear in dropdown; can be edited in Providers panel |
+| `custom_provider_quickadd_added_toast` | 已添加 {name}，下一次发送使用 | {name} added; will be used on next send |
 
 ---
 
