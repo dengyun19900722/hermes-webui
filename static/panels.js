@@ -11450,22 +11450,27 @@ function _openCustomProviderModal(existing) {
     <div class="form-row">
       <label>${esc(t('custom_provider_field_name'))}</label>
       <input id="cpName" type="text" value="${esc(existing && existing.name || '')}" />
+      <p class="form-row-help">${esc(t('custom_provider_field_name_help'))}</p>
     </div>
     <div class="form-row">
       <label>${esc(t('custom_provider_field_slug'))}</label>
       <input id="cpSlug" type="text" value="${esc(existing && existing.slug || '')}" ${existing ? 'disabled' : ''} placeholder="my-openai" />
+      <p class="form-row-help">${esc(t('custom_provider_field_slug_help'))}</p>
     </div>
     <div class="form-row">
       <label>${esc(t('custom_provider_field_base_url'))}<span class="required">*</span></label>
       <input id="cpBaseUrl" type="text" value="${esc(existing && existing.base_url || '')}" placeholder="https://relay.example.com/v1" />
+      <p class="form-row-help">${esc(t('custom_provider_field_base_url_help'))}</p>
     </div>
     <div class="form-row">
       <label>${esc(t('custom_provider_field_api_key'))}</label>
       <input id="cpApiKey" type="password" placeholder="${existing && existing.has_key ? esc(t('custom_provider_field_api_key_hint')) : ''}" autocomplete="off" />
+      <p class="form-row-help">${esc(t('custom_provider_field_api_key_help'))}</p>
     </div>
     <div class="form-row">
       <label>${esc(t('custom_provider_field_models'))}</label>
       <div class="models-list" id="cpModelsList"></div>
+      <p class="form-row-help">${esc(t('custom_provider_field_models_help'))}</p>
     </div>
     <div id="cpProbeBanner" class="probe-banner" style="display:none"></div>
     <div class="actions">

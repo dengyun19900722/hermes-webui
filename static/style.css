@@ -7847,6 +7847,10 @@ html[data-conversation-outline="enabled"] #outlineToggleBtn:not([hidden]){displa
 .custom-provider-modal .form-row label .required{
   color:var(--error,#f87171);margin-left:2px;
 }
+.custom-provider-modal .form-row-help{
+  margin:6px 0 0;font-size:11px;line-height:1.5;
+  color:var(--muted);font-weight:400;
+}
 .custom-provider-modal input[type="text"],
 .custom-provider-modal input[type="password"]{
   width:100%;background:var(--input-bg);border:1px solid var(--border);
@@ -7954,6 +7958,10 @@ html[data-conversation-outline="enabled"] #outlineToggleBtn:not([hidden]){displa
 }
 .composer-quickadd-modal .form-row label .required{
   color:var(--error,#f87171);margin-left:2px;
+}
+.composer-quickadd-modal .form-row-help{
+  margin:5px 0 0;font-size:11px;line-height:1.5;
+  color:var(--muted);font-weight:400;
 }
 .composer-quickadd-modal input[type="text"],
 .composer-quickadd-modal input[type="password"]{
