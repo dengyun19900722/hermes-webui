@@ -12342,6 +12342,14 @@ def handle_get(handler, parsed) -> bool:
         with profile_env_for_active_request_readonly("/api/providers", logger_override=logger):
             return j(handler, get_providers())
 
+    if parsed.path == "/api/custom_providers":
+        try:
+            from api.custom_providers import list_custom_providers
+            return j(handler, {"providers": list_custom_providers()})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("custom_providers list failed")
+            return bad(handler, f"list failed: {exc}", status=500)
+
     # ── Plugins/hooks visibility (read-only, no callback/source internals) ──
     if parsed.path == "/api/plugins":
         return _handle_plugins(handler, parsed)
@@ -14322,14 +14330,6 @@ def handle_post(handler, parsed) -> bool:
 
     # --- /api/custom_providers (Custom OpenAI-compatible providers) ---
     if parsed.path == "/api/custom_providers":
-        if method == "GET":
-            try:
-                from api.custom_providers import list_custom_providers
-                return j(handler, {"providers": list_custom_providers()})
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("custom_providers list failed")
-                return bad(handler, f"list failed: {exc}", status=500)
-
         # POST: action = upsert | delete
         action = (body.get("action") or "upsert").strip().lower()
         if action == "delete":
