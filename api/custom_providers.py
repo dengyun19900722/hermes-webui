@@ -225,13 +225,18 @@ def _load_yaml(path: Path) -> dict:
 
 
 def _save_yaml_atomic(path: Path, data: dict) -> None:
-    """Atomic write via tmp-file rename (POSIX and Windows ≥ Python 3.3)."""
+    """Atomic yaml write via tmp + os.replace. Cleans up the tmp on failure."""
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(
-        _yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
-    )
-    os.replace(tmp, path)
+    try:
+        tmp.write_text(_yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        # Replace failed (cross-device, IsADirectoryError, etc.); don't leave a stray .tmp
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def _profile_name(home: Path) -> str:

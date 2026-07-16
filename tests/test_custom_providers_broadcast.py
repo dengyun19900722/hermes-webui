@@ -135,3 +135,71 @@ def test_set_default_writes_model_section(multi_profile_homes):
     for home in multi_profile_homes:
         cfg = yaml.safe_load((home / "config.yaml").read_text())
         assert cfg["model"] == {"provider": "custom:x", "default": "a"}
+
+
+def test_upsert_partial_failure_mock_based(multi_profile_homes, monkeypatch):
+    """Same scenario as test_upsert_partial_failure_collects_failed_profiles but
+    environment-independent (no chmod, no UID-0 concerns)."""
+    import api.custom_providers as cp
+    target = multi_profile_homes[1]
+    original = cp._save_yaml_atomic
+
+    def selective_save(path, data):
+        if str(path).endswith(str(target / "config.yaml")):
+            raise PermissionError("simulated")
+        return original(path, data)
+
+    monkeypatch.setattr(cp, "_save_yaml_atomic", selective_save)
+    result = cp.upsert_custom_provider_across_profiles(provider={
+        "name": "X", "slug": "x", "base_url": "https://x", "api_key": None, "models": ["a"],
+    })
+    assert result["ok"] is False
+    assert result["succeeded_count"] == 2
+    assert result["total_count"] == 3
+    assert any(f["profile"] == "work" and f["error"] == "permission_denied" for f in result["failed_profiles"])
+
+
+def test_set_default_rejects_unknown_slug(multi_profile_homes):
+    result = set_default_across_profiles(slug="nope", model="x")
+    assert result["ok"] is False
+    assert "unknown slug" in result["error"]
+    assert result["succeeded_count"] == 0
+    # Verify no profile was mutated
+    for home in multi_profile_homes:
+        cfg = yaml.safe_load((home / "config.yaml").read_text())
+        assert "model" not in cfg or cfg["model"].get("provider") != "custom:nope"
+
+
+def test_set_default_rejects_unknown_model(multi_profile_homes):
+    upsert_custom_provider_across_profiles(provider={
+        "name": "X", "slug": "x", "base_url": "https://x", "api_key": "k", "models": ["a", "b"],
+    })
+    result = set_default_across_profiles(slug="x", model="nonexistent")
+    assert result["ok"] is False
+    assert "model not in provider" in result["error"]
+
+
+# === M1: Orphan .tmp cleanup ============================================
+def test_save_yaml_atomic_cleans_tmp_on_replace_failure(
+    multi_profile_homes, monkeypatch
+):
+    """When ``os.replace`` fails the stray ``.tmp`` must be unlinked."""
+    import api.custom_providers as cp
+    target = multi_profile_homes[0] / "config.yaml"
+    tmp = target.with_suffix(target.suffix + ".tmp")
+
+    # Make sure no leftover .tmp from a previous run
+    if tmp.exists():
+        tmp.unlink()
+
+    real_replace = cp.os.replace
+
+    def failing_replace(src, dst):
+        if str(src) == str(tmp) and str(dst) == str(target):
+            raise OSError("simulated cross-device move")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(cp.os, "replace", failing_replace)
+    with pytest.raises(OSError):
+        cp._save_yaml_atomic(target, {"x": 1})
+    assert not tmp.exists(), "orphan .tmp was not cleaned up"
