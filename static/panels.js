@@ -11434,6 +11434,345 @@ function _buildCustomProviderCard(p) {
   return card;
 }
 
+// === Custom provider modal (see spec §2.3-§2.4) ===
+let _customProviderModal = null;
+let _customProviderModalState = { editingSlug: null, probedModelsCache: null, probedKey: null };
+
+function _openCustomProviderModal(existing) {
+  _customProviderModalState = {
+    editingSlug: existing ? existing.slug : null,
+    probedModelsCache: null,
+    probedKey: null,
+  };
+  const overlay = document.createElement('div');
+  overlay.className = 'custom-provider-modal-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center';
+
+  const card = document.createElement('div');
+  card.className = 'custom-provider-modal';
+  card.style.cssText = 'background:#fff;border-radius:8px;padding:20px;max-width:560px;width:90%;max-height:90vh;overflow:auto';
+  const titleText = existing
+    ? (t('edit_title') || 'Edit') + ': ' + esc(existing.name || existing.slug || '')
+    : t('custom_providers_add_btn');
+  card.innerHTML = `
+    <h3 style="margin:0 0 14px">${titleText}</h3>
+    <div style="display:grid;grid-template-columns:120px 1fr;gap:10px;align-items:center">
+      <label>${esc(t('custom_provider_field_name'))}</label>
+      <input id="cpName" type="text" value="${esc(existing && existing.name || '')}" />
+      <label>${esc(t('custom_provider_field_slug'))}</label>
+      <input id="cpSlug" type="text" value="${esc(existing && existing.slug || '')}" ${existing ? 'disabled' : ''} placeholder="my-openai" />
+      <label>${esc(t('custom_provider_field_base_url'))} <span style="color:#c44">*</span></label>
+      <input id="cpBaseUrl" type="text" value="${esc(existing && existing.base_url || '')}" placeholder="https://relay.example.com/v1" />
+      <label>${esc(t('custom_provider_field_api_key'))}</label>
+      <div>
+        <input id="cpApiKey" type="password" placeholder="${existing && existing.has_key ? esc(t('custom_provider_field_api_key_hint')) : ''}" autocomplete="off" />
+      </div>
+      <label style="align-self:start;padding-top:6px">${esc(t('custom_provider_field_models'))}</label>
+      <div id="cpModelsList"></div>
+    </div>
+    <div id="cpProbeBanner" style="margin-top:12px;display:none"></div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;border-top:1px solid #eee;padding-top:14px">
+      <button data-action="cancel">${esc(t('cancel'))}</button>
+      <button data-action="probe-save">${esc(t('custom_provider_btn_probe_save'))}</button>
+      <button data-action="save">${esc(t('custom_provider_btn_save_direct'))}</button>
+    </div>
+  `;
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  _customProviderModal = overlay;
+
+  const modelsList = card.querySelector('#cpModelsList');
+  const initialModels = (existing && existing.models) || [];
+  for (const m of initialModels) _addModelChip(modelsList, m);
+  _addModelAddButton(modelsList);
+
+  // Live re-probe when base_url changes (debounced)
+  let probeTimer = null;
+  card.querySelector('#cpBaseUrl').addEventListener('input', () => {
+    clearTimeout(probeTimer);
+    probeTimer = setTimeout(() => _autoProbeModels(card), 300);
+  });
+
+  card.addEventListener('click', async (ev) => {
+    const action = ev.target.getAttribute && ev.target.getAttribute('data-action');
+    if (!action) return;
+    if (action === 'cancel') _closeCustomProviderModal();
+    if (action === 'save') await _submitCustomProvider(card, false);
+    if (action === 'probe-save') await _submitCustomProvider(card, true);
+  });
+
+  // Close on Escape key
+  overlay.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') _closeCustomProviderModal();
+  });
+  // Close on overlay click (outside card)
+  overlay.addEventListener('click', (ev) => {
+    if (ev.target === overlay) _closeCustomProviderModal();
+  });
+}
+
+function _closeCustomProviderModal() {
+  if (_customProviderModal) {
+    _customProviderModal.remove();
+    _customProviderModal = null;
+  }
+  _customProviderModalState = { editingSlug: null, probedModelsCache: null, probedKey: null };
+}
+
+function _addModelChip(container, value) {
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:6px;margin-bottom:6px';
+  row.innerHTML = `
+    <input type="text" value="${esc(value)}" style="flex:1" />
+    <button data-remove>×</button>
+  `;
+  row.querySelector('[data-remove]').addEventListener('click', () => row.remove());
+  container.appendChild(row);
+}
+
+function _addModelAddButton(container) {
+  const btn = document.createElement('button');
+  btn.textContent = t('custom_provider_btn_add_model');
+  btn.style.marginRight = '6px';
+  btn.addEventListener('click', () => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px;margin-bottom:6px';
+    row.innerHTML = '<input type="text" placeholder="model id" style="flex:1" /><button data-remove>×</button>';
+    row.querySelector('[data-remove]').addEventListener('click', () => row.remove());
+    container.insertBefore(row, btn);
+  });
+  container.appendChild(btn);
+
+  const fetchBtn = document.createElement('button');
+  fetchBtn.textContent = t('custom_provider_btn_fetch_models');
+  fetchBtn.style.cssText = 'background:#3a6;color:#fff;border-color:#3a6';
+  fetchBtn.addEventListener('click', async () => {
+    const card = container.closest('.custom-provider-modal');
+    if (card) await _autoProbeModels(card, true);
+  });
+  container.appendChild(fetchBtn);
+}
+
+async function _autoProbeModels(card, force) {
+  if (force === undefined) force = false;
+  const banner = card.querySelector('#cpProbeBanner');
+  const baseUrl = card.querySelector('#cpBaseUrl').value.trim();
+  if (!baseUrl) return;
+  const apiKeyVal = card.querySelector('#cpApiKey').value.trim();
+  const key = baseUrl + '|' + (apiKeyVal || '');
+  if (!force && _customProviderModalState.probedKey === key) return;
+  _customProviderModalState.probedKey = key;
+  banner.style.display = 'block';
+  banner.style.cssText = 'margin-top:12px;padding:8px;background:#eef;color:#446;border-radius:4px;font-size:12px';
+  banner.textContent = '… ' + (t('custom_provider_btn_probe_save') || 'Probing');
+  try {
+    const probe = await api('/api/custom_providers/probe_models', {
+      method: 'POST',
+      body: JSON.stringify({ base_url: baseUrl, api_key: apiKeyVal || null }),
+    });
+    if (probe && probe.ok) {
+      _customProviderModalState.probedModelsCache = probe.models || [];
+      banner.style.cssText = 'margin-top:12px;padding:8px;background:#e6f4ea;color:#0a4;border-radius:4px;font-size:12px';
+      banner.textContent = `Found ${(probe.models || []).length} models (${probe.latency_ms || 0}ms)`;
+    } else {
+      banner.style.cssText = 'margin-top:12px;padding:8px;background:#fde7e9;color:#a00;border-radius:4px;font-size:12px';
+      const errKey = probe && probe.error ? 'custom_provider_probe_' + probe.error : null;
+      banner.textContent = (errKey && t(errKey)) || (probe && probe.error) || 'Probe failed';
+    }
+  } catch (e) {
+    banner.style.cssText = 'margin-top:12px;padding:8px;background:#fde7e9;color:#a00;border-radius:4px;font-size:12px';
+    banner.textContent = String(e && e.message || e);
+  }
+}
+
+async function _submitCustomProvider(card, probeFirst) {
+  const submitBtn = card.querySelector('[data-action="save"]');
+  const probeBtn = card.querySelector('[data-action="probe-save"]');
+  if (submitBtn) submitBtn.disabled = true;
+  if (probeBtn) probeBtn.disabled = true;
+
+  const models = [];
+  const modelInputs = card.querySelectorAll('#cpModelsList input[type="text"]');
+  for (const inp of modelInputs) {
+    const v = inp.value.trim();
+    if (v) models.push(v);
+  }
+
+  const body = {
+    name: (card.querySelector('#cpName').value || '').trim(),
+    slug: (card.querySelector('#cpSlug').value || '').trim().toLowerCase(),
+    base_url: (card.querySelector('#cpBaseUrl').value || '').trim(),
+    api_key: card.querySelector('#cpApiKey').value || null,
+    models: models,
+  };
+
+  try {
+    if (probeFirst && body.api_key) {
+      const probe = await api('/api/custom_providers/probe_models', {
+        method: 'POST',
+        body: JSON.stringify({ base_url: body.base_url, api_key: body.api_key }),
+      });
+      if (!probe || !probe.ok) {
+        const errKey = probe && probe.error ? 'custom_provider_probe_' + probe.error : null;
+        _showModalError(card, (errKey && t(errKey)) || (probe && probe.error) || 'Probe failed');
+        if (submitBtn) submitBtn.disabled = false;
+        if (probeBtn) probeBtn.disabled = false;
+        return;
+      }
+    }
+
+    const result = await api('/api/custom_providers', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'upsert', provider: body, skip_probe: !probeFirst }),
+    });
+    if (!result || !result.ok) {
+      const failed = (result && result.failed_profiles) || [];
+      const msg = failed.length
+        ? `${t('custom_provider_save_partial')}: ${result.succeeded_count || 0}/${result.total_count || 0}`
+        : (result && result.error) || t('custom_provider_save_failed');
+      _showModalError(card, msg, failed);
+      if (submitBtn) submitBtn.disabled = false;
+      if (probeBtn) probeBtn.disabled = false;
+      return;
+    }
+    _closeCustomProviderModal();
+    if (typeof showToast === 'function') {
+      showToast(t('custom_provider_save_ok')(result.succeeded_count || 0, result.total_count || 0), 3000);
+    }
+    await loadProvidersPanel();
+  } catch (e) {
+    _showModalError(card, String(e && e.message || e));
+    if (submitBtn) submitBtn.disabled = false;
+    if (probeBtn) probeBtn.disabled = false;
+  }
+}
+
+function _showModalError(card, msg, failed) {
+  let banner = card.querySelector('#cpErrorBanner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'cpErrorBanner';
+    banner.style.cssText = 'margin-top:12px;padding:8px;background:#fde7e9;color:#a00;border-radius:4px;font-size:12px';
+    card.appendChild(banner);
+  }
+  banner.textContent = msg;
+  if (failed && failed.length) {
+    const details = document.createElement('pre');
+    details.style.cssText = 'font-size:11px;margin-top:6px;white-space:pre-wrap';
+    details.textContent = JSON.stringify(failed, null, 2);
+    banner.appendChild(details);
+  }
+}
+
+// === Custom provider action handlers (probe/delete/set-default) ===
+
+async function _probeCustomProvider(p) {
+  const overlay = document.createElement('div');
+  overlay.textContent = `Probing ${esc(p.name || p.slug || '')} (${esc(p.base_url || '')})…`;
+  overlay.style.cssText = 'position:fixed;top:20px;right:20px;background:#333;color:#fff;padding:10px;border-radius:4px;z-index:9999;font-size:12px';
+  document.body.appendChild(overlay);
+  try {
+    const probe = await api('/api/custom_providers/probe_models', {
+      method: 'POST',
+      body: JSON.stringify({ base_url: p.base_url, api_key: null }),
+    });
+    if (probe && probe.ok) {
+      overlay.textContent = `✓ ${esc(p.name || p.slug || '')}: ${(probe.models || []).length} models`;
+      overlay.style.background = '#3a6';
+    } else {
+      overlay.textContent = `✗ ${(probe && probe.error) || 'Probe failed'}`;
+      overlay.style.background = '#a00';
+    }
+  } catch (e) {
+    overlay.textContent = `✗ ${String(e && e.message || e)}`;
+    overlay.style.background = '#a00';
+  }
+  setTimeout(() => overlay.remove(), 3000);
+}
+
+async function _deleteCustomProvider(p) {
+  // Use project modal helper (not native confirm) per Task 10 spec fix
+  const confirmMsg = t('custom_provider_delete_confirm')(p.name || p.slug || '');
+  let confirmed = false;
+  if (typeof showConfirmDialog === 'function') {
+    const r = await showConfirmDialog({
+      title: t('delete_title') || 'Delete',
+      message: confirmMsg,
+      confirmLabel: t('delete_title') || 'Delete',
+      danger: true,
+      focusCancel: true,
+    });
+    confirmed = !!r;
+  } else {
+    confirmed = confirm(confirmMsg);  // Fallback if helper unavailable
+  }
+  if (!confirmed) return;
+  try {
+    const result = await api('/api/custom_providers', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'delete', slug: p.slug }),
+    });
+    if (result && result.ok) {
+      if (typeof showToast === 'function') {
+        showToast(`${esc(p.name || p.slug || '')} deleted`, 3000);
+      }
+      await loadProvidersPanel();
+    } else {
+      const failed = (result && result.failed_profiles) || [];
+      const msg = (result && result.error) || t('custom_provider_save_failed');
+      if (typeof showToast === 'function') {
+        showToast(`${msg}${failed.length ? '\n' + JSON.stringify(failed, null, 2) : ''}`, 6000, 'error');
+      } else {
+        alert(msg);
+      }
+    }
+  } catch (e) {
+    if (typeof showToast === 'function') {
+      showToast(String(e && e.message || e), 4000, 'error');
+    } else {
+      alert(String(e));
+    }
+  }
+}
+
+async function _setDefaultCustomProvider(p) {
+  const model = p.models && p.models[0];
+  if (!model) {
+    if (typeof showToast === 'function') {
+      showToast(t('custom_provider_models_empty'), 4000, 'error');
+    } else {
+      alert(t('custom_provider_models_empty'));
+    }
+    return;
+  }
+  try {
+    const result = await api('/api/custom_providers/set_default', {
+      method: 'POST',
+      body: JSON.stringify({ slug: p.slug, model: model }),
+    });
+    if (result && result.ok) {
+      if (typeof showToast === 'function') {
+        showToast(t('custom_provider_set_default_ok')(model), 3000);
+      }
+      if (typeof loadProfileActive === 'function') await loadProfileActive();
+      await loadProvidersPanel();
+    } else {
+      const msg = (result && result.error) || t('custom_provider_save_failed');
+      if (typeof showToast === 'function') {
+        showToast(msg, 4000, 'error');
+      } else {
+        alert(msg);
+      }
+    }
+  } catch (e) {
+    if (typeof showToast === 'function') {
+      showToast(String(e && e.message || e), 4000, 'error');
+    } else {
+      alert(String(e));
+    }
+  }
+}
+
 async function _saveProviderKey(providerId){
   const els=_providerCardEls.get(providerId);
   if(!els) return;
