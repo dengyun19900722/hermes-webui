@@ -5,6 +5,15 @@
 
 ### Added
 
+- Settings → Providers 现在支持以可视化方式新增/编辑/删除兼容 OpenAI 的自定义 Provider；Custom 区固定在面板顶部，Built-in 区折叠在下方，方便离线优先使用。
+- 聊天输入框的模型下拉中新增 `➕ 添加自定义模型…` 入口，弹出 mini modal 可快速配置 relay / proxy。
+- 自定义 Provider 写入 `config.yaml` 的 `custom_providers[]` 后会自动广播到所有 profile，一次添加全局生效。
+- 自定义 Provider 卡片支持 `探测`（拉取 `/v1/models` 自动回填）、`设为默认`（写入 `model.{provider, default}`）、`编辑`、`删除` 操作；删除前会弹中文确认。
+
+### Security
+
+- 自定义 Provider 的 `api_key` 持久化在 `config.yaml` 的 `custom_providers[].api_key` 中（custom provider 没有 `_PROVIDER_ENV_VAR` 映射，按 `api/providers.py:1199-1208` 直接落盘）；所有 HTTP 响应只回显 `has_key: bool`，**永不**回显明文 key。
+
 - Knowledge 批量 ZIP 导入现在会在选择文件前展示推荐目录结构、相对图片引用规则和目标目录说明；导入出现部分失败时会弹出中文逐文件明细，便于修正 ZIP 后重试。
 - Knowledge 批量 ZIP 导入现在兼容旧版中文 ZIP 文件名编码、Obsidian `![[附件/图片.png]]` 图片链接，以及常见附件目录名；导入时会把图片统一归档到 `_attachments/<note-stem>/` 并改写 Markdown 链接。
 - Knowledge 笔记预览现在会把导入后的 `_attachments/<note-stem>/...` 相对图片链接解析为媒体接口，兼容中文、空格、括号路径和残留的 Obsidian 图片语法，避免 ZIP 导入成功后正文图片不展示。
