@@ -1,6 +1,7 @@
 # tests/test_custom_providers_slug.py
 import pytest
-from api.custom_providers import slug_from_name, _BUILTIN_SLUGS
+from api import custom_providers
+from api.custom_providers import slug_from_name, _BUILTIN_SLUGS, register_plugin_slugs
 
 
 def test_slug_from_name_basic():
@@ -34,3 +35,14 @@ def test_slug_from_name_trims_to_64():
 def test_builtin_slugs_includes_known():
     for s in ("anthropic", "openai", "openrouter", "ollama", "lmstudio"):
         assert s in _BUILTIN_SLUGS
+
+
+def test_register_plugin_slugs_lowercases_and_skips_falsy():
+    # Read via module attribute (not ``from … import _PLUGIN_SLUGS``) so we
+    # see the live rebound global after ``register_plugin_slugs`` runs.
+    register_plugin_slugs(["Plugin-A", "", "Plugin-B"])
+    try:
+        assert {"plugin-a", "plugin-b"} <= custom_providers._PLUGIN_SLUGS
+    finally:
+        # Reset to avoid leaking state across tests in the same process.
+        register_plugin_slugs([])
