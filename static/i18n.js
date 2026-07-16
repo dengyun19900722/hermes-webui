@@ -9974,6 +9974,52 @@ const LOCALES = {
     changelog_no_results: '未找到匹配结果',
     changelog_count: '共 {0} 个版本',
     changelog_count_filtered: '显示 {0}/{1} 个版本',
+    // === Custom providers ===
+    custom_providers_title: 'Custom providers / relays',
+    custom_providers_subtitle: 'Apply to all profiles',
+    custom_providers_add_btn: '+ Add custom provider',
+    custom_providers_empty: 'No custom providers yet. Click + to add',
+    custom_provider_card_probe: 'Probe',
+    custom_provider_card_edit: 'Edit',
+    custom_provider_card_delete: 'Delete',
+    custom_provider_card_set_default: '⭐ Set as default',
+    custom_provider_field_name: 'Display name',
+    custom_provider_field_slug: 'Slug',
+    custom_provider_field_base_url: 'Base URL',
+    custom_provider_field_api_key: 'API Key',
+    custom_provider_field_models: 'Models',
+    custom_provider_field_api_key_hint: 'Configured. Leave blank to keep, fill to overwrite.',
+    custom_provider_btn_add_model: '+ Add model id',
+    custom_provider_btn_fetch_models: 'Fetch from /v1/models',
+    custom_provider_btn_probe_save: 'Probe & Save',
+    custom_provider_btn_save_direct: 'Save directly',
+    custom_provider_save_ok: (s, t) => `Saved to ${s}/${t} profiles`,
+    custom_provider_save_partial: 'Partial failure',
+    custom_provider_save_failed: 'Save failed, please retry',
+    custom_provider_probe_unreachable: (url) => `Cannot connect to ${url}`,
+    custom_provider_probe_timeout: 'Connection timeout (>4s)',
+    custom_provider_probe_auth_failed: 'API key invalid or rejected',
+    custom_provider_probe_not_found: (url) => `${url}/models not found`,
+    custom_provider_probe_invalid_response: 'Response format unrecognized',
+    custom_provider_probe_save_skip: 'Connection not verified, saved anyway',
+    custom_provider_set_default_ok: (m) => `${m} set as default model`,
+    custom_provider_delete_confirm: (name) => `Delete "${name}" from all profiles?`,
+    custom_provider_slug_invalid: 'Slug only a-z 0-9 . _ -, 1-64 chars',
+    custom_provider_slug_taken: 'Slug already used',
+    custom_provider_slug_collide_builtin: 'Cannot collide with built-in providers',
+    custom_provider_models_empty: 'At least 1 model id required',
+    custom_provider_retry_failed_btn: 'Retry failed profiles',
+    custom_provider_lock_timeout: 'Config busy, please retry',
+    custom_provider_composer_quickadd_label: '➕ Add custom model…',
+    custom_provider_quickadd_title: 'Quick add custom model',
+    custom_provider_quickadd_subtitle: 'Saved entry will appear in dropdown; can be edited in Providers panel',
+    custom_provider_quickadd_added_toast: (name) => `${name} added; will be used on next send`,
+    // === Additional stable error code keys (added per Task 2 code review) ===
+    custom_provider_name_required: 'Display name required',
+    custom_provider_slug_required: 'Slug required (enter one or auto-derive from display name)',
+    custom_provider_base_url_required: 'Base URL required',
+    custom_provider_base_url_invalid: 'Base URL must start with http:// or https://',
+    custom_provider_slug_collide_plugin: 'Cannot collide with plugin provider',
   },
 
   zh: {
@@ -11603,6 +11649,52 @@ const LOCALES = {
     wiki_search_placeholder: '搜索页面...',
     wiki_no_pages: '未找到维基页面',
     wiki_not_configured: '维基未配置',
+    // === Custom providers ===
+    custom_providers_title: '自定义中转 / 代理',
+    custom_providers_subtitle: '在所有 profile 里同时生效',
+    custom_providers_add_btn: '+ 添加自定义 provider',
+    custom_providers_empty: '暂无自定义 provider，点击右上角添加',
+    custom_provider_card_probe: '探测',
+    custom_provider_card_edit: '编辑',
+    custom_provider_card_delete: '删除',
+    custom_provider_card_set_default: '⭐ 设为默认',
+    custom_provider_field_name: '显示名',
+    custom_provider_field_slug: 'Slug',
+    custom_provider_field_base_url: 'Base URL',
+    custom_provider_field_api_key: 'API Key',
+    custom_provider_field_models: 'Models',
+    custom_provider_field_api_key_hint: '已配置。留空保留，填写则覆盖。',
+    custom_provider_btn_add_model: '+ 添加 model id',
+    custom_provider_btn_fetch_models: '从 /v1/models 拉取',
+    custom_provider_btn_probe_save: '探测后保存',
+    custom_provider_btn_save_direct: '直接保存',
+    custom_provider_save_ok: (s, t) => `已保存到 ${s}/${t} 个 profile`,
+    custom_provider_save_partial: '部分失败',
+    custom_provider_save_failed: '保存失败，请重试',
+    custom_provider_probe_unreachable: (url) => `无法连接 ${url}`,
+    custom_provider_probe_timeout: '连接超时（>4s）',
+    custom_provider_probe_auth_failed: 'API key 无效或被拒绝',
+    custom_provider_probe_not_found: (url) => `${url}/models 不存在`,
+    custom_provider_probe_invalid_response: '返回格式无法识别',
+    custom_provider_probe_save_skip: '未验证连接，已保存',
+    custom_provider_set_default_ok: (m) => `已将 ${m} 设为默认模型`,
+    custom_provider_delete_confirm: (name) => `确认删除 "${name}"？将从所有 profile 移除`,
+    custom_provider_slug_invalid: 'Slug 只能 a-z 0-9 . _ -，长度 1-64',
+    custom_provider_slug_taken: 'Slug 已被使用',
+    custom_provider_slug_collide_builtin: '不能与内置 provider 重名',
+    custom_provider_models_empty: '至少添加 1 个 model id',
+    custom_provider_retry_failed_btn: '重试失败的 profile',
+    custom_provider_lock_timeout: '配置正被占用，请重试',
+    custom_provider_composer_quickadd_label: '➕ 添加自定义模型…',
+    custom_provider_quickadd_title: '快速添加自定义模型',
+    custom_provider_quickadd_subtitle: '保存后会出现在下拉里，可后续在 Providers 面板编辑',
+    custom_provider_quickadd_added_toast: (name) => `已添加 ${name}，下一次发送使用`,
+    // === Additional stable error code keys (added per Task 2 code review) ===
+    custom_provider_name_required: '显示名不能为空',
+    custom_provider_slug_required: 'Slug 不能为空（请输入或基于显示名自动派生）',
+    custom_provider_base_url_required: 'Base URL 不能为空',
+    custom_provider_base_url_invalid: 'Base URL 必须以 http:// 或 https:// 开头',
+    custom_provider_slug_collide_plugin: '不能与插件 provider 重名',
   },
 
   // Traditional Chinese (zh-Hant)
@@ -23510,8 +23602,8 @@ function _i18nToolSummaryJoinVi(parts) {
 // Expose for applyLocaleToDOM() and console debugging.
 window.LOCALES = LOCALES;
 
-// Active locale — defaults to English; overridden by loadLocale() at boot.
-let _locale = LOCALES.en;
+// Active locale — defaults to Simplified Chinese; overridden by loadLocale() at boot.
+let _locale = LOCALES.zh;
 window._locale = _locale;
 
 /**
@@ -23606,7 +23698,9 @@ function setLocale(lang) {
 function loadLocale() {
   let stored = null;
   try { stored = localStorage.getItem('hermes-lang'); } catch (_) {}
-  setLocale(resolvePreferredLocale(null, stored));
+  // Default to Simplified Chinese when no preference is stored. Users can
+  // switch in the language picker; the new value gets saved to localStorage.
+  setLocale(resolvePreferredLocale(null, stored) || 'zh');
 }
 
 /**
