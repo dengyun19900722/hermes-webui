@@ -10562,21 +10562,6 @@ async function _loadCustomProviders() {
   _customProvidersLoaded = true;
 }
 
-// Fallback card used until Task 9 adds the real _buildCustomProviderCard.
-// Renders a minimal read-only summary (name + slug + base_url) so the section
-// still displays existing custom providers without crashing.
-function _renderPlaceholderCard(p) {
-  const card = document.createElement('div');
-  card.className = 'custom-provider-card';
-  card.style.cssText = 'background:#fff;border:1px solid #f0d080;border-radius:6px;padding:10px;margin-bottom:8px';
-  card.innerHTML = `
-    <div style="font-weight:600">${esc(p.name || p.slug || '')}</div>
-    <div style="color:#888;font-size:12px">${esc(p.slug || '')}</div>
-    <div style="color:#888;font-size:12px;word-break:break-all">${esc(p.base_url || '')}</div>
-  `;
-  return card;
-}
-
 function _renderCustomProvidersSection(container) {
   const section = document.createElement('div');
   section.className = 'custom-providers-section';
@@ -10600,12 +10585,7 @@ function _renderCustomProvidersSection(container) {
     section.appendChild(empty);
   } else {
     for (const p of _customProviders) {
-      // _buildCustomProviderCard is added in Task 9; fall back to a
-      // read-only placeholder until then so the section still renders.
-      const card = (typeof _buildCustomProviderCard === 'function')
-        ? _buildCustomProviderCard(p)
-        : _renderPlaceholderCard(p);
-      section.appendChild(card);
+      section.appendChild(_buildCustomProviderCard(p));
     }
   }
 
@@ -11381,6 +11361,76 @@ function _buildProviderCard(p){
     card.classList.toggle('open');
     if(card.classList.contains('open')) setTimeout(()=>focusInput&&focusInput.focus(),0);
   });
+  return card;
+}
+
+// === Custom provider card (per-card edit/delete/probe/set-default actions) ===
+// Renders a Custom provider card with metadata (slug, base_url, key status,
+// model count) and inline action links. The four action handlers
+// (_openCustomProviderModal / _deleteCustomProvider / _probeCustomProvider /
+// _setDefaultCustomProvider) arrive in Tasks 10/11, so each is guarded with
+// a typeof check so the card still renders cleanly if any handler is missing.
+function _buildCustomProviderCard(p) {
+  const card = document.createElement('div');
+  card.className = 'custom-provider-card';
+  card.style.cssText = 'background:#fff;border:1px solid #ddd;border-radius:6px;padding:10px;margin:8px 0';
+  card.setAttribute('data-slug', p.slug);
+
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex;justify-content:space-between;align-items:center';
+  const title = document.createElement('b');
+  title.textContent = p.name;
+  const slugHint = document.createElement('span');
+  slugHint.style.cssText = 'color:#888;font-size:12px;margin-left:6px';
+  slugHint.textContent = `(custom:${esc(p.slug)})`;
+  title.appendChild(slugHint);
+  header.appendChild(title);
+
+  const actions = document.createElement('span');
+  actions.innerHTML = `
+    <a href="#" data-action="probe" style="color:#3a6;margin-right:8px">${esc(t('custom_provider_card_probe'))}</a>
+    <a href="#" data-action="edit" style="color:#37c;margin-right:8px">${esc(t('custom_provider_card_edit'))}</a>
+    <a href="#" data-action="delete" style="color:#c44">${esc(t('custom_provider_card_delete'))}</a>
+  `;
+  header.appendChild(actions);
+  card.appendChild(header);
+
+  const meta = document.createElement('div');
+  meta.style.cssText = 'font-size:12px;color:#444;margin-top:4px';
+  const keyLabel = p.has_key
+    ? t('providers_status_configured') || t('custom_provider_field_api_key_hint')
+    : t('providers_status_not_configured_label') || '';
+  const modelCount = Array.isArray(p.models) ? p.models.length : 0;
+  meta.textContent = `base_url = ${p.base_url} · key ${p.has_key ? '✓' : '✗'} ${keyLabel} · ${modelCount} models`;
+  card.appendChild(meta);
+
+  // Set as default button
+  const setDefault = document.createElement('a');
+  setDefault.href = '#';
+  setDefault.style.cssText = 'display:inline-block;margin-top:6px;color:#f5b800;font-size:12px';
+  setDefault.setAttribute('data-action', 'set-default');
+  setDefault.textContent = t('custom_provider_card_set_default');
+  card.appendChild(setDefault);
+
+  // Wire actions — each handler is guarded because they arrive in Tasks 10/11.
+  card.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    const action = ev.target.getAttribute && ev.target.getAttribute('data-action');
+    if (!action) return;
+    if (action === 'edit' && typeof _openCustomProviderModal === 'function') {
+      _openCustomProviderModal(p);
+    }
+    if (action === 'delete' && typeof _deleteCustomProvider === 'function') {
+      await _deleteCustomProvider(p);
+    }
+    if (action === 'probe' && typeof _probeCustomProvider === 'function') {
+      await _probeCustomProvider(p);
+    }
+    if (action === 'set-default' && typeof _setDefaultCustomProvider === 'function') {
+      await _setDefaultCustomProvider(p);
+    }
+  });
+
   return card;
 }
 
