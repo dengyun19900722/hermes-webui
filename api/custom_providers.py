@@ -370,3 +370,28 @@ def set_default_across_profiles(slug: str, model: str) -> dict:
             "total_count": len(list_all_profile_homes()),
             "failed_profiles": [],
         }
+
+
+# === List (Task 5) ======================================================
+
+
+def list_custom_providers() -> list[dict]:
+    """Read the first profile's custom_providers[] (representative; all
+    profiles are kept in sync by upsert_custom_provider_across_profiles).
+    API key value is replaced with ``has_key: bool``."""
+    homes = list_all_profile_homes()
+    if not homes:
+        return []
+    cfg = _load_yaml(homes[0] / "config.yaml")
+    items = cfg.get("custom_providers") or []
+    out = []
+    for p in items:
+        api_key = p.get("api_key")
+        out.append({
+            "name": p.get("name", ""),
+            "slug": p.get("slug", ""),
+            "base_url": p.get("base_url", ""),
+            "has_key": bool(api_key),
+            "models": list(p.get("models") or []),
+        })
+    return out
