@@ -4250,10 +4250,10 @@ _cache_build_in_progress = False  # True while a cold path is actively building
 # (unbounded) behaviour.
 try:
     _LIVE_REBUILD_BUDGET_SECONDS: float = float(
-        os.getenv("HERMES_WEBUI_MODELS_REBUILD_BUDGET", "4") or "4"
+        os.getenv("HERMES_WEBUI_MODELS_REBUILD_BUDGET", "1.5") or "1.5"
     )
 except (TypeError, ValueError):
-    _LIVE_REBUILD_BUDGET_SECONDS = 4.0
+    _LIVE_REBUILD_BUDGET_SECONDS = 1.5
 
 
 # ── Budget-exceeded warning rate-limit ───────────────────────────────────────
