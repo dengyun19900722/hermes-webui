@@ -1604,7 +1604,15 @@ async function send(){
   let optimisticMessages;
   try{
     S.messages.push(userMsg);renderMessages();setBusy(true);
-    if(S.session&&!S.session.pending_started_at) S.session.pending_started_at=Date.now()/1000;
+    // Always reset pending_started_at for a NEW user turn. The previous
+    // conditional `if(!S.session.pending_started_at)` would reuse the
+    // previous turn's timestamp if the server hadn't cleared it (offline
+    // / reconnect / stale local state), making the new turn's elapsed
+    // timer start at the previous turn's age — e.g. "7m43s" on a fresh
+    // Q&A in a long-lived session (#WebUI internal-network repro).
+    // The server's pending_started_at returned by /api/chat/start (below)
+    // still wins as the authoritative value when present.
+    if(S.session) S.session.pending_started_at=Date.now()/1000;
     if(typeof ensureLiveWorklogShell==='function') ensureLiveWorklogShell();
     else appendThinking('',{pending:true});
     // First optimistic pass: make the local user turn visible before /api/chat/start
@@ -1665,7 +1673,10 @@ async function send(){
     optimisticMessages=[...S.messages];
     INFLIGHT[activeSid]={messages:optimisticMessages,uploaded:uploadedNames,toolCalls:[]};
     try{setBusy(true);}catch(_){S.busy=true;}
-    if(S.session&&!S.session.pending_started_at) S.session.pending_started_at=Date.now()/1000;
+    // Same fix as the optimistic pre-start pass above — always reset for a
+    // NEW turn (see comment there). The previous conditional would leak the
+    // previous turn's timestamp into the new turn's elapsed timer.
+    if(S.session) S.session.pending_started_at=Date.now()/1000;
     S.activeStreamId=null;
     if(typeof ensureLiveWorklogShell==='function') ensureLiveWorklogShell();
   }
@@ -1762,11 +1773,47 @@ async function send(){
       try{
         await loadSession(activeSid);
         setComposerStatus('');
+        // Schedule a retry of the queued message after a short delay.  The
+        // initial drain (triggered by the previous 'done' handler) raced with
+        // the server cleaning up ACTIVE_RUNS; on retry the server should
+        // accept the turn.
+        setTimeout(()=>{
+          const q=typeof _getSessionQueue==='function'?_getSessionQueue(activeSid):null;
+          if(q&&q.length>0&&!S.busy){
+            setBusy(false);
+          }
+        },2500);
         return;
       }catch(_){
         // Fall through to standard error handling if session reload fails.
       }
     }
+    // ── Active-stream retry loop ─────────────────────────────────────────
+    // When _diag.in_streams is true the server-side stream is genuinely still
+    // running (not a race).  Retry up to N times with a short delay so the
+    // existing stream can finish naturally.  After that, offer the user a
+    // "Cancel and retry" option.
+    const _retry409Max=15; // ~30s of polling
+    let _retry409Count=0;
+    const _retry409Interval=setInterval(async ()=>{
+      if(_retry409Count++>=_retry409Max){
+        clearInterval(_retry409Interval);
+        if(typeof showToast==='function') showToast('The previous stream is still running. Please wait for it to finish, or close this session and start a new one.',5000,'error');
+        return;
+      }
+      // Re-check if the server-side stream has finished by polling session state.
+      try{
+        const _check=await api('/api/session/'+encodeURIComponent(activeSid)+'?fields=active_stream_id,pending_user_message',{timeoutMs:5000,timeoutToast:false});
+        if(_check&&!(_check.active_stream_id||_check.pending_user_message)){
+          clearInterval(_retry409Interval);
+          // Server is now idle — re-queue the drain trigger.
+          const q=typeof _getSessionQueue==='function'?_getSessionQueue(activeSid):null;
+          if(q&&q.length>0&&!S.busy){
+            setBusy(false);
+          }
+        }
+      }catch(_){}
+    },2000);
 
     delete INFLIGHT[activeSid];
     stopApprovalPolling();
@@ -6022,7 +6069,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
                 ? _isMessageReaderUnpinned()
                 : (typeof _messageUserUnpinned!=='undefined' && _messageUserUnpinned));
             clearLiveToolCards();if(!assistantText)removeThinking();
-            const cancelAgentName=(assistantDisplayName()+'').trim()||'Hermes';
+            const cancelAgentName=(assistantDisplayName()+'').trim()||'ZK运维智能体';
             S.messages.push({role:'assistant',content:`**Task cancelled:** Task cancelled.\n\n*The run was cancelled by the user before ${cancelAgentName} finished. No provider failure occurred.*`,provider_details:'Task cancelled.',provider_details_label:'Cancellation details',_error:true});
             _attachProjectedAnchorSceneToLastAssistant(S.messages);
             renderMessages({preserveScroll:true});
