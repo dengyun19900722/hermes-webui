@@ -1426,7 +1426,14 @@ async function loadSession(sid){
   // Guard against network/server failures to prevent a permanently stuck loading state.
   let data;
   try {
-    data = await api(`/api/session?session_id=${encodeURIComponent(sid)}&messages=0&resolve_model=0`);
+    data = await api(`/api/session?session_id=${encodeURIComponent(sid)}&messages=0&resolve_model=0`, {
+      // Phase-1 metadata is ~1KB on paper but cold disk reads + active-profile
+      // env resolution on slow internal networks can push past api()'s 30s
+      // default. Bump to 60s so the request doesn't trip a generic "Request
+      // timed out" toast on first-load while the user is still waiting for
+      // real disk I/O (#WebUI internal-network repro).
+      timeoutMs: 60000,
+    });
   } catch(e) {
     const _msgInner = $('msgInner');
     // Stale-load guard (Codex): a newer loadSession() may have started while this
@@ -1470,7 +1477,26 @@ async function loadSession(sid){
         // When currentSid is set, a 500/network error may be transient — the
         // session might still exist on the server (#4028 follow-up).
         _clearStuckSessionOnBoot(sid, currentSid);
-        _msgInner.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:14px;padding:40px;text-align:center;">Failed to load session. Try refreshing or switching sessions.</div>';
+        // Add a Retry button so users on slow / internal networks can recover
+        // without a full page refresh — the previous plain text was "frozen"
+        // UX once the api() 30s timeout tripped (#WebUI internal-network repro).
+        if (_msgInner) {
+          _msgInner.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:14px;padding:40px;text-align:center;gap:14px;">'
+            + '<div>Failed to load session. Try refreshing or switching sessions.</div>'
+            + '<button type="button" class="btn-secondary" data-load-retry="1" '
+            + 'style="padding:6px 14px;font-size:12px;border-radius:6px;">'
+            + (typeof t === 'function' ? (t('retry') || 'Retry') : 'Retry')
+            + '</button>'
+            + '</div>';
+          const _retryBtn = _msgInner.querySelector('[data-load-retry]');
+          if (_retryBtn) {
+            _retryBtn.addEventListener('click', () => {
+              if (typeof loadSession === 'function') {
+                loadSession(sid, { force: true }).catch(() => {});
+              }
+            });
+          }
+        }
         if(typeof showToast==='function') showToast('Failed to load session',3000,'error');
       }
     }
