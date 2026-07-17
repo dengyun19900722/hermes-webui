@@ -953,6 +953,11 @@ def _run_gateway_chat_streaming(
             )
         from api.streaming import _session_payload_with_full_messages
         gateway_session_payload = _session_payload_with_full_messages(s, tool_calls=[])
+        # Unregister the active run BEFORE notifying the client (the finally block
+        # also calls unregister_active_run, which is safe as a no-op second call).
+        # Without this early unregister, a queue-drain /api/chat/start arriving
+        # immediately after 'done' can hit a false 409 from ACTIVE_RUNS.
+        unregister_active_run(stream_id)
         put_gateway_event("done", {"session": redact_session_data(gateway_session_payload), "usage": usage})
         put_gateway_event("stream_end", {"session_id": session_id})
     except urllib.error.HTTPError as exc:
@@ -960,12 +965,22 @@ def _run_gateway_chat_streaming(
             err_body = exc.read(2048).decode("utf-8", errors="replace")
         except Exception:
             err_body = ""
+        # Unregister before apperror to avoid false 409 on client queue drain.
+        try:
+            unregister_active_run(stream_id)
+        except Exception:
+            pass
         put_gateway_event(
             "apperror",
             _gateway_http_error_event(exc, err_body, api_key_configured=bool(_gateway_api_key())),
         )
     except Exception as exc:
         safe = _redact_text(str(exc))[:500]
+        # Unregister before apperror to avoid false 409 on client queue drain.
+        try:
+            unregister_active_run(stream_id)
+        except Exception:
+            pass
         put_gateway_event("apperror", {
             "label": "Gateway request failed",
             "type": "gateway_error",
