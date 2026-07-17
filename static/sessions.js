@@ -355,27 +355,7 @@ let _pendingSessionListPayload = null;
 let _pendingSessionListApplyTimer = 0;
 let _sessionListLoadError = null;
 let _sessionListHasLoadedOnce = false;
-// Hard wall-clock budget for the FIRST /api/sessions fetch on cold boot.
-// Cold-disk reads of large session histories on slow / internal networks
-// can exceed api()'s 30s default by an order of magnitude — 90s was still
-// too tight in production (#WebUI internal-network repro, the sidebar
-// timed out before the backend finished scanning history). 180s gives
-// generous headroom without leaving the user staring at a spinner
-// forever if the backend is genuinely hung (the error path keeps its
-// Retry button).
-//
-// Override via window.HERMES_WEBUI_SESSION_LIST_BOOT_TIMEOUT_MS at
-// boot (set before this script runs) for ad-hoc tuning.
-const _SESSION_LIST_BOOT_TIMEOUT_MS = (() => {
-  try {
-    const raw = (typeof window !== 'undefined')
-      ? window.HERMES_WEBUI_SESSION_LIST_BOOT_TIMEOUT_MS
-      : undefined;
-    const n = Number(raw);
-    if (Number.isFinite(n) && n > 0) return n;
-  } catch (_) { /* SSR or no window */ }
-  return 180000;
-})();
+const _SESSION_LIST_BOOT_TIMEOUT_MS = 90000;
 const SESSION_LIST_INTERACTION_IDLE_MS = 700;
 const SESSION_SWIPE_DURATION_MS = 500;
 const SESSION_SWIPE_REFLOW_LEAD_MS = 220;
