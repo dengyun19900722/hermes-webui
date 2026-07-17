@@ -1773,47 +1773,11 @@ async function send(){
       try{
         await loadSession(activeSid);
         setComposerStatus('');
-        // Schedule a retry of the queued message after a short delay.  The
-        // initial drain (triggered by the previous 'done' handler) raced with
-        // the server cleaning up ACTIVE_RUNS; on retry the server should
-        // accept the turn.
-        setTimeout(()=>{
-          const q=typeof _getSessionQueue==='function'?_getSessionQueue(activeSid):null;
-          if(q&&q.length>0&&!S.busy){
-            setBusy(false);
-          }
-        },2500);
         return;
       }catch(_){
         // Fall through to standard error handling if session reload fails.
       }
     }
-    // ── Active-stream retry loop ─────────────────────────────────────────
-    // When _diag.in_streams is true the server-side stream is genuinely still
-    // running (not a race).  Retry up to N times with a short delay so the
-    // existing stream can finish naturally.  After that, offer the user a
-    // "Cancel and retry" option.
-    const _retry409Max=15; // ~30s of polling
-    let _retry409Count=0;
-    const _retry409Interval=setInterval(async ()=>{
-      if(_retry409Count++>=_retry409Max){
-        clearInterval(_retry409Interval);
-        if(typeof showToast==='function') showToast('The previous stream is still running. Please wait for it to finish, or close this session and start a new one.',5000,'error');
-        return;
-      }
-      // Re-check if the server-side stream has finished by polling session state.
-      try{
-        const _check=await api('/api/session/'+encodeURIComponent(activeSid)+'?fields=active_stream_id,pending_user_message',{timeoutMs:5000,timeoutToast:false});
-        if(_check&&!(_check.active_stream_id||_check.pending_user_message)){
-          clearInterval(_retry409Interval);
-          // Server is now idle — re-queue the drain trigger.
-          const q=typeof _getSessionQueue==='function'?_getSessionQueue(activeSid):null;
-          if(q&&q.length>0&&!S.busy){
-            setBusy(false);
-          }
-        }
-      }catch(_){}
-    },2000);
 
     delete INFLIGHT[activeSid];
     stopApprovalPolling();
