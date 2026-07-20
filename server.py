@@ -152,6 +152,7 @@ def _build_csp_report_only_policy() -> str:
 
 from api.auth import check_auth
 from api.config import AUDIT_DIR, HOST, PORT, STATE_DIR, SESSION_DIR, DEFAULT_WORKSPACE
+from api.license_middleware import check_license_gate
 from api.helpers import (
     j,
     get_profile_cookie,
@@ -163,6 +164,19 @@ from api.routes import handle_delete, handle_get, handle_patch, handle_post, han
 from api.startup import auto_install_agent_deps, fix_credential_permissions
 from api.updates import WEBUI_VERSION
 from api.crash_visibility import install_crash_visibility
+
+
+def _check_license_middleware(handler, parsed) -> bool:
+    """Wrap license gate with workspace lookup. Runs before check_auth.
+
+    License state acts as a platform-level prerequisite: not_activated
+    redirects to /license/activate, expired/copied returns 403. Whitelisted
+    paths (health, static, /license/*) bypass the check entirely.
+    """
+    from pathlib import Path as _Path
+    workspace = _Path(DEFAULT_WORKSPACE).expanduser().resolve()
+    return check_license_gate(handler, parsed, workspace)
+
 
 # Lazy import to avoid circular dependency at module load time.
 # audit.write() is called inside log_request() which is invoked after the
@@ -511,6 +525,7 @@ class Handler(BaseHTTPRequestHandler):
             set_request_profile(cookie_profile)
         try:
             parsed = urlparse(self.path)
+            if not _check_license_middleware(self, parsed): return
             if not check_auth(self, parsed): return
             result = handle_get(self, parsed)
             if result is False:
@@ -540,6 +555,7 @@ class Handler(BaseHTTPRequestHandler):
             _is_csp_report_post = (
                 parsed.path == "/api/csp-report" and self.command == "POST"
             )
+            if not _check_license_middleware(self, parsed): return
             if not _is_csp_report_post and not check_auth(self, parsed): return
             result = route_func(self, parsed)
             if result is False:
