@@ -25,7 +25,38 @@
 - **会话隔离默认私有**：用户只能看到自己的会话
 - **知识库系统级共享**：所有用户访问同一知识库，文档标记创建者
 - **管理员可查看所有会话**：用于系统管理和审计
+- **License 优先**：License 校验作为平台级入口前置条件，必须先于 RBAC 登录
 - **轻量实现**：最小化数据库改动，与现有文件结构兼容
+
+### 1.4 License 兼容性
+
+RBAC 系统与现有 License 模块**强耦合**：
+- License 未激活 → 重定向到 `/license/activate`（RBAC 流程不可见）
+- License 已激活但未初始化 RBAC → 进入 RBAC 首次部署流程
+- License 已激活且 RBAC 已初始化 → 进入 RBAC 登录页
+- License 已过期 / `copied` → 拒绝所有访问
+
+**License 状态转换流程：**
+
+```
+[未激活] ──激活──> [已激活+未初始化RBAC] ──创建admin──> [已激活+已初始化]
+                                                                     │
+                                                                     ▼
+                                                              [RBAC登录页]
+                                                                     │
+                                                                     ▼
+                                                              [登录成功]
+```
+
+**License 异常状态：**
+
+| 状态 | 行为 |
+|------|------|
+| `not_activated` | 全部请求重定向到 `/license/activate`（除 `/health`、`/api/license/*`、`/static/*`） |
+| `expired` | 全部请求 403，显示"License 已过期" |
+| `copied` | 全部请求 403，显示"License 检测到 MAC 变更" |
+| `valid` + RBAC 未初始化 | 重定向到 `/setup`（首次部署） |
+| `valid` + RBAC 已初始化 | 显示登录页或应用主页 |
 
 ---
 
@@ -320,6 +351,13 @@ $STATE_DIR/
 
 ## 9. 实现计划
 
+### Phase 0: License 与 RBAC 集成（前置）
+1. 在 `routes.py` 中间件层添加 License 状态检查
+2. License 未激活时拦截除 `/license/*`、`/health`、`/static/*` 之外的请求
+3. License 已激活但 RBAC 未初始化时重定向到 `/setup`
+4. License 状态异常（expired/copied）返回 403
+5. 复用现有 `api/license.py` 模块，**不修改** License 业务逻辑
+
 ### Phase 1: 用户认证系统
 1. 扩展 `api/auth.py`，支持多用户
 2. 实现 `users.json` 读写
@@ -346,7 +384,100 @@ $STATE_DIR/
 
 ---
 
-## 10. 参考实现
+## 10. License 中间件检查
+
+### 10.1 检查时机
+
+在 `routes.py` 的请求分发**最前面**插入 License 状态检查，先于 auth 检查。
+
+### 10.2 检查流程
+
+```python
+def _check_license_middleware(handler, parsed) -> bool:
+    """Return True if request is allowed, False if blocked by license."""
+    # 白名单：永远放行
+    if parsed.path.startswith('/static/') or parsed.path.startswith('/session/static/'):
+        return True
+    if parsed.path == '/health':
+        return True
+    if parsed.path.startswith('/api/license/') or parsed.path == '/license' or parsed.path.startswith('/license/'):
+        return True
+
+    # 检查 license 状态
+    from api.config import DEFAULT_WORKSPACE
+    from api.license import check_license_status, init_license_config
+    workspace = Path(DEFAULT_WORKSPACE)
+    try:
+        init_license_config(workspace)  # 确保 license.json 存在
+        status = check_license_status(workspace)
+    except Exception:
+        return True  # license 模块异常时放行（向后兼容）
+
+    license_state = status.get("status")
+
+    # License 异常状态：拒绝
+    if license_state == "expired":
+        _send_403(handler, "License 已过期")
+        return False
+    if license_state == "copied":
+        _send_403(handler, "License 检测到 MAC 变更")
+        return False
+
+    # License 未激活：重定向到激活页
+    if license_state == "not_activated":
+        if parsed.path.startswith('/api/'):
+            handler.send_response(503)
+            handler.send_header("Content-Type", "application/json")
+            handler.end_headers()
+            handler.wfile.write(b'{"error":"License not activated"}')
+        else:
+            handler.send_response(302)
+            handler.send_header("Location", "/license/activate")
+            handler.send_header("Content-Length", "0")
+            handler.end_headers()
+        return False
+
+    # License valid：放行到下一层（auth/RBAC 检查）
+    return True
+```
+
+### 10.3 集成点
+
+在 `routes.py` 中替换现有的 `check_auth` 调用为：
+
+```python
+# 现有：
+if not check_auth(handler, parsed):
+    return
+
+# 新增顺序：
+if not _check_license_middleware(handler, parsed):
+    return
+if not check_auth(handler, parsed):
+    return
+```
+
+### 10.4 不修改 License 业务逻辑
+
+- **不改动** `api/license.py` 中任何现有函数
+- License 状态查询、导入、激活等流程保持不变
+- License API 路由（`/api/license/*`）保持不变
+
+### 10.5 测试覆盖
+
+| 测试场景 | 期望结果 |
+|----------|----------|
+| License 未激活，访问 `/login` | 302 → `/license/activate` |
+| License 未激活，访问 `/api/license/status` | 200 |
+| License 未激活，访问 `/health` | 200 |
+| License `expired`，访问任意路径 | 403 |
+| License `copied`，访问任意路径 | 403 |
+| License `valid` + RBAC 未初始化，访问 `/login` | 302 → `/setup` |
+| License `valid` + RBAC 已初始化，访问 `/login` | 显示登录页 |
+
+---
+
+## 11. 参考实现
 
 - 豆包/元宝的会话分享模式
 - Notion 的个人工作空间隔离
