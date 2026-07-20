@@ -9,6 +9,16 @@ document.addEventListener('DOMContentLoaded', function () {
 
   if (!form || !input) return;
 
+  // RBAC bootstrap: check init_status to decide whether to redirect to /setup
+  fetch('/api/auth/init_status', { credentials: 'same-origin' })
+    .then(function (r) { return r.json(); })
+    .then(function (s) {
+      if (s && s.initialized === false) {
+        window.location.href = '/setup';
+      }
+    })
+    .catch(function () { /* fail open — show login form */ });
+
   var invalidPw = form.getAttribute('data-invalid-pw') || 'Invalid password';
   var connFailed = form.getAttribute('data-conn-failed') || 'Connection failed';
 
@@ -60,17 +70,19 @@ document.addEventListener('DOMContentLoaded', function () {
   async function doLogin(e) {
     e.preventDefault();
     var pw = input.value;
+    var usernameEl = document.getElementById('username');
+    var username = usernameEl ? usernameEl.value.trim() : '';
     hideErr();
     try {
       var res = await fetch('api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: pw }),
+        body: JSON.stringify({ username: username, password: pw }),
         credentials: 'include',
       });
       var data = {};
       try { data = await res.json(); } catch (_) {}
-      if (res.ok && data.ok) {
+      if (res.ok && data.user) {
         window.location.href = _safeNextPath();
       } else {
         showErr(data.error || invalidPw);
