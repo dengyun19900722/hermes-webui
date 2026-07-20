@@ -11823,6 +11823,11 @@ def handle_get(handler, parsed) -> bool:
     if blocked is True:
         return True
 
+    # RBAC routes (must come after license gate; auth check happens inside handlers)
+    from api.rbac_routes import try_handle_rbac
+    if try_handle_rbac("GET", parsed, handler):
+        return True
+
     # ── License routes ─────────────────────────────────────────────────────────
     if parsed.path == "/api/license/status":
         from api.license import init_license_config, check_license_status
@@ -13863,6 +13868,13 @@ def handle_post(handler, parsed) -> bool:
     # License gate: block non-license POST endpoints when not activated
     blocked = _require_license(handler, parsed)
     if blocked is True:
+        if diag:
+            diag.finish()
+        return True
+
+    # RBAC routes (must come after license gate; auth check happens inside handlers)
+    from api.rbac_routes import try_handle_rbac
+    if try_handle_rbac("POST", parsed, handler):
         if diag:
             diag.finish()
         return True
@@ -16385,6 +16397,10 @@ def handle_delete(handler, parsed) -> bool:
     )
     if proxy_result is not False:
         return proxy_result
+    # RBAC routes (session share revoke, admin user delete, etc.)
+    from api.rbac_routes import try_handle_rbac
+    if try_handle_rbac("DELETE", parsed, handler):
+        return True
     body = read_body(handler)
     if not _guard_request_session_visibility(handler, parsed, body=body, method="DELETE"):
         return True
