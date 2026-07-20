@@ -1533,6 +1533,7 @@ Expected: ImportError
 # api/routes.py 末尾追加
 
 import json
+from api.config import STATE_DIR
 from api.auth import (
     authenticate, create_user_session, get_user_from_session,
     invalidate_user_session, is_admin, needs_initialization,
@@ -1549,7 +1550,7 @@ from api.audit import log_event, list_events
 
 def _get_current_user(handler) -> dict | None:
     """Extract authenticated user from request session cookie."""
-    from api.auth import parse_cookie, _user_sessions
+    from api.auth import parse_cookie
     cookie = parse_cookie(handler)
     if not cookie:
         return None
@@ -1616,7 +1617,6 @@ def _route_list_sessions(handler, path, parsed):
         handler.send_response(401)
         handler.end_headers()
         return
-    from api.config import STATE_DIR
     sessions_dir = STATE_DIR / "sessions"
     own = list_user_sessions(sessions_dir, user["id"])
     shared = list_shared_sessions(sessions_dir, user["id"])
@@ -1650,13 +1650,12 @@ def _route_share_session(handler, path, parsed):
         handler.end_headers()
         handler.wfile.write(json.dumps({"error": "username required"}).encode())
         return
-    target_user = find_user_by_username(__import__("api.config", fromlist=["STATE_DIR"]).STATE_DIR, to_username)
+    target_user = find_user_by_username(STATE_DIR, to_username)
     if not target_user:
         handler.send_response(404)
         handler.end_headers()
         handler.wfile.write(json.dumps({"error": "User not found"}).encode())
         return
-    from api.config import STATE_DIR
     share = share_session_to_user(STATE_DIR / "sessions", user["id"], target_user["id"], session_id)
     log_event(user["id"], user["username"], "session.share",
               target_type="session", target_id=session_id, target_name=to_username)
