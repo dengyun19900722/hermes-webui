@@ -453,6 +453,81 @@ def handle_setup_page(handler, parsed) -> bool:
     return True
 
 
+# ── Knowledge base meta routes ───────────────────────────────────────────────
+
+def _meta_dir() -> Path:
+    """Return the .meta sidecar directory inside the Obsidian vault."""
+    from api.obsidian_notes import vault_root
+    return vault_root() / ".meta"
+
+
+def handle_notes_meta_get(handler, parsed) -> bool:
+    """GET /api/notes/meta/{path:.*} — fetch meta for a doc."""
+    user = _current_user(handler)
+    if not user:
+        _send_json(handler, 401, {"error": "Authentication required"})
+        return True
+    from urllib.parse import unquote
+    # /api/notes/meta/{path...}
+    prefix = "/api/notes/meta/"
+    doc_path = unquote(parsed.path[len(prefix):]) if parsed.path.startswith(prefix) else ""
+    if not doc_path:
+        _send_json(handler, 400, {"error": "path required"})
+        return True
+    from api.obsidian_meta import (
+        load_meta, compute_rating_summary, get_creator,
+    )
+    meta_dir = _meta_dir()
+    meta = load_meta(meta_dir, doc_path)
+    creator = get_creator(meta_dir, doc_path)
+    summary = compute_rating_summary(meta_dir, doc_path)
+    _send_json(handler, 200, {
+        "creator_id": creator["creator_id"] if creator else None,
+        "creator_name": creator["creator_name"] if creator else None,
+        "rating_count": summary["count"],
+        "rating_average": summary["average"],
+    })
+    return True
+
+
+def handle_notes_rate(handler, parsed) -> bool:
+    """POST /api/notes/meta/{path:.*}/rate — submit/update rating 1-5."""
+    user = _current_user(handler)
+    if not user:
+        _send_json(handler, 401, {"error": "Authentication required"})
+        return True
+    from urllib.parse import unquote
+    # /api/notes/meta/{path}/rate
+    prefix = "/api/notes/meta/"
+    suffix = "/rate"
+    if not (parsed.path.startswith(prefix) and parsed.path.endswith(suffix)):
+        _send_json(handler, 400, {"error": "Bad request"})
+        return True
+    doc_path = unquote(parsed.path[len(prefix):-len(suffix)])
+    if not doc_path:
+        _send_json(handler, 400, {"error": "path required"})
+        return True
+    body = _read_json_body(handler)
+    rating = body.get("rating")
+    if not isinstance(rating, int) or not (1 <= rating <= 5):
+        _send_json(handler, 400, {"error": "rating must be 1-5"})
+        return True
+    from api.obsidian_meta import add_or_update_rating
+    record = add_or_update_rating(
+        _meta_dir(), doc_path,
+        user["id"], user["username"], rating,
+    )
+    _audit.write(
+        category="rbac",
+        action="doc.rate",
+        actor_id=user["id"], actor_name=user["username"],
+        target_type="doc", target_id=doc_path, target_name=doc_path,
+        details={"rating": rating},
+    )
+    _send_json(handler, 200, {"record": record})
+    return True
+
+
 # ── Dispatcher entry-point ───────────────────────────────────────────────────
 
 def try_handle_rbac(method: str, parsed, handler) -> bool:
@@ -502,5 +577,11 @@ def try_handle_rbac(method: str, parsed, handler) -> bool:
         return handle_admin_audit(handler, parsed)
     if method == "GET" and path == "/api/admin/sessions":
         return handle_admin_sessions(handler, parsed)
+
+    # Knowledge base meta (auth required)
+    if method == "GET" and path.startswith("/api/notes/meta/") and not path.endswith("/rate"):
+        return handle_notes_meta_get(handler, parsed)
+    if method == "POST" and path.startswith("/api/notes/meta/") and path.endswith("/rate"):
+        return handle_notes_rate(handler, parsed)
 
     return False
