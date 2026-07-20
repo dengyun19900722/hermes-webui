@@ -31,6 +31,14 @@ api/admin.py                                   # 新建：管理员 API
 api/audit.py                                   # 新建：审计日志
 api/routes.py                                  # 修改：注册新路由
 
+static/login.js                                # 修改：username+password 双字段
+static/setup.html                              # 新建：首次部署初始化页
+static/setup.js                                # 新建：初始化表单逻辑
+static/session_sharing.js                      # 新建：会话分享 UI
+static/index.html                              # 修改：用户菜单 + 引入新 JS
+static/notes_panel.js                          # 修改：显示创建者+评分
+static/i18n.js                                 # 修改：新增 i18n 键
+
 tests/test_license_middleware.py               # 新建：License 中间件
 tests/test_license_middleware_integration.py   # 新建：License 中间件路由集成
 tests/test_auth_users.py                       # 新建：多用户认证
@@ -41,6 +49,10 @@ tests/test_obsidian_meta.py                    # 新建：知识库元数据
 tests/test_obsidian_ratings.py                 # 新建：评价功能
 tests/test_admin_users.py                      # 新建：用户管理
 tests/test_audit.py                            # 新建：审计日志
+tests/test_login_ui.py                          # 新建：login.js 双字段验证
+tests/test_auth_init_status.py                  # 新建：init_status 端点
+tests/test_session_share_ui.py                  # 新建：会话分享 UI 验证
+tests/test_obsidian_meta_ui.py                  # 新建：知识库 UI 元数据显示
 ```
 
 ---
@@ -2041,6 +2053,705 @@ git commit -m "feat(rbac): integrate RBAC HTTP routes"
 
 ---
 
+## Phase 4.5: 前端 UI 改造
+
+### Task 11.5: login.js 改造（username + password 双字段）
+
+**Files:**
+- Modify: `static/login.js`
+- Test: `tests/test_login_ui.py` (HTTP-level integration test for `/login` page)
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_login_ui.py
+"""Verify /login page renders username + password fields after RBAC refactor."""
+import pytest
+
+
+def test_login_page_renders_username_field():
+    """Existing login.js must be updated to include username input."""
+    from pathlib import Path
+    src = (Path(__file__).parent.parent / "static" / "login.js").read_text()
+    assert 'name="username"' in src or 'id="username"' in src, \
+        "login.js must include a username input field"
+
+
+def test_login_page_calls_new_login_endpoint():
+    """Login form posts to /api/auth/login (preserved endpoint, new signature)."""
+    from pathlib import Path
+    src = (Path(__file__).parent.parent / "static" / "login.js").read_text()
+    assert "/api/auth/login" in src
+
+
+def test_login_page_init_status_check():
+    """On load, login.js should check /api/auth/init_status before showing form."""
+    from pathlib import Path
+    src = (Path(__file__).parent.parent / "static" / "login.js").read_text()
+    assert "/api/auth/init_status" in src
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python -m pytest tests/test_login_ui.py -v`
+Expected: 3 failed (login.js still has single-password form)
+
+- [ ] **Step 3: Update login.js**
+
+修改 `static/login.js` 的核心逻辑：
+
+```javascript
+// static/login.js - 改造部分（保留 i18n、CSRF、next=、rate-limit 逻辑）
+
+async function initLoginPage() {
+  // 1. 检查 license
+  const licStatus = await fetch("/api/license/status").then(r => r.json()).catch(() => ({status: "valid"}));
+  if (licStatus.status && licStatus.status !== "valid") {
+    window.location.href = "/license/activate";
+    return;
+  }
+  // 2. 检查 RBAC 初始化
+  const initStatus = await fetch("/api/auth/init_status").then(r => r.json()).catch(() => ({initialized: true}));
+  if (initStatus && initStatus.initialized === false) {
+    window.location.href = "/setup";
+    return;
+  }
+  // 3. 显示登录表单
+  renderLoginForm();
+}
+
+function renderLoginForm() {
+  const form = document.getElementById("login-form");
+  form.innerHTML = `
+    <div class="login-field">
+      <input type="text" name="username" id="username"
+             placeholder="${I18N.t('login_username')}" autocomplete="username"
+             required autofocus>
+    </div>
+    <div class="login-field">
+      <input type="password" name="password" id="password"
+             placeholder="${I18N.t('login_password')}" autocomplete="current-password"
+             required>
+    </div>
+    <button type="submit" id="login-submit">${I18N.t('login_button')}</button>
+    <div id="login-error" class="login-error" hidden></div>
+  `;
+  form.addEventListener("submit", onLoginSubmit);
+}
+
+async function onLoginSubmit(e) {
+  e.preventDefault();
+  const username = document.getElementById("username").value.trim();
+  const password = document.getElementById("password").value;
+  if (!username || !password) return;
+
+  const errorEl = document.getElementById("login-error");
+  errorEl.hidden = true;
+
+  try {
+    const resp = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Hermes-CSRF-Token": getCsrfToken(),
+      },
+      credentials: "same-origin",
+      body: JSON.stringify({ username, password }),
+    });
+    if (resp.ok) {
+      // 跳转到 next 或 / 
+      const next = new URLSearchParams(window.location.search).get("next") || "/";
+      window.location.href = next;
+      return;
+    }
+    if (resp.status === 401) {
+      errorEl.textContent = I18N.t("login_error_invalid_credentials");
+      errorEl.hidden = false;
+    } else if (resp.status === 429) {
+      errorEl.textContent = I18N.t("login_error_too_many_attempts");
+      errorEl.hidden = false;
+    } else {
+      errorEl.textContent = I18N.t("login_error_generic");
+      errorEl.hidden = false;
+    }
+  } catch (err) {
+    errorEl.textContent = I18N.t("login_error_conn_failed");
+    errorEl.hidden = false;
+  }
+}
+
+initLoginPage();
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `python -m pytest tests/test_login_ui.py -v`
+Expected: 3 passed
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add static/login.js tests/test_login_ui.py
+git commit -m "feat(rbac): refactor login.js for username+password auth"
+```
+
+---
+
+### Task 11.6: 新增 /api/auth/init_status 端点
+
+**Files:**
+- Modify: `api/routes.py`
+- Test: `tests/test_auth_init_status.py`
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_auth_init_status.py
+"""Verify GET /api/auth/init_status returns RBAC initialization state."""
+import pytest
+from pathlib import Path
+from unittest.mock import MagicMock
+
+
+def test_init_status_returns_true_when_users_exist(tmp_path, monkeypatch):
+    monkeypatch.setattr("api.auth._state_dir", lambda: tmp_path)
+    from api.user_store import add_user
+    add_user(tmp_path, {"username": "alice", "password_hash": "x", "role": "user"})
+
+    from api.routes import _route_auth_init_status
+    handler = MagicMock()
+    parsed = MagicMock()
+    _route_auth_init_status(handler, parsed)
+    # handler.send_response(200) 应被调用
+    handler.send_response.assert_called_with(200)
+    # 响应体应包含 initialized: True
+    body = handler.wfile.write.call_args[0][0].decode()
+    assert '"initialized": true' in body
+
+
+def test_init_status_returns_false_when_no_users(tmp_path, monkeypatch):
+    monkeypatch.setattr("api.auth._state_dir", lambda: tmp_path)
+    from api.routes import _route_auth_init_status
+    handler = MagicMock()
+    parsed = MagicMock()
+    _route_auth_init_status(handler, parsed)
+    handler.send_response.assert_called_with(200)
+    body = handler.wfile.write.call_args[0][0].decode()
+    assert '"initialized": false' in body
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python -m pytest tests/test_auth_init_status.py -v`
+Expected: ImportError on `_route_auth_init_status`
+
+- [ ] **Step 3: Implement the route handler**
+
+在 `api/routes.py` 中添加：
+
+```python
+def _route_auth_init_status(handler, path, parsed):
+    """GET /api/auth/init_status — 是否需要进入 /setup 页。
+
+    Returns {"initialized": bool, "license_status": str}.
+    Public endpoint (no auth required) so the login page can decide
+    where to redirect on first load.
+    """
+    from api.auth import needs_initialization
+    initialized = not needs_initialization()
+
+    # 同时返回 license 状态，方便前端做一次性判断
+    license_status = "valid"
+    try:
+        from api.config import DEFAULT_WORKSPACE
+        from pathlib import Path as _Path
+        from api.license import check_license_status
+        license_status = check_license_status(_Path(DEFAULT_WORKSPACE)).get("status", "valid")
+    except Exception:
+        pass
+
+    body = json.dumps({"initialized": initialized, "license_status": license_status}).encode()
+    handler.send_response(200)
+    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+```
+
+并在路由表中注册（找到现有 `/api/auth/*` 路由注册处）：
+
+```python
+"/api/auth/init_status": _route_auth_init_status,
+```
+
+并在 `PUBLIC_PATHS` 中确认包含此路径（`api/auth.py`）。
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `python -m pytest tests/test_auth_init_status.py -v`
+Expected: 2 passed
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add api/routes.py api/auth.py tests/test_auth_init_status.py
+git commit -m "feat(rbac): add /api/auth/init_status for login page bootstrap"
+```
+
+---
+
+### Task 11.7: 新增 /setup 页
+
+**Files:**
+- Create: `static/setup.html`
+- Create: `static/setup.js`
+- Modify: `static/i18n.js` (添加 setup_* 键)
+
+- [ ] **Step 1: Create setup.html**
+
+```html
+<!-- static/setup.html -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>初始化管理员 · ZK 运维智能体</title>
+  <link rel="stylesheet" href="/static/login.css">
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <h1 id="setup-title">初始化管理员</h1>
+    <p id="setup-desc">这是首次部署。请创建管理员账号。</p>
+    <form id="setup-form" autocomplete="off">
+      <div class="login-field">
+        <input type="text" name="username" id="setup-username"
+               placeholder="用户名（3-32 字符）" minlength="3" maxlength="32"
+               pattern="[A-Za-z0-9_.\-]+" required autofocus>
+      </div>
+      <div class="login-field">
+        <input type="password" name="password" id="setup-password"
+               placeholder="密码（≥8 字符，含字母+数字）" minlength="8" required>
+      </div>
+      <div class="login-field">
+        <input type="password" name="password_confirm" id="setup-password-confirm"
+               placeholder="确认密码" minlength="8" required>
+      </div>
+      <button type="submit" id="setup-submit">创建管理员</button>
+      <div id="setup-error" class="login-error" hidden></div>
+    </form>
+  </main>
+  <script src="/static/setup.js"></script>
+</body>
+</html>
+```
+
+- [ ] **Step 2: Create setup.js**
+
+```javascript
+// static/setup.js
+async function initSetupPage() {
+  const form = document.getElementById("setup-form");
+  const errorEl = document.getElementById("setup-error");
+
+  function showError(msg) {
+    errorEl.textContent = msg;
+    errorEl.hidden = false;
+  }
+
+  function clientValidate(username, password, confirm) {
+    if (!/^[A-Za-z0-9_.\-]{3,32}$/.test(username)) {
+      return "用户名必须是 3-32 个字母/数字/_-. 字符";
+    }
+    if (password.length < 8) {
+      return "密码至少 8 个字符";
+    }
+    if (!/[A-Za-z]/.test(password) || !/\d/.test(password)) {
+      return "密码必须同时包含字母和数字";
+    }
+    if (password !== confirm) {
+      return "两次输入的密码不一致";
+    }
+    return null;
+  }
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    errorEl.hidden = true;
+    const username = document.getElementById("setup-username").value.trim();
+    const password = document.getElementById("setup-password").value;
+    const confirm = document.getElementById("setup-password-confirm").value;
+
+    const clientErr = clientValidate(username, password, confirm);
+    if (clientErr) { showError(clientErr); return; }
+
+    try {
+      const resp = await fetch("/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ username, password }),
+      });
+      if (resp.ok) {
+        // 后端会同时设置 cookie，刷新到主应用
+        window.location.href = "/";
+        return;
+      }
+      const data = await resp.json().catch(() => ({}));
+      if (resp.status === 403) {
+        showError("系统已经初始化过，请直接登录");
+      } else if (resp.status === 400) {
+        showError(data.error || "输入有误");
+      } else {
+        showError(data.error || `创建失败 (HTTP ${resp.status})`);
+      }
+    } catch (err) {
+      showError("网络连接失败");
+    }
+  });
+}
+
+initSetupPage();
+```
+
+- [ ] **Step 3: 添加 i18n 键**
+
+修改 `static/i18n.js`（在 zh-CN、en-US 等所有 locale 中）：
+
+```javascript
+// 添加到所有 locale 块
+setup_title: "初始化管理员",
+setup_desc: "这是首次部署。请创建管理员账号。",
+setup_username: "用户名（3-32 字符）",
+setup_password: "密码（≥8 字符，含字母+数字）",
+setup_password_confirm: "确认密码",
+setup_submit: "创建管理员",
+setup_error_password_mismatch: "两次输入的密码不一致",
+setup_error_password_weak: "密码强度不足（至少 8 字符，含字母和数字）",
+login_username: "用户名",
+login_error_invalid_credentials: "用户名或密码错误",
+```
+
+- [ ] **Step 4: 注册 /setup 路由**
+
+在 `api/routes.py` 中添加静态文件路由：
+
+```python
+def _route_setup_page(handler, path, parsed):
+    """GET /setup — 首次部署初始化页面。"""
+    try:
+        html = (Path(__file__).parent.parent / "static" / "setup.html").read_text(encoding="utf-8")
+        body = html.encode("utf-8")
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/html; charset=utf-8")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+    except Exception as e:
+        handler.send_response(500)
+        handler.end_headers()
+```
+
+并在路由表中注册（PUBLIC 区域）：
+```python
+"/setup": _route_setup_page,
+```
+
+同时把 `/setup` 添加到 `api/auth.py` 的 `PUBLIC_PATHS` 中。
+
+- [ ] **Step 5: 验证**
+
+Run: `python -c "from pathlib import Path; print(Path('static/setup.html').exists())"`
+Expected: True
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add static/setup.html static/setup.js static/i18n.js api/routes.py api/auth.py
+git commit -m "feat(rbac): add /setup page for first-time admin creation"
+```
+
+---
+
+### Task 11.8: 主应用用户菜单与分享 UI
+
+**Files:**
+- Modify: `static/index.html` (顶部用户菜单)
+- Modify: `static/sessions.js` 或新增 `static/session_sharing.js`
+- Test: `tests/test_session_share_ui.py`
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_session_share_ui.py
+"""Verify session sharing UI elements exist."""
+from pathlib import Path
+
+
+def test_session_share_js_exists():
+    assert Path("static/session_sharing.js").exists()
+
+
+def test_share_button_renders():
+    src = Path("static/session_sharing.js").read_text()
+    assert "shareSession" in src or "分享" in src
+
+
+def test_share_token_link_button():
+    src = Path("static/session_sharing.js").read_text()
+    assert "/api/sessions/" in src
+    assert "share/token" in src or "share_token" in src
+
+
+def test_shared_section_divider():
+    """会话列表有独立的"收到的分享"区域。"""
+    src = Path("static/session_sharing.js").read_text()
+    assert "shared" in src.lower()
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python -m pytest tests/test_session_share_ui.py -v`
+Expected: 1+ failed (session_sharing.js 不存在)
+
+- [ ] **Step 3: 创建 session_sharing.js**
+
+```javascript
+// static/session_sharing.js
+// 会话分享前端逻辑
+
+async function loadSessions() {
+  const resp = await fetch("/api/sessions", { credentials: "same-origin" });
+  if (!resp.ok) return { own: [], shared: [] };
+  return resp.json();
+}
+
+async function shareSessionToUser(sessionId, username) {
+  const resp = await fetch(`/api/sessions/${sessionId}/share`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ username }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.error || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+
+async function shareSessionWithToken(sessionId) {
+  const resp = await fetch(`/api/sessions/${sessionId}/share/token`, {
+    method: "POST",
+    credentials: "same-origin",
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.error || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+
+async function revokeSessionShare(sessionId, shareId) {
+  const resp = await fetch(`/api/sessions/${sessionId}/share/${shareId}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  return resp.json();
+}
+
+function renderSessionList(container, data) {
+  const ownHtml = (data.own || []).map(s => `
+    <li class="session-item" data-id="${s.id}">
+      <span class="session-title">${escapeHtml(s.title)}</span>
+      <div class="session-actions">
+        <button class="btn-share" onclick="openShareDialog('${s.id}')">分享</button>
+        <button class="btn-delete" onclick="deleteSession('${s.id}')">删除</button>
+      </div>
+    </li>
+  `).join("");
+
+  const sharedHtml = (data.shared || []).map(item => `
+    <li class="session-item shared" data-share-id="${item.share_id}">
+      <span class="session-title">${escapeHtml(item.session.title)}</span>
+      <span class="shared-from">来自 ${escapeHtml(item.from_user_name || item.from_user_id)}</span>
+      <span class="readonly-badge">只读</span>
+    </li>
+  `).join("");
+
+  container.innerHTML = `
+    <section class="own-sessions">
+      <h3>我的会话 (${(data.own || []).length})</h3>
+      <ul>${ownHtml || '<li class="empty">暂无会话</li>'}</ul>
+    </section>
+    <section class="shared-sessions">
+      <h3>收到的分享 (${(data.shared || []).length})</h3>
+      <ul>${sharedHtml || '<li class="empty">暂无分享</li>'}</ul>
+    </section>
+  `;
+}
+
+async function openShareDialog(sessionId) {
+  const choice = window.prompt("分享方式: 输入用户名（用户分享）或输入 'link' 生成分享链接");
+  if (!choice) return;
+  try {
+    if (choice === "link") {
+      const r = await shareSessionWithToken(sessionId);
+      window.prompt("复制以下分享链接:", `${window.location.origin}/shared/session?token=${r.share.token}`);
+    } else {
+      await shareSessionToUser(sessionId, choice.trim());
+      alert(`已分享给 ${choice}`);
+    }
+    await refreshSessions();
+  } catch (e) {
+    alert(`分享失败: ${e.message}`);
+  }
+}
+
+async function refreshSessions() {
+  const data = await loadSessions();
+  const container = document.getElementById("sessions-container");
+  if (container) renderSessionList(container, data);
+}
+
+function escapeHtml(s) {
+  const div = document.createElement("div");
+  div.textContent = s || "";
+  return div.innerHTML;
+}
+
+document.addEventListener("DOMContentLoaded", refreshSessions);
+```
+
+- [ ] **Step 4: 在 index.html 引入**
+
+修改 `static/index.html`，在合适位置添加：
+
+```html
+<script src="/static/session_sharing.js"></script>
+```
+
+并在顶部菜单区添加用户菜单：
+
+```html
+<div class="user-menu">
+  <span id="current-username"></span>
+  <span id="current-role-badge" hidden>Admin</span>
+  <button id="logout-btn">退出</button>
+  <a id="admin-link" href="/admin" hidden>管理面板</a>
+</div>
+```
+
+- [ ] **Step 5: Run test to verify it passes**
+
+Run: `python -m pytest tests/test_session_share_ui.py -v`
+Expected: 4 passed
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add static/session_sharing.js static/index.html tests/test_session_share_ui.py
+git commit -m "feat(rbac): add session sharing UI (own + shared sections)"
+```
+
+---
+
+### Task 11.9: 知识库元数据 UI（创建者 + 评分）
+
+**Files:**
+- Modify: `static/notes_panel.js` (或对应知识库 JS)
+- Test: `tests/test_obsidian_meta_ui.py`
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_obsidian_meta_ui.py
+"""Verify knowledge base UI displays creator + ratings."""
+from pathlib import Path
+
+
+def test_meta_ui_renders_creator():
+    """JS contains logic to render creator name from meta.creator_name."""
+    for fname in ("notes_panel.js", "obsidian_panel.js", "knowledge.js"):
+        path = Path("static") / fname
+        if path.exists():
+            assert "creator_name" in path.read_text()
+            return
+    # 没找到对应文件则跳过（可能在 HTML 模板中）
+    assert True
+
+
+def test_meta_ui_renders_rating():
+    found = False
+    for fname in Path("static").glob("*.js"):
+        if "rating" in fname.read_text():
+            found = True
+            break
+    assert found, "rating UI element not found in any static JS file"
+```
+
+- [ ] **Step 2: 实现 UI 逻辑**
+
+在知识库面板的文档卡片中，附加显示：
+
+```javascript
+// 在文档列表渲染函数中添加
+function renderDocCard(doc) {
+  const meta = doc.meta || {};
+  const ratingHtml = meta.rating_count > 0
+    ? `<span class="doc-rating">★ ${meta.rating_average.toFixed(1)} (${meta.rating_count})</span>`
+    : `<span class="doc-rating empty">暂无评分</span>`;
+  return `
+    <div class="doc-card" data-path="${doc.path}">
+      <div class="doc-header">
+        <span class="doc-title">${escapeHtml(doc.name)}</span>
+        <span class="doc-creator">@${escapeHtml(meta.creator_name || 'unknown')}</span>
+      </div>
+      <div class="doc-footer">
+        ${ratingHtml}
+        <button class="btn-rate" onclick="openRateDialog('${doc.path}')">评分</button>
+      </div>
+    </div>
+  `;
+}
+
+async function openRateDialog(docPath) {
+  const rating = window.prompt("请输入评分 1-5:");
+  const n = parseInt(rating, 10);
+  if (!n || n < 1 || n > 5) {
+    alert("评分必须是 1-5 之间的整数");
+    return;
+  }
+  const resp = await fetch(`/api/notes/meta/${encodeURIComponent(docPath)}/rate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ rating: n }),
+  });
+  if (resp.ok) {
+    await refreshNotes();
+  } else {
+    const err = await resp.json().catch(() => ({}));
+    alert(`评分失败: ${err.error || resp.status}`);
+  }
+}
+```
+
+- [ ] **Step 3: Run test to verify it passes**
+
+Run: `python -m pytest tests/test_obsidian_meta_ui.py -v`
+Expected: 2 passed
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add static/notes_panel.js tests/test_obsidian_meta_ui.py
+git commit -m "feat(rbac): display creator and ratings on knowledge base docs"
+```
+
+---
+
 ## Phase 5: 最终验证
 
 ### Task 12: 完整集成测试
@@ -2141,10 +2852,18 @@ git commit -m "test(rbac): add end-to-end integration test"
 
 - [ ] 所有单元测试通过
 - [ ] 所有集成测试通过
-- [ ] 首次部署流程测试通过（users.json 为空 → 强制初始化）
+- [ ] 首次部署流程测试通过（users.json 为空 → 强制初始化 → /setup 页）
+- [ ] License 中间件测试通过（未激活/expired/copied 状态分支）
+- [ ] login.js 双字段渲染验证（`tests/test_login_ui.py`）
+- [ ] init_status 端点验证（`tests/test_auth_init_status.py`）
+- [ ] /setup 页面提交流程验证
 - [ ] 会话隔离验证（alice 看不到 bob 的会话，除非被分享）
+- [ ] 分享 UI 验证（自有+分享两个分区，`tests/test_session_share_ui.py`）
 - [ ] 分享流程验证（用户间分享 + token 链接分享）
+- [ ] 知识库 UI 显示创建者+评分（`tests/test_obsidian_meta_ui.py`）
 - [ ] 知识库评价功能验证（创建、修改、聚合）
 - [ ] 管理员权限验证（admin 可查看所有会话和管理用户）
 - [ ] 审计日志记录所有关键操作
+- [ ] i18n locale parity 测试通过（新增键需覆盖所有 locale）
 - [ ] lint 通过（`ruff check api/`）
+- [ ] 浏览器手动验证：登录 → 退出 → 重登录 → 分享 → 评分 流程

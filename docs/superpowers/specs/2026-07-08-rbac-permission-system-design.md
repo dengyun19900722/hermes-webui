@@ -349,6 +349,165 @@ $STATE_DIR/
 
 ---
 
+## 9. 前端 UI 设计
+
+### 9.1 现有基础
+
+- `static/login.js`：单密码登录页（198 行）
+- `static/index.html`：主应用入口
+- 现有 `login_*` i18n 键体系（locale parity 测试覆盖）
+- 现有 CSRF / `?next=` 跳转 / cookie 处理逻辑保留
+
+### 9.2 页面改造范围
+
+#### A. `/login` 页（现有 login.js 改造）
+
+**现有：** 单密码字段 → POST `/api/auth/login`
+
+**改造后：** `username` + `password` 双字段 → POST `/api/auth/login`
+
+| 改动点 | 说明 |
+|--------|------|
+| 表单字段 | 增加 `username` 输入框（autoFocus=true） |
+| i18n 键 | 复用 `login_username`、`login_password`、`login_button`，新增 `login_error_invalid_credentials` |
+| 错误提示 | 401 时显示"用户名或密码错误"（不再区分用户存在性） |
+| CSRF | 保留现有 X-Hermes-CSRF-Token 逻辑 |
+| `?next=` | 保留登录后跳转原路径 |
+| 限流 | 保留现有 rate-limit（每 IP 5 次/分钟） |
+
+#### B. `/setup` 页（新增）
+
+**触发条件：** License `valid` + RBAC 未初始化（`users.json` 为空）
+
+**职责：** 设置首个 admin 账号（`username` + `password` + `password_confirm`）
+
+| 字段 | 校验 |
+|------|------|
+| `username` | 3-32 字符，ASCII alphanumeric + `_-.` |
+| `password` | ≥ 8 字符，含字母+数字 |
+| `password_confirm` | 与 password 一致 |
+
+**提交：** POST `/api/auth/register`
+
+**成功后：** 自动登录该 admin，重定向到 `/`
+
+#### C. `/license/activate` 页（现有，未改动）
+
+由现有 license 模块渲染，RBAC 不干预。
+
+### 9.3 三页路由决策
+
+入口路由决策（在前端 `login.js` 启动时调用）：
+
+```javascript
+// 静态入口 /login 的初始化流程
+async function init() {
+  // 1. 检查 license 状态
+  const licStatus = await fetch("/api/license/status").then(r => r.json());
+  if (licStatus.status !== "valid") {
+    window.location.href = "/license/activate";
+    return;
+  }
+  // 2. 检查 RBAC 初始化状态
+  const initStatus = await fetch("/api/auth/init_status").then(r => r.json());
+  if (!initStatus.initialized) {
+    window.location.href = "/setup";
+    return;
+  }
+  // 3. 显示登录表单
+  showLoginForm();
+}
+```
+
+### 9.4 用户菜单 / 退出
+
+主应用 (`index.html`) 顶部用户菜单：
+
+| 元素 | 行为 |
+|------|------|
+| 当前用户名 | 显示 `auth.user.username` |
+| 角色徽章 | admin 角色显示 `Admin` 标签 |
+| 退出按钮 | POST `/api/auth/logout` → 跳转到 `/login` |
+| 管理面板入口 | admin 角色显示，跳转到 `/admin` |
+
+### 9.5 会话分享 UI
+
+会话列表区域结构：
+
+```
+┌─────────────────────────────────────┐
+│ 我的会话 (12)                       │
+│   - 会话A    [分享] [删除]           │
+│   - 会话B    [分享] [删除]           │
+├─────────────────────────────────────┤
+│ 来自 张三 的分享 (3)        [只读]   │
+│   - 共享会话X                        │
+│   - 共享会话Y                        │
+└─────────────────────────────────────┘
+```
+
+**分享弹窗：**
+- 选择分享方式：
+  - 用户分享：用户名输入框 + 提交
+  - 链接分享：生成 token 链接 + 复制按钮
+- 已分享列表：列出当前分享（用户名 / 链接）+ 撤销按钮
+
+### 9.6 知识库元数据 UI
+
+文档列表/详情附加显示：
+
+| 元素 | 来源 |
+|------|------|
+| 创建者 | `meta.creator_name` |
+| 平均评分 | `meta.ratings[*].rating` 聚合 |
+| 我的评分 | 当前用户的评分（如有） |
+| 评分控件 | 1-5 星 + 提交按钮 |
+
+### 9.7 管理员面板 UI
+
+`/admin` 路由（admin 角色可见）：
+
+**子页面：**
+- `/admin/users`：用户列表 + 创建/编辑/删除
+- `/admin/sessions`：所有用户会话（只读）
+- `/admin/audit`：审计日志（分页、过滤）
+- `/admin/stats`：系统统计（用户数、会话数、知识库大小）
+
+### 9.8 i18n 新增键
+
+| 键 | 用途 |
+|----|------|
+| `login_username` | 用户名输入框 placeholder |
+| `login_password` | 密码输入框 placeholder（已存在） |
+| `login_button` | 登录按钮（已存在） |
+| `login_error_invalid_credentials` | 用户名或密码错误 |
+| `setup_title` | 初始化管理员页面标题 |
+| `setup_username` | 用户名输入 |
+| `setup_password` | 密码输入 |
+| `setup_password_confirm` | 确认密码 |
+| `setup_submit` | 提交按钮 |
+| `setup_error_password_mismatch` | 两次密码不一致 |
+| `setup_error_password_weak` | 密码强度不足 |
+| `share_button` | 分享按钮 |
+| `share_to_user` | 分享给用户 |
+| `share_link` | 生成分享链接 |
+| `share_revoke` | 撤销分享 |
+| `shared_from` | "来自 X 的分享" |
+| `rating_average` | 平均评分 |
+| `rating_your_rating` | 您的评分 |
+| `admin_panel` | 管理面板入口 |
+| `admin_users` | 用户管理 |
+| `admin_sessions` | 会话审计 |
+| `admin_audit` | 审计日志 |
+
+### 9.9 不改动
+
+- License 激活页（`/license/activate`）保持现有实现
+- Passkey 登录（WebAuthn）保持现有逻辑
+- 现有 `login_*` i18n 键保留以避免破坏 locale parity 测试
+
+---
+
 ## 9. 实现计划
 
 ### Phase 0: License 与 RBAC 集成（前置）
