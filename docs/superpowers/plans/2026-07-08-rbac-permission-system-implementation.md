@@ -1520,11 +1520,13 @@ git commit -m "test(rbac): add integration tests for rating flow"
 
 ## Phase 4: 管理员面板与审计
 
-### Task 9: 审计日志模块
+### Task 9: 审计日志模块（复用现有 audit.py）
 
 **Files:**
-- Create: `api/audit.py`
+- Modify: 无（**复用现有** `api/audit.py`）
 - Test: `tests/test_audit.py`
+
+> **实现决策变更**：实施时发现 `api/audit.py` 已存在且功能丰富（jsonl + 异步 flush + search/count + 轮转 + 脱敏）。不需要新建并行模块，直接使用现有 `audit.write(category="rbac", action="...", ...)` 和 `audit.search(category="rbac", ...)` 即可。
 
 - [ ] **Step 1: Write the failing test**
 
