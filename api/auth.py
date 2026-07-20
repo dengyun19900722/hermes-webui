@@ -14,6 +14,7 @@ import secrets
 import tempfile
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 from api.config import STATE_DIR, get_config, load_settings
@@ -880,3 +881,40 @@ def clear_auth_cookie(handler) -> None:
     cookie[name]['path'] = '/'
     cookie[name]['max-age'] = '0'
     handler.send_header('Set-Cookie', cookie[name].OutputString())
+
+
+# ── RBAC multi-user support ────────────────────────────────────────────────
+
+def _state_dir() -> Path:
+    """Return the state directory used for users.json storage."""
+    return STATE_DIR
+
+
+def needs_initialization() -> bool:
+    """Return True if no users exist yet (first deployment)."""
+    from api.user_store import load_users
+    return len(load_users(_state_dir())) == 0
+
+
+def is_initialized() -> bool:
+    """Return True if at least one user has been registered."""
+    return not needs_initialization()
+
+
+def initialize_first_admin(username: str, password: str) -> dict:
+    """Create the initial admin user. Raises ValueError if already initialized.
+
+    Hashes password via PBKDF2-SHA256 (same scheme as existing single-password
+    auth) so admins created here can authenticate via the same flow.
+    """
+    if not needs_initialization():
+        raise ValueError("System already initialized")
+    from api.user_store import add_user
+    password_hash = _hash_password(password)
+    return add_user(_state_dir(), {
+        "username": username,
+        "password_hash": password_hash,
+        "role": "admin",
+        "created_at": datetime.utcnow().isoformat() + "Z",
+        "last_login": None,
+    })
