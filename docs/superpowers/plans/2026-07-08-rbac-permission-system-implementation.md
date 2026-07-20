@@ -9,6 +9,8 @@
 - 新增 `api/session_sharing.py` 处理会话分享
 - 扩展 `api/obsidian_notes.py` 集成元数据侧写文件（.meta.json）
 - 新增 `api/admin.py` 处理管理员面板与审计日志
+- 新增 `api/license_middleware.py` 处理 License 状态前置检查（强耦合）
+- **不修改** `api/license.py` 任何现有逻辑
 
 **Tech Stack:** Python (标准库 + pytest), JSON 文件存储, Vanilla JS, 现有 Obsidian vault 集成
 
@@ -20,6 +22,7 @@
 
 ```
 api/auth.py                                    # 修改：扩展多用户认证
+api/license_middleware.py                      # 新建：License 状态前置检查
 api/session_sharing.py                         # 新建：会话分享逻辑
 api/session_store.py                           # 新建：会话存储（多用户）
 api/obsidian_notes.py                          # 修改：扩展元数据
@@ -28,6 +31,8 @@ api/admin.py                                   # 新建：管理员 API
 api/audit.py                                   # 新建：审计日志
 api/routes.py                                  # 修改：注册新路由
 
+tests/test_license_middleware.py               # 新建：License 中间件
+tests/test_license_middleware_integration.py   # 新建：License 中间件路由集成
 tests/test_auth_users.py                       # 新建：多用户认证
 tests/test_auth_login.py                       # 新建：登录流程
 tests/test_session_store.py                    # 新建：会话存储
@@ -36,6 +41,331 @@ tests/test_obsidian_meta.py                    # 新建：知识库元数据
 tests/test_obsidian_ratings.py                 # 新建：评价功能
 tests/test_admin_users.py                      # 新建：用户管理
 tests/test_audit.py                            # 新建：审计日志
+```
+
+---
+
+## Phase 0: License 中间件集成（前置）
+
+### Task 0: License 状态中间件
+
+**Files:**
+- Create: `api/license_middleware.py`
+- Test: `tests/test_license_middleware.py`
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_license_middleware.py
+"""Tests for License state middleware (pre-RBAC gating)."""
+import pytest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+from api.license_middleware import (
+    check_license_gate, _is_whitelisted_path,
+)
+
+
+def test_whitelist_static_paths():
+    assert _is_whitelisted_path("/static/login.js") is True
+    assert _is_whitelisted_path("/session/static/main.css") is True
+
+
+def test_whitelist_health():
+    assert _is_whitelisted_path("/health") is True
+
+
+def test_whitelist_license_routes():
+    assert _is_whitelisted_path("/license") is True
+    assert _is_whitelisted_path("/license/activate") is True
+    assert _is_whitelisted_path("/api/license/status") is True
+    assert _is_whitelisted_path("/api/license/import") is True
+
+
+def test_non_whitelisted_needs_license_check():
+    assert _is_whitelisted_path("/login") is False
+    assert _is_whitelisted_path("/api/sessions") is False
+    assert _is_whitelisted_path("/admin") is False
+
+
+def test_check_license_gate_not_activated_redirects(tmp_path):
+    """未激活时 HTML 请求重定向到 /license/activate。"""
+    handler = MagicMock()
+    parsed = MagicMock()
+    parsed.path = "/login"
+
+    with patch("api.license_middleware.check_license_status") as mock_status:
+        mock_status.return_value = {"status": "not_activated"}
+        result = check_license_gate(handler, parsed, tmp_path)
+    assert result is False
+    handler.send_response.assert_called_once_with(302)
+    location = handler.send_header.call_args_list[0][0][1]
+    assert location == "/license/activate"
+
+
+def test_check_license_gate_expired_returns_403(tmp_path):
+    """expired 状态返回 403。"""
+    handler = MagicMock()
+    parsed = MagicMock()
+    parsed.path = "/login"
+
+    with patch("api.license_middleware.check_license_status") as mock_status:
+        mock_status.return_value = {"status": "expired"}
+        result = check_license_gate(handler, parsed, tmp_path)
+    assert result is False
+    handler.send_response.assert_called_once_with(403)
+
+
+def test_check_license_gate_copied_returns_403(tmp_path):
+    """copied 状态返回 403。"""
+    handler = MagicMock()
+    parsed = MagicMock()
+    parsed.path = "/api/sessions"
+
+    with patch("api.license_middleware.check_license_status") as mock_status:
+        mock_status.return_value = {"status": "copied"}
+        result = check_license_gate(handler, parsed, tmp_path)
+    assert result is False
+    handler.send_response.assert_called_once_with(403)
+
+
+def test_check_license_gate_valid_passes_through(tmp_path):
+    """valid 状态放行。"""
+    handler = MagicMock()
+    parsed = MagicMock()
+    parsed.path = "/login"
+
+    with patch("api.license_middleware.check_license_status") as mock_status:
+        mock_status.return_value = {"status": "valid"}
+        result = check_license_gate(handler, parsed, tmp_path)
+    assert result is True
+    handler.send_response.assert_not_called()
+
+
+def test_check_license_gate_whitelist_passes_through(tmp_path):
+    """白名单路径不检查 license 状态。"""
+    handler = MagicMock()
+    parsed = MagicMock()
+    parsed.path = "/health"
+
+    result = check_license_gate(handler, parsed, tmp_path)
+    assert result is True
+    handler.send_response.assert_not_called()
+
+
+def test_check_license_gate_module_error_passes_through(tmp_path):
+    """license 模块异常时放行（向后兼容）。"""
+    handler = MagicMock()
+    parsed = MagicMock()
+    parsed.path = "/login"
+
+    with patch("api.license_middleware.check_license_status",
+               side_effect=Exception("module broken")):
+        result = check_license_gate(handler, parsed, tmp_path)
+    assert result is True
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python -m pytest tests/test_license_middleware.py -v`
+Expected: `ModuleNotFoundError: No module named 'api.license_middleware'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+```python
+# api/license_middleware.py
+"""License state middleware — gates requests before RBAC auth.
+
+Reuses api.license.py without modification. License status acts as a
+platform-level prerequisite that precedes any RBAC checks.
+"""
+from pathlib import Path
+
+
+WHITELIST_PREFIXES = (
+    "/static/",
+    "/session/static/",
+    "/license",
+    "/api/license/",
+)
+
+
+def _is_whitelisted_path(path: str) -> bool:
+    """Return True for paths that bypass license gate."""
+    if path == "/health":
+        return True
+    if path.startswith("/static/") or path.startswith("/session/static/"):
+        return True
+    if path == "/license" or path.startswith("/license/"):
+        return True
+    if path.startswith("/api/license/"):
+        return True
+    return False
+
+
+def _send_json(handler, status_code: int, payload: dict) -> None:
+    """Send a JSON error response."""
+    import json
+    body = json.dumps(payload).encode("utf-8")
+    handler.send_response(status_code)
+    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def _send_403(handler, message: str) -> None:
+    """Send a plain-text 403 response."""
+    body = message.encode("utf-8")
+    handler.send_response(403)
+    handler.send_header("Content-Type", "text/plain; charset=utf-8")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def _send_redirect(handler, location: str) -> None:
+    """Send a 302 redirect."""
+    handler.send_response(302)
+    handler.send_header("Location", location)
+    handler.send_header("Content-Length", "0")
+    handler.end_headers()
+
+
+def check_license_gate(handler, parsed, workspace: Path) -> bool:
+    """Gate request by license state. Returns True if request may proceed.
+
+    Behavior:
+      - Whitelisted paths always pass.
+      - license module errors: pass through (back-compat).
+      - not_activated: 302 → /license/activate (HTML) / 503 JSON (API).
+      - expired: 403 plain text.
+      - copied:   403 plain text.
+      - valid:    pass through to RBAC.
+    """
+    if _is_whitelisted_path(parsed.path):
+        return True
+
+    try:
+        from api.license import init_license_config, check_license_status
+        init_license_config(workspace)
+        status = check_license_status(workspace)
+    except Exception:
+        # License 模块异常时放行，保持向后兼容
+        return True
+
+    license_state = status.get("status")
+
+    if license_state == "expired":
+        _send_403(handler, "License 已过期，请联系管理员续期")
+        return False
+
+    if license_state == "copied":
+        _send_403(handler, "License 检测到 MAC 变更，请重新激活")
+        return False
+
+    if license_state == "not_activated":
+        if parsed.path.startswith("/api/"):
+            _send_json(handler, 503, {"error": "License not activated"})
+        else:
+            _send_redirect(handler, "/license/activate")
+        return False
+
+    # valid (or unknown status) → 放行
+    return True
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `python -m pytest tests/test_license_middleware.py -v`
+Expected: 10 passed
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add api/license_middleware.py tests/test_license_middleware.py
+git commit -m "feat(rbac): add License state middleware (pre-RBAC gating)"
+```
+
+---
+
+### Task 0.5: 集成 License 中间件到 routes.py
+
+**Files:**
+- Modify: `api/routes.py` (请求分发入口)
+- Test: `tests/test_license_middleware_integration.py`
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_license_middleware_integration.py
+"""Integration: License middleware inserted before auth check."""
+import pytest
+from unittest.mock import MagicMock, patch
+
+
+def test_routes_dispatch_calls_license_gate_first():
+    """Verify routes dispatch invokes license gate before check_auth."""
+    from api import routes
+    assert hasattr(routes, "_check_license_middleware")
+    # 检查 dispatch 入口确实调用了 license 中间件
+    import inspect
+    src = inspect.getsource(routes._dispatch_request)
+    assert "_check_license_middleware" in src
+    # license 必须在 check_auth 之前
+    license_pos = src.find("_check_license_middleware")
+    auth_pos = src.find("check_auth")
+    assert license_pos < auth_pos, "license gate must run before check_auth"
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python -m pytest tests/test_license_middleware_integration.py -v`
+Expected: AssertionError or AttributeError
+
+- [ ] **Step 3: Wire middleware into routes.py**
+
+在 `api/routes.py` 中：
+
+1. 顶部添加导入：
+```python
+from api.license_middleware import check_license_gate
+```
+
+2. 添加 `_check_license_middleware` 包装函数：
+```python
+def _check_license_middleware(handler, parsed) -> bool:
+    """Wrap license gate with workspace lookup."""
+    from pathlib import Path
+    from api.config import DEFAULT_WORKSPACE
+    workspace = Path(DEFAULT_WORKSPACE).expanduser().resolve()
+    return check_license_gate(handler, parsed, workspace)
+```
+
+3. 在请求分发入口（找到现有 `check_auth` 调用处）之前插入：
+```python
+# 顺序：License → Auth → RBAC
+if not _check_license_middleware(handler, parsed):
+    return
+if not check_auth(handler, parsed):
+    return
+```
+
+- [ ] **Step 4: Run integration test**
+
+Run: `python -m pytest tests/test_license_middleware_integration.py -v`
+Expected: 1 passed
+
+- [ ] **Step 5: Run full license middleware test suite**
+
+Run: `python -m pytest tests/test_license_middleware.py tests/test_license_middleware_integration.py -v`
+Expected: All passed
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add api/routes.py tests/test_license_middleware_integration.py
+git commit -m "feat(rbac): wire License middleware into request dispatch"
 ```
 
 ---
