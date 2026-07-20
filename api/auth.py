@@ -988,3 +988,26 @@ def invalidate_user_session(token: str) -> None:
         return
     with _USER_SESSION_LOCK:
         _user_sessions.pop(token, None)
+
+
+# ── Role check helpers ────────────────────────────────────────────────────────
+
+def is_admin(user: dict | None) -> bool:
+    """Return True if user has admin role. None / missing role → False."""
+    if not user:
+        return False
+    return user.get("role") == "admin"
+
+
+def require_role(user: dict | None, role: str) -> None:
+    """Raise PermissionError if user doesn't have the required role.
+
+    Use in route handlers before performing privileged operations:
+        user = get_user_from_session(token)
+        require_role(user, "admin")
+        # ... admin-only logic ...
+    """
+    if not user:
+        raise PermissionError("Authentication required")
+    if user.get("role") != role:
+        raise PermissionError(f"Requires role: {role}")
