@@ -918,3 +918,73 @@ def initialize_first_admin(username: str, password: str) -> dict:
         "created_at": datetime.utcnow().isoformat() + "Z",
         "last_login": None,
     })
+
+
+# ── Multi-user session store ─────────────────────────────────────────────────
+
+_USER_SESSION_TTL = 86400 * 30  # 30 days
+_user_sessions: dict[str, dict] = {}  # token -> {user_id, expires_at}
+_USER_SESSION_LOCK = threading.Lock()
+
+
+def verify_password_against_hash(plain: str, expected_hash: str) -> bool:
+    """Verify plaintext against a stored PBKDF2 hash (constant-time compare)."""
+    return hmac.compare_digest(_hash_password(plain), expected_hash)
+
+
+def authenticate(username: str, password: str) -> dict | None:
+    """Verify username/password. Returns user dict on success, None on failure.
+
+    On success, also updates ``last_login`` timestamp on disk so the
+    admin can see who is using the system.
+    """
+    from api.user_store import find_user_by_username, save_users, load_users
+    user = find_user_by_username(_state_dir(), username)
+    if not user:
+        return None
+    if not verify_password_against_hash(password, user["password_hash"]):
+        return None
+    # 更新 last_login
+    user["last_login"] = datetime.utcnow().isoformat() + "Z"
+    users = load_users(_state_dir())
+    for i, u in enumerate(users):
+        if u.get("id") == user["id"]:
+            users[i] = user
+            break
+    save_users(_state_dir(), users)
+    return user
+
+
+def create_user_session(user_id: str) -> str:
+    """Create a new auth session token bound to user_id. Returns hex token."""
+    token = secrets.token_hex(32)
+    with _USER_SESSION_LOCK:
+        _user_sessions[token] = {
+            "user_id": user_id,
+            "expires_at": time.time() + _USER_SESSION_TTL,
+        }
+    return token
+
+
+def get_user_from_session(token: str) -> dict | None:
+    """Return user dict for a valid session token, or None if expired/invalid."""
+    if not token:
+        return None
+    with _USER_SESSION_LOCK:
+        session = _user_sessions.get(token)
+        if not session:
+            return None
+        if time.time() > session["expires_at"]:
+            _user_sessions.pop(token, None)
+            return None
+        user_id = session["user_id"]
+    from api.user_store import find_user_by_id
+    return find_user_by_id(_state_dir(), user_id)
+
+
+def invalidate_user_session(token: str) -> None:
+    """Invalidate a session token. No-op if token was never issued."""
+    if not token:
+        return
+    with _USER_SESSION_LOCK:
+        _user_sessions.pop(token, None)
