@@ -74,6 +74,19 @@ def share_session_to_user(
         "from_user_id": from_user_id,
     })
     _save_shares(sessions_dir, to_user_id, incoming_shares)
+    # 审计 (失败不应阻塞业务)
+    try:
+        from api import audit as _audit
+        _audit.write(
+            category="rbac",
+            action="session.share",
+            actor_id=from_user_id,
+            actor_name=from_user_id,  # 业务层不持有 username
+            target_type="session", target_id=session_id, target_name=to_user_id,
+            details={"method": "user", "to_user_id": to_user_id, "share_id": share["id"]},
+        )
+    except Exception:
+        pass
     return share
 
 
