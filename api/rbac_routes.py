@@ -435,6 +435,24 @@ def handle_admin_sessions(handler, parsed) -> bool:
     return True
 
 
+# ── Static page routes ──────────────────────────────────────────────────────
+
+def handle_setup_page(handler, parsed) -> bool:
+    """GET /setup — first-time admin creation page."""
+    try:
+        html_path = Path(__file__).parent.parent / "static" / "setup.html"
+        html = html_path.read_text(encoding="utf-8")
+        body = html.encode("utf-8")
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/html; charset=utf-8")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+    except Exception:
+        _send_text(handler, 500, "Internal server error")
+    return True
+
+
 # ── Dispatcher entry-point ───────────────────────────────────────────────────
 
 def try_handle_rbac(method: str, parsed, handler) -> bool:
@@ -447,7 +465,11 @@ def try_handle_rbac(method: str, parsed, handler) -> bool:
     """
     path = parsed.path
 
-    # Public (no auth) routes
+    # Static page routes (public, no auth)
+    if method == "GET" and path == "/setup":
+        return handle_setup_page(handler, parsed)
+
+    # Public (no auth) API routes
     if method == "POST" and path == "/api/auth/login":
         return handle_auth_login(handler, parsed)
     if method == "POST" and path == "/api/auth/register":

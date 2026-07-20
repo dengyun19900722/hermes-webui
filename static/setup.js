@@ -1,0 +1,65 @@
+/* Setup page — first-time admin creation.
+ * Loaded by /setup when users.json is empty.
+ */
+document.addEventListener('DOMContentLoaded', function () {
+  var form = document.getElementById('setup-form');
+  var errorEl = document.getElementById('setup-error');
+  if (!form) return;
+
+  function showError(msg) {
+    errorEl.textContent = msg;
+    errorEl.hidden = false;
+  }
+
+  function clientValidate(username, password, confirm) {
+    if (!/^[A-Za-z0-9_.\-]{3,32}$/.test(username)) {
+      return '用户名必须是 3-32 个字母/数字/_-. 字符';
+    }
+    if (password.length < 8) {
+      return '密码至少 8 个字符';
+    }
+    if (!/[A-Za-z]/.test(password) || !/\d/.test(password)) {
+      return '密码必须同时包含字母和数字';
+    }
+    if (password !== confirm) {
+      return '两次输入的密码不一致';
+    }
+    return null;
+  }
+
+  form.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    errorEl.hidden = true;
+    var username = document.getElementById('setup-username').value.trim();
+    var password = document.getElementById('setup-password').value;
+    var confirm = document.getElementById('setup-password-confirm').value;
+
+    var clientErr = clientValidate(username, password, confirm);
+    if (clientErr) { showError(clientErr); return; }
+
+    try {
+      var resp = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ username: username, password: password }),
+      });
+      if (resp.ok) {
+        // 后端会同时设置 cookie, 刷新到主应用
+        window.location.href = '/';
+        return;
+      }
+      var data = {};
+      try { data = await resp.json(); } catch (_) {}
+      if (resp.status === 403) {
+        showError('系统已经初始化过, 请直接登录');
+      } else if (resp.status === 400) {
+        showError(data.error || '输入有误');
+      } else {
+        showError(data.error || '创建失败 (HTTP ' + resp.status + ')');
+      }
+    } catch (err) {
+      showError('网络连接失败');
+    }
+  });
+});

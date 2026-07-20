@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>初始化管理员 · ZK 运维智能体</title>
+  <link rel="stylesheet" href="/static/login.css">
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <h1 id="setup-title">初始化管理员</h1>
+    <p id="setup-desc">这是首次部署。请创建管理员账号。</p>
+    <form id="setup-form" autocomplete="off">
+      <div class="login-field">
+        <input type="text" name="username" id="setup-username"
+               placeholder="用户名（3-32 字符）" minlength="3" maxlength="32"
+               pattern="[A-Za-z0-9_.\-]+" required autofocus>
+      </div>
+      <div class="login-field">
+        <input type="password" name="password" id="setup-password"
+               placeholder="密码（≥8 字符，含字母+数字）" minlength="8" required>
+      </div>
+      <div class="login-field">
+        <input type="password" name="password_confirm" id="setup-password-confirm"
+               placeholder="确认密码" minlength="8" required>
+      </div>
+      <button type="submit" id="setup-submit">创建管理员</button>
+      <div id="setup-error" class="login-error" hidden></div>
+    </form>
+  </main>
+  <script src="/static/setup.js"></script>
+</body>
+</html>
