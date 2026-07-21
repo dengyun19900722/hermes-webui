@@ -36,7 +36,16 @@ def _read_json_body(handler) -> dict:
     """Read and parse JSON body from handler.rfile."""
     content_length = int(handler.headers.get("Content-Length", 0))
     raw = handler.rfile.read(content_length) if content_length else b"{}"
-    return json.loads(raw.decode("utf-8") or "{}")
+    decoded = raw.decode("utf-8", errors="replace").strip() or "{}"
+    try:
+        return json.loads(decoded)
+    except json.JSONDecodeError as e:
+        import logging
+        logging.getLogger(__name__).error(
+            "[rbac] Failed to parse JSON body: len=%d content=%r headers[Content-Type]=%r",
+            len(raw), raw[:200], handler.headers.get("Content-Type"),
+        )
+        raise
 
 
 def _get_session_token(handler) -> str | None:
@@ -97,18 +106,23 @@ def handle_auth_login(handler, parsed) -> bool:
         action="auth.login",
         actor_id=user["id"], actor_name=user["username"],
     )
-    _send_json(handler, 200, {
+    cookie = (
+        f"hermes_session={token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=2592000"
+    )
+    payload = {
         "user": {
             "id": user["id"],
             "username": user["username"],
             "role": user.get("role", "user"),
         }
-    })
-    # 设置 cookie（追加 Set-Cookie header）
-    cookie = (
-        f"hermes_session={token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=2592000"
-    )
+    }
+    body = json.dumps(payload).encode("utf-8")
+    handler.send_response(200)
+    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Content-Length", str(len(body)))
     handler.send_header("Set-Cookie", cookie)
+    handler.end_headers()
+    handler.wfile.write(body)
     return True
 
 
@@ -140,8 +154,6 @@ def handle_auth_register(handler, parsed) -> bool:
         _send_json(handler, 400, {"error": "username and password required"})
         return True
     user = initialize_first_admin(username, password)
-    # 自动登录
-    token = create_user_session(user["id"])
     _audit.write(
         category="rbac",
         action="auth.register",
@@ -154,8 +166,6 @@ def handle_auth_register(handler, parsed) -> bool:
             "role": user["role"],
         }
     })
-    cookie = f"hermes_session={token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=2592000"
-    handler.send_header("Set-Cookie", cookie)
     return True
 
 

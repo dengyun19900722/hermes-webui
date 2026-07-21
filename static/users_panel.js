@@ -80,6 +80,7 @@
     var pane = document.getElementById('settingsPaneUsers');
     if (!pane) return;
     pane.innerHTML =
+      // ── Page header ────────────────────────────────────────────────────
       '<div class="settings-section-head">'
         + '<div>'
           + '<div class="settings-section-title" data-i18n="settings_section_users_title">Users</div>'
@@ -87,7 +88,7 @@
         + '</div>'
       + '</div>'
       // ── Create user ─────────────────────────────────────────────────────
-      + '<div class="settings-field">'
+      + '<div class="settings-field users-section">'
         + '<label data-i18n="users_create_heading">Add user</label>'
         + '<div class="users-create-row">'
           + '<input type="text" id="users-new-username" placeholder="username" pattern="[A-Za-z0-9_.\-]{3,32}" minlength="3" maxlength="32" required>'
@@ -98,21 +99,21 @@
         + '<div id="users-create-error" class="settings-error" hidden></div>'
       + '</div>'
       // ── Users table ─────────────────────────────────────────────────────
-      + '<div class="settings-field">'
+      + '<div class="settings-field users-section">'
         + '<label data-i18n="users_list_heading">All users</label>'
         + '<table class="settings-table users-table">'
-          + '<thead><tr>'
-            + '<th data-i18n="users_col_username">Username</th>'
-            + '<th data-i18n="users_col_role">Role</th>'
-            + '<th data-i18n="users_col_last_login">Last login</th>'
-            + '<th data-i18n="users_col_actions">Actions</th>'
-          + '</tr></thead>'
-          + '<tbody id="users-tbody"><tr><td colspan="4" data-i18n="loading">' + escapeHtml(t('loading', 'Loading…')) + '</td></tr></tbody>'
+        + '<thead><tr>'
+          + '<th data-i18n="users_col_username">Username</th>'
+          + '<th data-i18n="users_col_role">Role</th>'
+          + '<th data-i18n="users_col_last_login">Last login</th>'
+          + '<th data-i18n="users_col_actions">Actions</th>'
+        + '</tr></thead>'
+        + '<tbody id="users-tbody"><tr><td colspan="4" data-i18n="loading">' + escapeHtml(t('loading', 'Loading…')) + '</td></tr></tbody>'
         + '</table>'
         + '<div id="users-list-error" class="settings-error" hidden></div>'
       + '</div>'
       // ── Audit log ───────────────────────────────────────────────────────
-      + '<div class="settings-field">'
+      + '<div class="settings-field users-section">'
         + '<label data-i18n="users_audit_heading">Recent audit log (last 50)</label>'
         + '<table class="settings-table users-audit-table">'
           + '<thead><tr>'
