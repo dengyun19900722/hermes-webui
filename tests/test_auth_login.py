@@ -71,14 +71,19 @@ def test_verify_password_against_hash():
 
 
 def test_session_expires(tmp_path, monkeypatch):
-    """Expired sessions are invalidated lazily on lookup."""
+    """Expired sessions are invalidated lazily on lookup.
+
+    get_user_from_session 重新加载磁盘上的会话表,所以修改内存后
+    必须先 _save_user_sessions 持久化,过期时间才会被下次加载看到。
+    """
     monkeypatch.setattr("api.auth._state_dir", lambda: tmp_path)
     user = _create_test_user(tmp_path)
     token = create_user_session(user["id"])
 
-    # 直接修改内部 session 表为已过期
+    # 直接修改内部 session 表为已过期,然后持久化
     from api import auth as auth_mod
     auth_mod._user_sessions[token]["expires_at"] = time.time() - 1
+    auth_mod._save_user_sessions()
     assert get_user_from_session(token) is None
 
 
