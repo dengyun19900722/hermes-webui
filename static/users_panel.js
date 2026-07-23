@@ -1,4 +1,4 @@
-/* Users admin panel — manages users + audit log.
+/* Users admin panel — manages users + audit log + panel permissions.
  *
  * Lives in Settings → Users (alongside Appearance / Preferences).
  * Backed by /api/admin/users and /api/admin/audit (admin-only).
@@ -17,7 +17,10 @@
   }
 
   function t(key, fallback) {
-    if (window.t) return window.t(key);
+    if (window.t) {
+      var value = window.t(key);
+      return value === key && fallback ? fallback : value;
+    }
     return fallback || key;
   }
 
@@ -38,6 +41,19 @@
     });
   }
 
+  /* ── All available panels (same as index.html rail/data-panel values) ── */
+  var ALL_PANELS = [
+    'chat', 'tasks', 'kanban', 'skills', 'knowledge',
+    'memory', 'workspaces', 'profiles', 'todos', 'insights',
+    'dashboard', 'logs',
+  ];
+  var PANEL_LABELS = {
+    chat: '会话', tasks: '定时任务', kanban: '看板',
+    skills: '技能', knowledge: '知识库', memory: '记忆',
+    workspaces: '工作区', profiles: '配置文件', todos: '待办',
+    insights: '洞察', dashboard: '仪表板', logs: '日志',
+  };
+
   function renderUserRow(u) {
     var isSelf = u.username === (window.currentUsername || '');
     var roleBadge = u.role === 'admin'
@@ -49,6 +65,7 @@
     var deleteBtn = isSelf
       ? '<button class="settings-action-btn" disabled title="' + escapeHtml(t('users_cannot_delete_self', 'Cannot delete yourself')) + '">' + escapeHtml(t('delete', 'Delete')) + '</button>'
       : '<button class="settings-action-btn danger" data-action="delete-user" data-id="' + escapeHtml(u.id) + '" data-name="' + escapeHtml(u.username) + '">' + escapeHtml(t('delete', 'Delete')) + '</button>';
+    var panelsCount = Array.isArray(u.panels) ? u.panels.length : 0;
     return '<tr data-user-id="' + escapeHtml(u.id) + '">'
       + '<td>' + escapeHtml(u.username) + '</td>'
       + '<td>' + roleBadge + '</td>'
@@ -57,6 +74,7 @@
       +   '<button class="settings-action-btn" data-action="toggle-role" data-id="' + escapeHtml(u.id) + '" data-current="' + escapeHtml(u.role) + '">'
       +     escapeHtml(u.role === 'admin' ? t('users_demote', 'Demote') : t('users_promote', 'Promote'))
       +   '</button>'
+      +   '<button class="settings-action-btn" data-action="edit-panels" data-id="' + escapeHtml(u.id) + '" data-username="' + escapeHtml(u.username) + '" title="编辑可访问的面板">面板(' + panelsCount + ')</button>'
       +   deleteBtn
       + '</td>'
       + '</tr>';
@@ -85,6 +103,16 @@
         + '<div>'
           + '<div class="settings-section-title" data-i18n="settings_section_users_title">Users</div>'
           + '<div class="settings-section-meta" data-i18n="settings_section_users_meta">Manage user accounts and review audit log. Admin only.</div>'
+        + '</div>'
+      + '</div>'
+      // ── Current account ─────────────────────────────────────────────────
+      + '<div class="settings-field users-section users-account-section" id="users-account-section">'
+        + '<div class="users-account-main">'
+          + '<div>'
+            + '<label data-i18n="users_current_account">Current account</label>'
+            + '<div id="users-current-account" class="users-current-account">' + escapeHtml(t('loading', 'Loading…')) + '</div>'
+          + '</div>'
+          + '<button class="settings-action-btn" id="users-sign-out-btn" data-action="sign-out" hidden>' + escapeHtml(t('sign_out', 'Sign Out')) + '</button>'
         + '</div>'
       + '</div>'
       // ── Create user ─────────────────────────────────────────────────────
@@ -124,8 +152,88 @@
           + '</tr></thead>'
           + '<tbody id="users-audit-tbody"><tr><td colspan="4">' + escapeHtml(t('loading', 'Loading…')) + '</td></tr></tbody>'
         + '</table>'
+      + '</div>'
+      // ── Panel editor modal (hidden) ─────────────────────────────────────
+      + '<div id="users-panels-modal" class="users-panels-modal" style="display:none" onclick="if(event.target===this)closePanelsEditor()">'
+        + '<div class="users-panels-modal-content">'
+          + '<div class="users-panels-modal-header">'
+            + '<span id="users-panels-modal-title">编辑面板权限</span>'
+            + '<button class="settings-action-btn" onclick="closePanelsEditor()" style="padding:2px 8px">✕</button>'
+          + '</div>'
+          + '<div id="users-panels-modal-body" class="users-panels-modal-body"></div>'
+          + '<div class="users-panels-modal-footer">'
+            + '<button class="settings-action-btn" onclick="closePanelsEditor()">取消</button>'
+            + '<button class="settings-action-btn primary" id="users-panels-save-btn" onclick="savePanelsEditor()">保存</button>'
+          + '</div>'
+        + '</div>'
       + '</div>';
   }
+
+  /* ── Panel editor state ────────────────────────────────────────────── */
+  var _editingUserId = '';
+  var _editingPanels = [];
+
+  window.closePanelsEditor = function () {
+    var modal = document.getElementById('users-panels-modal');
+    if (modal) modal.style.display = 'none';
+    _editingUserId = '';
+    _editingPanels = [];
+  };
+
+  window.savePanelsEditor = function () {
+    if (!_editingUserId) return;
+    var saveBtn = document.getElementById('users-panels-save-btn');
+    if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '保存中…'; }
+    api('/api/admin/users/' + encodeURIComponent(_editingUserId) + '/panels', {
+      method: 'PUT', body: { panels: _editingPanels },
+    })
+      .then(function () {
+        closePanelsEditor();
+        loadUsers();
+        loadAudit();
+      })
+      .catch(function (e) {
+        window.alert('保存失败：' + (e.message || String(e)));
+      })
+      .then(function () {
+        if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '保存'; }
+      });
+  };
+
+  function openPanelsEditor(userId, username, currentPanels) {
+    _editingUserId = userId;
+    _editingPanels = Array.isArray(currentPanels) ? currentPanels.slice() : [];
+
+    var modal = document.getElementById('users-panels-modal');
+    var titleEl = document.getElementById('users-panels-modal-title');
+    var bodyEl = document.getElementById('users-panels-modal-body');
+    if (titleEl) titleEl.textContent = '编辑面板权限 - ' + (username || userId);
+    if (bodyEl) {
+      bodyEl.innerHTML = '<div class="users-panels-hint">选择此用户可以访问的面板（admin 不受限制）</div>'
+        + '<div class="users-panels-grid">'
+        + ALL_PANELS.map(function (p) {
+            var checked = _editingPanels.indexOf(p) !== -1 ? 'checked' : '';
+            var label = PANEL_LABELS[p] || p;
+            return '<label class="users-panels-item">'
+              + '<input type="checkbox" value="' + p + '" ' + checked + ' onchange="togglePanelPerm(this)">'
+              + '<span>' + escapeHtml(label) + '</span>'
+              + '</label>';
+          }).join('')
+        + '</div>';
+    }
+    if (modal) modal.style.display = '';
+  }
+
+  window.togglePanelPerm = function (el) {
+    var panel = el && el.value;
+    if (!panel) return;
+    var idx = _editingPanels.indexOf(panel);
+    if (el.checked && idx === -1) {
+      _editingPanels.push(panel);
+    } else if (!el.checked && idx !== -1) {
+      _editingPanels.splice(idx, 1);
+    }
+  };
 
   function showError(elId, msg) {
     var el = document.getElementById(elId);
@@ -152,6 +260,34 @@
     } catch (e) {
       tbody.innerHTML = '';
       showError('users-list-error', e.message || String(e));
+    }
+  }
+
+  function renderCurrentAccount(status) {
+    var el = document.getElementById('users-current-account');
+    var signOutBtn = document.getElementById('users-sign-out-btn');
+    if (!el) return;
+    var user = status && status.user;
+    if (user && user.username) {
+      window.currentUsername = user.username;
+      el.innerHTML = '<strong>' + escapeHtml(user.username) + '</strong>'
+        + '<span class="users-current-role">' + escapeHtml(user.role || 'user') + '</span>';
+      if (signOutBtn) signOutBtn.hidden = false;
+      return;
+    }
+    window.currentUsername = '';
+    el.textContent = status && status.logged_in
+      ? t('users_current_account_password_auth', 'Signed in with instance password')
+      : t('auth_status_unauthenticated', 'Unauthenticated');
+    if (signOutBtn) signOutBtn.hidden = !(status && status.logged_in);
+  }
+
+  async function loadCurrentAccount() {
+    try {
+      var status = await api('/api/auth/status', { redirect401: false });
+      renderCurrentAccount(status || {});
+    } catch (e) {
+      renderCurrentAccount(null);
     }
   }
 
@@ -219,6 +355,35 @@
     }
   }
 
+  async function signOutUser() {
+    try {
+      if (typeof window.signOut === 'function') {
+        await window.signOut();
+        return;
+      }
+      await api('/api/auth/logout', { method: 'POST', body: '{}' });
+      window.location.href = 'login';
+    } catch (e) {
+      showError('users-list-error', (t('sign_out_failed', 'Sign out failed: ')) + (e.message || String(e)));
+    }
+  }
+
+  /* ── Fetch user data to open panel editor ─────────────────────────── */
+  async function editPanels(userId, username) {
+    try {
+      var data = await api('/api/admin/users');
+      var users = data.users || [];
+      var u = null;
+      for (var i = 0; i < users.length; i++) {
+        if (users[i].id === userId) { u = users[i]; break; }
+      }
+      if (!u) throw new Error('User not found');
+      openPanelsEditor(userId, username, u.panels);
+    } catch (e) {
+      window.alert('加载用户信息失败：' + (e.message || String(e)));
+    }
+  }
+
   function bindActions() {
     var pane = document.getElementById('settingsPaneUsers');
     if (!pane) return;
@@ -236,6 +401,10 @@
         toggleRole(id, btn.getAttribute('data-current'));
       } else if (action === 'delete-user') {
         deleteUser(id, btn.getAttribute('data-name'));
+      } else if (action === 'sign-out') {
+        signOutUser();
+      } else if (action === 'edit-panels') {
+        editPanels(id, btn.getAttribute('data-username'));
       }
     });
   }
@@ -243,9 +412,10 @@
   async function loadUsersPanel() {
     renderPanel();
     bindActions();
+    await loadCurrentAccount();
     await Promise.all([loadUsers(), loadAudit()]);
   }
 
-  // 暴露给 panels.js 懒加载契约
+  // Expose to panels.js lazy-load contract
   window.loadUsersPanel = loadUsersPanel;
 })();

@@ -4,11 +4,32 @@
 document.addEventListener('DOMContentLoaded', function () {
   var form = document.getElementById('setup-form');
   var errorEl = document.getElementById('setup-error');
+  var submitBtn = document.getElementById('setup-submit');
+  var passwordEl = document.getElementById('setup-password');
+  var strengthBar = document.getElementById('password-strength');
+  var strengthLabel = document.getElementById('password-strength-label');
   if (!form) return;
 
   function showError(msg) {
     errorEl.textContent = msg;
     errorEl.hidden = false;
+  }
+
+  function passwordStrength(password) {
+    var score = 0;
+    if (password.length >= 8) score++;
+    if (password.length >= 12) score++;
+    if (/[A-Za-z]/.test(password) && /\d/.test(password)) score++;
+    if (/[^A-Za-z0-9]/.test(password)) score++;
+    return score;
+  }
+
+  function updateStrength() {
+    var score = passwordStrength(passwordEl.value);
+    var levels = ['', 'weak', 'fair', 'good', 'strong'];
+    var labels = ['', '较弱', '一般', '良好', '较强'];
+    strengthBar.className = 'login-strength-bar' + (score ? ' ' + levels[score] : '');
+    strengthLabel.textContent = score ? labels[score] : '';
   }
 
   function clientValidate(username, password, confirm) {
@@ -37,6 +58,7 @@ document.addEventListener('DOMContentLoaded', function () {
     var clientErr = clientValidate(username, password, confirm);
     if (clientErr) { showError(clientErr); return; }
 
+    submitBtn.disabled = true;
     try {
       var resp = await fetch('/api/auth/register', {
         method: 'POST',
@@ -45,8 +67,7 @@ document.addEventListener('DOMContentLoaded', function () {
         body: JSON.stringify({ username: username, password: password }),
       });
       if (resp.ok) {
-        // 后端会同时设置 cookie, 刷新到主应用
-        window.location.href = '/';
+        window.location.href = '/login';
         return;
       }
       var data = {};
@@ -60,6 +81,19 @@ document.addEventListener('DOMContentLoaded', function () {
       }
     } catch (err) {
       showError('网络连接失败');
+    } finally {
+      submitBtn.disabled = false;
     }
+  });
+
+  passwordEl.addEventListener('input', updateStrength);
+  Array.prototype.forEach.call(document.querySelectorAll('.login-password-toggle'), function (button) {
+    button.addEventListener('click', function () {
+      var target = document.getElementById(button.getAttribute('data-target'));
+      var visible = target.type === 'password';
+      target.type = visible ? 'text' : 'password';
+      button.textContent = visible ? '隐藏' : '显示';
+      button.setAttribute('aria-label', visible ? '隐藏密码' : '显示密码');
+    });
   });
 });

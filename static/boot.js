@@ -2408,6 +2408,7 @@ function _pickTheme(name){
   _applySkin(appearance.skin);
   _syncThemePicker(appearance.theme);
   _syncSkinPicker(appearance.skin);
+  if(typeof _syncTitlebarAppearanceControls==='function') _syncTitlebarAppearanceControls();
   const hidden=$('settingsTheme');
   if(hidden) hidden.value=appearance.theme;
   const skinHidden=$('settingsSkin');
@@ -2423,6 +2424,7 @@ function _pickSkin(name){
   _applySkin(appearance.skin);
   _syncThemePicker(appearance.theme);
   _syncSkinPicker(appearance.skin);
+  if(typeof _syncTitlebarAppearanceControls==='function') _syncTitlebarAppearanceControls();
   const hidden=$('settingsSkin');
   if(hidden) hidden.value=appearance.skin;
   const themeHidden=$('settingsTheme');
@@ -2458,6 +2460,7 @@ function _pickFontSize(size){
   localStorage.setItem('hermes-font-size',size);
   _applyFontSize(size);
   _syncFontSizePicker(size);
+  if(typeof _syncTitlebarAppearanceControls==='function') _syncTitlebarAppearanceControls();
   const hidden=$('settingsFontSize');
   if(hidden) hidden.value=size;
   if(typeof _scheduleAppearanceAutosave==='function') _scheduleAppearanceAutosave();
@@ -2778,6 +2781,184 @@ function _applyTitlebarProfileVisibility(){
 }
 window._applyTitlebarProfileVisibility=_applyTitlebarProfileVisibility;
 
+function _syncTitlebarAppearanceControls(){
+  const themeSel=$('titlebarThemeSelect');
+  if(themeSel){
+    const theme=(localStorage.getItem('hermes-theme')||'dark').toLowerCase();
+    themeSel.value=['system','light','dark'].includes(theme)?theme:'dark';
+  }
+  const fontSel=$('titlebarFontSizeSelect');
+  if(fontSel){
+    const fontSize=(localStorage.getItem('hermes-font-size')||'default').toLowerCase();
+    fontSel.value=['small','default','large','xlarge'].includes(fontSize)?fontSize:'default';
+  }
+}
+
+function _setTitlebarAccountName(name){
+  const display=String(name||'账号').trim()||'账号';
+  const btnName=$('titlebarAccountName');
+  const menuUser=$('titlebarAccountMenuUser');
+  const btn=$('titlebarAccountBtn');
+  if(btnName) btnName.textContent=display;
+  if(menuUser) menuUser.textContent=display;
+  if(btn) btn.title=display;
+}
+
+const AUTH_SCOPE_STORAGE_KEY='hermes-webui-auth-user-id';
+
+function _authIdentityFromStatus(status){
+  const user=status&&status.user;
+  if(user&&user.id) return String(user.id);
+  if(user&&user.username) return 'user:'+String(user.username);
+  if(status&&status.logged_in) return 'password-auth';
+  return '';
+}
+
+function _applyAuthIdentityScope(status,{clearOnChange=true}={}){
+  const identity=_authIdentityFromStatus(status);
+  const memoryPrevious=String(window._currentAuthUserId||'');
+  let previous='';
+  try{previous=localStorage.getItem(AUTH_SCOPE_STORAGE_KEY)||'';}catch(_){}
+  window._currentAuthUserId=identity;
+  window._currentAuthRole=status&&status.user&&status.user.role?String(status.user.role):'';
+  window._currentUserPanels=status&&status.user&&Array.isArray(status.user.panels)?status.user.panels:null;
+  // Re-apply tab visibility when auth identity/panels change
+  if(typeof _applyTabVisibility==='function'&&typeof _getHiddenTabs==='function'){
+    try{_applyTabVisibility(_getHiddenTabs());}catch(_){}
+  }
+  const changedFromStorage=previous&&identity&&previous!==identity;
+  const changedFromLivePage=memoryPrevious&&memoryPrevious!==identity;
+  const becameUnauthenticated=memoryPrevious&&!identity;
+  if(clearOnChange&&(changedFromStorage||changedFromLivePage||becameUnauthenticated)){
+    try{
+      if(typeof resetSessionStateForAuthChange==='function') resetSessionStateForAuthChange(identity);
+      else localStorage.removeItem('hermes-webui-session');
+    }catch(_){}
+    try{ if(typeof _resetShareCurrentUser==='function') _resetShareCurrentUser(); }catch(_){}
+  }
+  try{
+    if(identity) localStorage.setItem(AUTH_SCOPE_STORAGE_KEY,identity);
+    else localStorage.removeItem(AUTH_SCOPE_STORAGE_KEY);
+  }catch(_){}
+  return identity;
+}
+
+async function syncAuthIdentityScope(options={}){
+  const status=await api('/api/auth/status',{redirect401:false});
+  _applyAuthIdentityScope(status,options);
+  return status;
+}
+
+async function loadTitlebarAccountMenu(){
+  _syncTitlebarAppearanceControls();
+  const signOutBtn=$('titlebarSignOutBtn');
+  try{
+    const status=await syncAuthIdentityScope();
+    const user=status&&status.user;
+    const username=user&&user.username?user.username:(status&&status.logged_in?'账号':'本地用户');
+    _setTitlebarAccountName(username);
+    if(signOutBtn) signOutBtn.hidden=!(status&&status.auth_enabled&&status.logged_in);
+  }catch(_){
+    _setTitlebarAccountName('账号');
+    if(signOutBtn) signOutBtn.hidden=false;
+  }
+}
+
+function _closeTitlebarAccountMenu(){
+  const menu=$('titlebarAccountMenu');
+  const btn=$('titlebarAccountBtn');
+  if(menu) menu.hidden=true;
+  if(btn){
+    btn.classList.remove('active');
+    btn.setAttribute('aria-expanded','false');
+  }
+}
+
+function toggleTitlebarAccountMenu(event){
+  if(event) event.stopPropagation();
+  const menu=$('titlebarAccountMenu');
+  const btn=$('titlebarAccountBtn');
+  if(!menu||!btn) return;
+  const opening=menu.hidden;
+  menu.hidden=!opening;
+  btn.classList.toggle('active',opening);
+  btn.setAttribute('aria-expanded',opening?'true':'false');
+  if(opening) _syncTitlebarAppearanceControls();
+}
+
+async function _persistTitlebarAppearance(payload){
+  if(!payload||typeof payload!=='object') return;
+  if(typeof _scheduleAppearanceAutosave==='function'){
+    _scheduleAppearanceAutosave();
+    return;
+  }
+  try{
+    await api('/api/settings',{method:'POST',body:JSON.stringify(payload)});
+  }catch(e){
+    if(typeof showToast==='function') showToast('Failed to save appearance: '+(e&&e.message?e.message:e));
+  }
+}
+
+function _handleTitlebarThemeChange(){
+  const sel=$('titlebarThemeSelect');
+  const theme=sel&&['system','light','dark'].includes(sel.value)?sel.value:'dark';
+  _pickTheme(theme);
+  _syncTitlebarAppearanceControls();
+  _persistTitlebarAppearance({
+    theme:localStorage.getItem('hermes-theme')||theme,
+    skin:localStorage.getItem('hermes-skin')||'default',
+  });
+}
+
+function _handleTitlebarFontSizeChange(){
+  const sel=$('titlebarFontSizeSelect');
+  const fontSize=sel&&['small','default','large','xlarge'].includes(sel.value)?sel.value:'default';
+  _pickFontSize(fontSize);
+  _syncTitlebarAppearanceControls();
+  _persistTitlebarAppearance({font_size:fontSize});
+}
+
+async function titlebarSignOut(){
+  _closeTitlebarAccountMenu();
+  if(typeof signOut==='function'){
+    await signOut();
+    return;
+  }
+  try{
+    await api('/api/auth/logout',{method:'POST',body:'{}'});
+    try{localStorage.removeItem(AUTH_SCOPE_STORAGE_KEY);}catch(_){}
+    try{localStorage.removeItem('hermes-webui-session');}catch(_){}
+    try{if(typeof resetSessionStateForAuthChange==='function')resetSessionStateForAuthChange('');}catch(_){}
+    try{if(typeof _resetShareCurrentUser==='function')_resetShareCurrentUser();}catch(_){}
+    window.location.href='login';
+  }catch(e){
+    if(typeof showToast==='function') showToast('Sign out failed: '+(e&&e.message?e.message:e));
+  }
+}
+
+function initTitlebarAccountMenu(){
+  const themeSel=$('titlebarThemeSelect');
+  if(themeSel) themeSel.addEventListener('change',_handleTitlebarThemeChange);
+  const fontSel=$('titlebarFontSizeSelect');
+  if(fontSel) fontSel.addEventListener('change',_handleTitlebarFontSizeChange);
+  document.addEventListener('click',(event)=>{
+    const menu=$('titlebarAccountMenu');
+    const btn=$('titlebarAccountBtn');
+    if(!menu||menu.hidden) return;
+    if((btn&&btn.contains(event.target))||menu.contains(event.target)) return;
+    _closeTitlebarAccountMenu();
+  });
+  document.addEventListener('keydown',(event)=>{
+    if(event.key==='Escape') _closeTitlebarAccountMenu();
+  });
+  loadTitlebarAccountMenu();
+}
+window.loadTitlebarAccountMenu=loadTitlebarAccountMenu;
+window.toggleTitlebarAccountMenu=toggleTitlebarAccountMenu;
+window.titlebarSignOut=titlebarSignOut;
+window.initTitlebarAccountMenu=initTitlebarAccountMenu;
+window.syncAuthIdentityScope=syncAuthIdentityScope;
+
 function _mirrorSpeechSettingsFromServer(s){
   if(!s||typeof s!=='object') return;
   const persistedSpeechKeys = new Set(
@@ -3070,6 +3251,7 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
     _applyComposerFooterVisibilitySettings();
     if(typeof _applyTtsEnabled==='function') _applyTtsEnabled(localStorage.getItem('hermes-tts-enabled')==='true');
   }
+  if(typeof initTitlebarAccountMenu==='function') initTitlebarAccountMenu();
   // Non-blocking update check (fire-and-forget, once per tab session)
   // ?test_updates=1 in URL forces banner display for testing (bypasses sessionStorage guards)
   const _testUpdates=new URLSearchParams(location.search).get('test_updates')==='1';
@@ -3252,6 +3434,9 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
   // metadata settles in parallel.
   const _workspaceListReady=loadWorkspaceList();
   const _onboardingReady=_bootSettings.onboarding_completed?Promise.resolve(false):loadOnboardingWizard();
+  try{
+    if(typeof syncAuthIdentityScope==='function') await syncAuthIdentityScope();
+  }catch(_){}
   // Render the session list before restoring the saved conversation so a stale
   // saved-session/client-side boot error cannot leave the sidebar empty forever.
   await renderSessionList();
@@ -3288,6 +3473,9 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
       syncTopbar();syncWorkspacePanelState();await renderSessionList();await _finalizeComposerPrefillOnBoot(prefillIntent);if(typeof startGatewaySSE==='function')startGatewaySSE();return;
     }catch(e){console.warn('[pwa] new-chat launch action failed', e);}
   }
+  try{
+    if(typeof syncAuthIdentityScope==='function') await syncAuthIdentityScope();
+  }catch(_){}
   const savedLocal=localStorage.getItem('hermes-webui-session');
   const saved=urlSession||savedLocal;
   if(saved){
@@ -3401,6 +3589,12 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
 // chrome aren't left in the stale bfcache snapshot.
 window.addEventListener('pageshow', async (event) => {
   if (!event.persisted) return;  // fresh loads are handled by the IIFE above
+  try{
+    if(typeof syncAuthIdentityScope==='function') await syncAuthIdentityScope();
+  }catch(_){}
+  try{
+    if(typeof loadTitlebarAccountMenu==='function') await loadTitlebarAccountMenu();
+  }catch(_){}
   const _srch = document.getElementById('sessionSearch');
   if (_srch) _srch.value = '';
   if (typeof syncSessionSearchClear === 'function') syncSessionSearchClear();
@@ -3425,8 +3619,13 @@ window.addEventListener('pageshow', async (event) => {
   // doesn't re-run. Each call is guarded so missing helpers degrade silently.
   if (typeof syncTopbar === 'function') try { syncTopbar(); } catch (_) {}
   if (typeof syncWorkspacePanelState === 'function') try { syncWorkspacePanelState(); } catch (_) {}
-  if (typeof renderSessionListFromCache === 'function') {
+  if (typeof renderSessionList === 'function') {
+    try { await renderSessionList({deferWhileInteracting:false}); } catch (_) {}
+  } else if (typeof renderSessionListFromCache === 'function') {
     try { renderSessionListFromCache(); } catch (_) {}
+  }
+  if (typeof refreshSharedSessionsSection === 'function') {
+    try { await refreshSharedSessionsSection(true); } catch (_) {}
   }
   // Restart the gateway SSE watcher — the persisted connection is dead after bfcache
   if (typeof startGatewaySSE === 'function') try { startGatewaySSE(); } catch (_) {}

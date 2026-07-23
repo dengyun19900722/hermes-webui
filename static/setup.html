@@ -3,30 +3,47 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>初始化管理员 · ZK 运维智能体</title>
+  <title>初始化管理员 · Hermes</title>
   <link rel="stylesheet" href="/static/login.css">
 </head>
 <body class="login-page">
-  <main class="login-card">
+  <main class="login-card" aria-labelledby="setup-title">
+    <div class="login-logo" aria-hidden="true">H</div>
     <h1 id="setup-title">初始化管理员</h1>
-    <p id="setup-desc">这是首次部署。请创建管理员账号。</p>
-    <form id="setup-form" autocomplete="off">
+    <p id="setup-desc" class="login-sub">首次使用，请创建一个管理员账号。</p>
+    <form id="setup-form" autocomplete="off" novalidate>
       <div class="login-field">
+        <label for="setup-username">用户名</label>
         <input type="text" name="username" id="setup-username"
-               placeholder="用户名（3-32 字符）" minlength="3" maxlength="32"
+               class="login-input" placeholder="3-32 个字符" minlength="3" maxlength="32"
+               autocomplete="username" aria-describedby="username-hint"
                pattern="[A-Za-z0-9_.\-]+" required autofocus>
+        <div id="username-hint" class="login-hint">支持字母、数字、下划线、点和连字符</div>
       </div>
       <div class="login-field">
+        <label for="setup-password">密码</label>
+        <div class="login-password">
         <input type="password" name="password" id="setup-password"
-               placeholder="密码（≥8 字符，含字母+数字）" minlength="8" required>
+               class="login-input" placeholder="至少 8 个字符，含字母和数字" minlength="8"
+               autocomplete="new-password" aria-describedby="password-hint" required>
+          <button type="button" class="login-password-toggle" data-target="setup-password" aria-label="显示密码">显示</button>
+        </div>
+        <div id="password-hint" class="login-hint"><span>至少 8 个字符，包含字母和数字</span><span id="password-strength-label" class="login-hint-strength"></span></div>
+        <div class="login-strength-bar" id="password-strength" aria-hidden="true"><span></span></div>
       </div>
       <div class="login-field">
+        <label for="setup-password-confirm">确认密码</label>
+        <div class="login-password">
         <input type="password" name="password_confirm" id="setup-password-confirm"
-               placeholder="确认密码" minlength="8" required>
+               class="login-input" placeholder="再次输入密码" minlength="8"
+               autocomplete="new-password" required>
+          <button type="button" class="login-password-toggle" data-target="setup-password-confirm" aria-label="显示密码">显示</button>
+        </div>
       </div>
-      <button type="submit" id="setup-submit">创建管理员</button>
-      <div id="setup-error" class="login-error" hidden></div>
+      <button type="submit" id="setup-submit" class="login-btn-primary">创建管理员</button>
+      <div id="setup-error" class="login-error" role="alert" aria-live="polite" hidden></div>
     </form>
+    <p class="login-foot">创建完成后，请使用新账号登录。</p>
   </main>
   <script src="/static/setup.js"></script>
 </body>

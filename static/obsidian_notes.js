@@ -331,6 +331,7 @@ function _knowledgeSetEmptyState(title, sub){
   _knowledgeCurrentNote=null;
   _knowledgePreEditSnapshot=null;
   _knowledgeSetHeaderButtons('empty');
+  if(typeof NotesMeta !== 'undefined') NotesMeta.clearRating();
   if(titleEl&&sub&&empty){
     const subEl=empty.querySelector('.main-view-empty-sub');
     if(subEl) subEl.textContent=sub;
@@ -349,6 +350,12 @@ function _knowledgeRenderNoteContent(note){
     if(note.mtime) parts.push(_knowledgeFormatTime(note.mtime));
     if(typeof note.size==='number') parts.push(String(note.size)+' B');
     metaEl.textContent=parts.join(' · ');
+  }
+  // Show rating section
+  var ratingEl = document.getElementById('knowledgeDetailRating');
+  if (ratingEl && typeof NotesMeta !== 'undefined') {
+    ratingEl.innerHTML = NotesMeta.renderRatingSection(note);
+    ratingEl.style.display = '';
   }
   if(body){
     body.style.display='';
@@ -376,6 +383,10 @@ function _knowledgeRenderNoteContent(note){
       if(target) target.scrollIntoView({block:'start',behavior:'smooth'});
     });
     requestAnimationFrame(()=>{ if(typeof renderKatexBlocks==='function') renderKatexBlocks(); });
+  }
+  // Initialize interactive star rating
+  if(typeof NotesMeta !== 'undefined' && NotesMeta.initDetailRating && note && note.path){
+    requestAnimationFrame(function(){ NotesMeta.initDetailRating(note.path); });
   }
   if(empty) empty.style.display='none';
   _knowledgeMode='read';
@@ -439,6 +450,8 @@ function _knowledgeRenderForm({mode, note, content, title, category}){
   _knowledgeMode=mode;
   _knowledgeDirty=(mode==='create' || mode==='edit');
   _knowledgeSetHeaderButtons(mode);
+  // Hide rating when editing/creating
+  if(typeof NotesMeta !== 'undefined') NotesMeta.clearRating();
   const focusEl = mode==='edit' ? $('knowledgeFormContent') : $('knowledgeFormTitle');
   const textarea=$('knowledgeFormContent');
   if(textarea){
@@ -525,10 +538,14 @@ function _knowledgeRenderNodes(nodes, depth, mount){
       continue;
     }
 
+    var rowMetaHtml = (typeof NotesMeta !== 'undefined' && NotesMeta.renderRowMeta)
+      ? NotesMeta.renderRowMeta(node)
+      : '';
     row.innerHTML = `
       <span class="knowledge-chevron" style="opacity:0">${li('chevron-right', 12)}</span>
       <span class="knowledge-row-icon">${li('file-text', 14)}</span>
       <span class="knowledge-row-text">${esc(node.title || node.name || '')}</span>
+      ${rowMetaHtml ? '<span class="knowledge-row-meta">' + rowMetaHtml + '</span>' : ''}
     `;
     row.onclick = () => openKnowledgeNote(node.path, row);
     mount.appendChild(row);
@@ -738,6 +755,7 @@ function cancelKnowledgeEdit(){
   if(title) title.textContent='';
   if(meta) meta.textContent='';
   _knowledgeSetHeaderButtons('empty');
+  if(typeof NotesMeta !== 'undefined') NotesMeta.clearRating();
 }
 
 async function saveKnowledgeNote(){

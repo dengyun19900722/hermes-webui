@@ -190,6 +190,46 @@ def test_api_can_suppress_timeout_toast_for_background_pollers():
     assert not any("msg" in event for event in payload["events"]), payload
 
 
+def test_api_serializes_plain_object_body_to_json():
+    """Callers may pass object bodies; fetch must not receive [object Object]."""
+    api_fn = _extract_js_function(_source(WORKSPACE_JS), "api")
+    script = textwrap.dedent(
+        f"""
+        let captured=null;
+        global.document={{baseURI:'http://example.test/hermes/'}};
+        global.location={{href:'http://example.test/hermes/',pathname:'/hermes/',search:''}};
+        global.window={{location:global.location}};
+        global.fetch=(url,opts)=>{{
+          captured={{url,opts}};
+          return Promise.resolve({{
+            ok:true,
+            headers:{{get:()=> 'application/json'}},
+            json:()=>Promise.resolve({{ok:true}}),
+            text:()=>Promise.resolve('')
+          }});
+        }};
+        {api_fn}
+        api('/api/admin/users',{{method:'POST',body:{{username:'test',password:'password123',role:'user'}}}})
+          .then(()=>{{
+            console.log(JSON.stringify({{
+              body:captured.opts.body,
+              contentType:captured.opts.headers&&captured.opts.headers['Content-Type']
+            }}));
+            process.exit(0);
+          }})
+          .catch(err=>{{console.error(err&&err.stack||err);process.exit(2);}});
+        """
+    )
+    result = _node_eval(script, timeout=1.0)
+    assert result.returncode == 0, result.stderr or result.stdout
+    payload = json.loads(result.stdout.strip())
+    assert payload["body"] == json.dumps(
+        {"username": "test", "password": "password123", "role": "user"},
+        separators=(",", ":"),
+    )
+    assert payload["contentType"] == "application/json"
+
+
 def test_api_has_default_timeout_and_per_call_override_contract():
     src = _source(WORKSPACE_JS)
     body = _extract_js_function(src, "api")

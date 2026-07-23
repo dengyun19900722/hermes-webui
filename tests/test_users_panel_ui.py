@@ -12,6 +12,8 @@ from pathlib import Path
 _INDEX_HTML = Path("static") / "index.html"
 _PANELS_JS = Path("static") / "panels.js"
 _USERS_JS = Path("static") / "users_panel.js"
+_BOOT_JS = Path("static") / "boot.js"
+_STYLE_CSS = Path("static") / "style.css"
 
 
 def test_users_panel_js_exists():
@@ -40,6 +42,15 @@ def test_users_panel_js_calls_audit_endpoint():
     assert "/api/admin/audit" in src
 
 
+def test_users_panel_shows_current_account_and_sign_out():
+    src = _USERS_JS.read_text(encoding="utf-8")
+    assert "users-current-account" in src
+    assert "users-sign-out-btn" in src
+    assert "/api/auth/status" in src
+    assert "/api/auth/logout" in src
+    assert "window.currentUsername = user.username" in src
+
+
 def test_index_html_has_users_sidebar_item():
     src = _INDEX_HTML.read_text(encoding="utf-8")
     # 在 Settings 侧边栏里, 与 appearance/preferences 同级
@@ -55,6 +66,37 @@ def test_index_html_includes_users_panel_js():
     """users_panel.js 应在 index.html 末尾被引入。"""
     src = _INDEX_HTML.read_text(encoding="utf-8")
     assert "users_panel.js" in src
+
+
+def test_titlebar_account_menu_present():
+    src = _INDEX_HTML.read_text(encoding="utf-8")
+    assert 'id="titlebarAccountBtn"' in src
+    assert 'id="titlebarAccountName"' in src
+    assert 'id="titlebarAccountMenu"' in src
+    assert 'id="titlebarThemeSelect"' in src
+    assert 'id="titlebarFontSizeSelect"' in src
+    assert 'id="titlebarSignOutBtn"' in src
+
+
+def test_titlebar_account_menu_js_wiring():
+    src = _BOOT_JS.read_text(encoding="utf-8")
+    assert "loadTitlebarAccountMenu" in src
+    assert "toggleTitlebarAccountMenu" in src
+    assert "titlebarSignOut" in src
+    assert "/api/auth/status" in src
+    assert "/api/auth/logout" in src
+    assert "/api/settings" in src
+    assert "_pickTheme(theme)" in src
+    assert "_pickFontSize(fontSize)" in src
+
+
+def test_titlebar_account_menu_css_present():
+    src = _STYLE_CSS.read_text(encoding="utf-8")
+    assert ".app-titlebar-account{" in src
+    assert ".app-titlebar-account-menu{" in src
+    assert ".app-titlebar-account-field select" in src
+    assert ".app-titlebar-account-signout" in src
+    assert "-webkit-app-region:no-drag" in src
 
 
 def test_panels_js_maps_users_section():

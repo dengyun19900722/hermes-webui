@@ -151,6 +151,39 @@
       <line x1="5" y1="12" x2="19" y2="12"/>
     </svg>
   </button>
+  <button class="app-titlebar-account" id="titlebarAccountBtn" onclick="toggleTitlebarAccountMenu(event)" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="账号菜单" title="账号">
+    <span class="app-titlebar-account-icon" aria-hidden="true">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+    </span>
+    <span class="app-titlebar-account-name" id="titlebarAccountName">账号</span>
+    <span class="app-titlebar-account-chevron" aria-hidden="true">
+      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+    </span>
+  </button>
+  <div class="app-titlebar-account-menu" id="titlebarAccountMenu" role="menu" aria-labelledby="titlebarAccountBtn" hidden>
+    <div class="app-titlebar-account-menu-head">
+      <div class="app-titlebar-account-menu-label">当前登录</div>
+      <div class="app-titlebar-account-menu-user" id="titlebarAccountMenuUser">账号</div>
+    </div>
+    <label class="app-titlebar-account-field">
+      <span>外观</span>
+      <select id="titlebarThemeSelect" aria-label="外观">
+        <option value="system">跟随系统</option>
+        <option value="light">浅色</option>
+        <option value="dark">深色</option>
+      </select>
+    </label>
+    <label class="app-titlebar-account-field">
+      <span>字体大小</span>
+      <select id="titlebarFontSizeSelect" aria-label="字体大小">
+        <option value="small">小</option>
+        <option value="default">默认</option>
+        <option value="large">大</option>
+        <option value="xlarge">特大</option>
+      </select>
+    </label>
+    <button class="app-titlebar-account-signout" id="titlebarSignOutBtn" onclick="titlebarSignOut()" type="button" role="menuitem">退出登录</button>
+  </div>
   <button class="app-titlebar-reload" id="btnReload" onclick="window.location.reload()" type="button" aria-label="Reload" title="Reload page">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="16" height="16">
       <polyline points="23 4 23 10 17 10"/>
@@ -835,6 +868,7 @@
           <button id="btnSaveKnowledgeNote" class="panel-head-btn primary has-tooltip has-tooltip--bottom" data-tooltip="保存" onclick="saveKnowledgeNote()" style="display:none" aria-label="保存"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg></button>
         </div>
       </div>
+      <div id="knowledgeDetailRating" style="display:none"></div>
       <div class="main-view-body" id="knowledgeDetailBody" style="display:none"></div>
       <div class="main-view-empty" id="knowledgeDetailEmpty">
         <svg class="main-view-empty-icon" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5z"/></svg>
@@ -1815,9 +1849,11 @@
 <script src="static/workspace.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/terminal.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/sessions.js?v=__WEBUI_VERSION__" defer></script>
+<script src="static/session_sharing.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/commands.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/messages.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/extension_settings.js?v=__WEBUI_VERSION__" defer></script>
+<script src="static/notes_meta.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/obsidian_notes.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/panels.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/users_panel.js?v=__WEBUI_VERSION__" defer></script>

@@ -21,6 +21,10 @@ from typing import Any
 
 USERS_FILE = "users.json"
 
+# Panels that non-admin users can see by default.
+# Admin users always see all panels regardless of this setting.
+DEFAULT_USER_PANELS = ["chat", "tasks", "skills", "knowledge"]
+
 
 def _users_file(state_dir: Path) -> Path:
     state_dir.mkdir(parents=True, exist_ok=True)

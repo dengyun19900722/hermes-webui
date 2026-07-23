@@ -7521,13 +7521,24 @@ function _applyTabOrder(order){
 function _applyTabVisibility(hidden){
   hidden=_sanitizeTabPanelList(hidden);
   _applyTabOrder(_getTabOrder());
-  // Hide/unhide all [data-panel] elements (sidebar-nav buttons + rail buttons)
+  // Compute effective user panels (admin sees all)
+  var userPanels=window._currentUserPanels;
+  var userRole=window._currentAuthRole||'';
   document.querySelectorAll('[data-panel]').forEach(function(el){
     var panel=el.dataset.panel;
     if(!panel)return;
     var shouldHide=hidden.indexOf(panel)!==-1;
-    // Never hide always-visible panels (chat, settings) even if present in hidden_tabs
-    if(_ALWAYS_VISIBLE_TABS.has(panel)) shouldHide=false;
+    // Respect per-user panel permissions (non-admin only)
+    if(userRole!=='admin' && Array.isArray(userPanels)){
+      // Non-admin users should not see Settings (admin-only section)
+      if(panel==='settings'){
+        shouldHide=true;
+      } else if(!_ALWAYS_VISIBLE_TABS.has(panel)){
+        shouldHide=shouldHide || userPanels.indexOf(panel)===-1;
+      }
+    }
+    // Never hide always-visible panels (chat, settings) — unless non-admin
+    if(_ALWAYS_VISIBLE_TABS.has(panel) && (panel!=='settings' || userRole==='admin')) shouldHide=false;
     el.classList.toggle('nav-tab-hidden',shouldHide);
   });
   // If the currently active tab is hidden, switch to chat
@@ -12923,6 +12934,10 @@ async function saveSettings(andClose){
 async function signOut(){
   try{
     await api('/api/auth/logout',{method:'POST',body:'{}'});
+    try{localStorage.removeItem('hermes-webui-auth-user-id');}catch(_){}
+    try{localStorage.removeItem('hermes-webui-session');}catch(_){}
+    try{if(typeof resetSessionStateForAuthChange==='function')resetSessionStateForAuthChange('');}catch(_){}
+    try{if(typeof _resetShareCurrentUser==='function')_resetShareCurrentUser();}catch(_){}
     window.location.href='login';
   }catch(e){
     showToast(t('sign_out_failed')+e.message);

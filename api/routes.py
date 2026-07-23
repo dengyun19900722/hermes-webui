@@ -525,6 +525,123 @@ def _session_visible_to_active_profile(session_profile, handler=None) -> bool:
     return _profiles_match(session_profile, active_profile)
 
 
+def _rbac_users_configured() -> bool:
+    try:
+        from api.auth import _state_dir
+        from api.user_store import load_users
+
+        return bool(load_users(_state_dir()))
+    except Exception:
+        return False
+
+
+def _current_rbac_user(handler) -> dict | None:
+    """Return the RBAC user dict for this request, or None for legacy/no-RBAC auth."""
+    if handler is None:
+        return None
+    handler_dict = getattr(handler, "__dict__", None)
+    if isinstance(handler_dict, dict) and "_hermes_current_rbac_user" in handler_dict:
+        return handler_dict.get("_hermes_current_rbac_user")
+    user = None
+    try:
+        from api.auth import get_user_from_session, parse_cookie
+        token = parse_cookie(handler)
+        user = get_user_from_session(token) if token else None
+    except Exception:
+        user = None
+    try:
+        setattr(handler, "_hermes_current_rbac_user", user)
+    except Exception:
+        pass
+    return user
+
+
+def _current_rbac_user_id(handler) -> str | None:
+    """Return the RBAC user id for this request, or None for legacy/no-RBAC auth."""
+    if handler is None:
+        return None
+    handler_dict = getattr(handler, "__dict__", None)
+    if isinstance(handler_dict, dict) and "_hermes_current_rbac_user_id" in handler_dict:
+        return handler_dict.get("_hermes_current_rbac_user_id") or None
+    user = _current_rbac_user(handler)
+    user_id = str(user.get("id")).strip() if user and user.get("id") else None
+    user_id = user_id or None
+    try:
+        setattr(handler, "_hermes_current_rbac_user_id", user_id)
+    except Exception:
+        pass
+    return user_id
+
+
+def _current_rbac_user_is_admin(handler) -> bool:
+    """Return True when the current request is authenticated as an RBAC admin."""
+    user = _current_rbac_user(handler)
+    if not user:
+        return False
+    try:
+        from api.auth import is_admin
+        return is_admin(user)
+    except Exception:
+        return user.get("role") == "admin"
+
+
+def _session_visible_to_current_rbac_user(session_rbac_user_id, handler=None) -> bool:
+    """Return whether a session is visible to the current RBAC user.
+
+    Rules (kept in sync with the list filter in _build_session_list_cache_payload):
+    - Admin role sees ALL sessions (including legacy rows without rbac_user_id).
+    - Sessions without rbac_user_id (legacy / unowned) stay visible only when
+      RBAC users are not configured; with RBAC enabled they are admin-only.
+    - Rows with an owner are visible only to that owner (and to admin).
+    - When no RBAC user id is resolved (legacy auth or no auth) but RBAC users
+      are configured, owned and ownerless rows are hidden.
+
+    The list filter and this check use the same predicate so the sidebar and
+    direct session access stay consistent.
+    """
+    owner = str(session_rbac_user_id or "").strip()
+    if _current_rbac_user_is_admin(handler):
+        return True
+    if not owner:
+        return not _rbac_users_configured()
+    current_user_id = _current_rbac_user_id(handler)
+    if not current_user_id:
+        # No RBAC user id resolved (legacy auth or no auth). Fall back to
+        # "if RBAC is not configured, see everything; otherwise legacy
+        # authenticated users see unowned sessions only".
+        return not _rbac_users_configured()
+    return owner == current_user_id
+
+
+def _session_shared_with_current_user(session_id, handler=None) -> bool:
+    """True when the session has a live user-share addressed to the requester."""
+    sid = str(session_id or "").strip()
+    uid = _current_rbac_user_id(handler)
+    if not sid or not uid:
+        return False
+    try:
+        from api import share_store
+        return sid in share_store.shared_session_ids_for_user(STATE_DIR, uid)
+    except Exception:
+        return False
+
+
+def _session_visible_to_request(session, handler=None) -> bool:
+    """Read-level visibility: profile + (owner OR admin OR live user-share)."""
+    if not _session_visible_to_active_profile(getattr(session, "profile", None), handler):
+        return False
+    if _session_visible_to_current_rbac_user(getattr(session, "rbac_user_id", None), handler):
+        return True
+    return _session_shared_with_current_user(getattr(session, "session_id", None), handler)
+
+
+def _session_write_allowed_for_request(session, handler=None) -> bool:
+    """Write-level guard: shared (non-owner, non-admin) viewers are read-only."""
+    if _session_visible_to_current_rbac_user(getattr(session, "rbac_user_id", None), handler):
+        return True
+    return not _session_shared_with_current_user(getattr(session, "session_id", None), handler)
+
+
 def _request_session_visibility_exempt(method: str, path: str | None) -> bool:
     if not path:
         return False
@@ -541,7 +658,7 @@ def _request_session_visibility_exempt(method: str, path: str | None) -> bool:
 
 
 def _session_id_visible_to_request_profile(handler, sid, *, emit_error: bool = True) -> bool:
-    """Return whether ``sid`` belongs to the active profile."""
+    """Return whether ``sid`` belongs to the active profile and RBAC owner."""
     if not isinstance(sid, str) or not sid:
         return True
     if not is_safe_session_id(sid):
@@ -550,7 +667,7 @@ def _session_id_visible_to_request_profile(handler, sid, *, emit_error: bool = T
         session = get_session(sid, metadata_only=True)
     except KeyError:
         return True
-    if not _session_visible_to_active_profile(getattr(session, "profile", None), handler):
+    if not _session_visible_to_request(session, handler):
         if emit_error:
             bad(handler, "Session not found", 404)
         return False
@@ -1896,6 +2013,9 @@ def _session_list_cache_key(
     archived_limit: int | None = None,
     archived_offset: int = 0,
     show_claude_code_sessions: bool = True,
+    rbac_user_id: str | None = None,
+    rbac_scope_enabled: bool = False,
+    rbac_is_admin: bool = False,
 ) -> tuple:
     return _route_session_list_cache_key(
         active_profile=active_profile,
@@ -1911,7 +2031,7 @@ def _session_list_cache_key(
         sidebar_source=sidebar_source,
         archived_limit=archived_limit,
         archived_offset=archived_offset,
-    ) + (bool(show_claude_code_sessions),)
+    ) + (bool(show_claude_code_sessions), str(rbac_user_id or ""), bool(rbac_scope_enabled), bool(rbac_is_admin))
 
 _ROUTE_SESSION_LIST_CACHE_DYNAMIC_EXPORTS = {
     "_SESSIONS_CACHE_ALL_PROFILES_INVALIDATION_VERSION",
@@ -2003,6 +2123,11 @@ def _prune_orphaned_webui_zero_message_sessions(rows, *, diag_stage=None):
         and not s.get("active_stream_id")
         and not s.get("has_pending_user_message")
         and not s.get("worktree_path")
+        # RBAC-owned empty sessions are deliberate, durable user-created rows.
+        # They may have a title but no state.db messages yet, so treating them
+        # as #4985 stale zero-message orphans hides freshly-created chats after
+        # the sidebar refresh.
+        and not str(s.get("rbac_user_id") or "").strip()
         and (
             s.get("title", "Untitled") != "Untitled"
             or _numeric_count(s.get("message_count")) > 0
@@ -2156,6 +2281,9 @@ def _build_session_list_cache_payload(
     sidebar_source: str | None = None,
     archived_limit: int | None = None,
     archived_offset: int = 0,
+    rbac_user_id: str | None = None,
+    rbac_scope_enabled: bool = False,
+    rbac_is_admin: bool = False,
     diag=None,
 ) -> dict:
     diag_stage = diag.stage if diag is not None else lambda *_a, **_k: None
@@ -2393,6 +2521,43 @@ def _build_session_list_cache_payload(
     else:
         scoped = [s for s in merged if _profiles_match(s.get("profile"), active_profile)]
         other_profile_count = 0 if _is_isolated_profile_mode() else len(merged) - len(scoped)
+    _shared_sids: set = set()
+    _shares_by_sid: dict[str, dict] = {}
+    if rbac_scope_enabled or rbac_user_id or _rbac_users_configured():
+        if rbac_is_admin:
+            pass  # admin sees all sessions
+        elif not rbac_user_id:
+            # RBAC is configured but this request did not resolve to a concrete
+            # user. Do not fall back to ownerless legacy rows; otherwise a stale
+            # password-session/failed cookie parse can expose all legacy chats.
+            scoped = []
+        else:
+            try:
+                from api import share_store
+                _shares = share_store.list_shares_for_user(STATE_DIR, rbac_user_id)
+                _shared_sids = {str(share.get("session_id") or "") for share in _shares}
+                _shares_by_sid = {
+                    str(share.get("session_id") or ""): share
+                    for share in _shares
+                    if str(share.get("session_id") or "")
+                }
+            except Exception:
+                _shared_sids = set()
+                _shares_by_sid = {}
+            scoped = [
+                s for s in scoped
+                if str(s.get("rbac_user_id") or "").strip() == str(rbac_user_id or "")  # owned by current user
+                or str(s.get("session_id") or "") in _shared_sids  # shared with current user
+            ]
+            for s in scoped:
+                sid = str(s.get("session_id") or "")
+                owner = str(s.get("rbac_user_id") or "").strip()
+                if sid in _shared_sids and owner != str(rbac_user_id or ""):
+                    share = _shares_by_sid.get(sid) or {}
+                    s["read_only"] = True
+                    s["viewer"] = "shared"
+                    s["shared_by"] = share.get("owner_name") or share.get("owner_id")
+                    s["share_id"] = share.get("id")
     diag_stage("messaging_dedupe")
     archived_scoped = _keep_latest_messaging_session_per_source(
         list(scoped),
@@ -2407,12 +2572,22 @@ def _build_session_list_cache_payload(
         archived_scoped = _cap_recent_cli_sessions(archived_scoped, cli_cap=CLI_VISIBLE_SESSION_CAP)
         visible_scoped = _cap_recent_cli_sessions(visible_scoped, cli_cap=CLI_VISIBLE_SESSION_CAP)
     if visible_only:
-        archived_scoped = [
-            s for s in archived_scoped if _session_has_server_visible_messages(s)
-        ]
-        visible_scoped = [
-            s for s in visible_scoped if _session_has_server_visible_messages(s)
-        ]
+        def _visible_or_rbac_owned_or_shared(s: dict) -> bool:
+            """Visible rows have content signals, or are deliberate RBAC rows.
+
+            The #1171 ghost-session guard hides empty anonymous sessions. RBAC
+            owner/shared empty sessions must remain visible because they
+            represent a deliberate user action or a deliberate share grant.
+            """
+            if _session_has_server_visible_messages(s):
+                return True
+            if rbac_user_id:
+                owner = str(s.get("rbac_user_id") or "").strip()
+                sid = str(s.get("session_id") or "")
+                return (bool(owner) and owner == str(rbac_user_id)) or sid in _shared_sids
+            return False
+        archived_scoped = [s for s in archived_scoped if _visible_or_rbac_owned_or_shared(s)]
+        visible_scoped = [s for s in visible_scoped if _visible_or_rbac_owned_or_shared(s)]
     if exclude_hidden:
         archived_scoped = [s for s in archived_scoped if not s.get("default_hidden")]
         visible_scoped = [s for s in visible_scoped if not s.get("default_hidden")]
@@ -9027,6 +9202,7 @@ _SIDEBAR_SESSION_RESPONSE_FIELDS = {
     "archived",
     "project_id",
     "profile",
+    "rbac_user_id",
     "input_tokens",
     "output_tokens",
     "estimated_cost",
@@ -9071,6 +9247,9 @@ _SIDEBAR_SESSION_RESPONSE_FIELDS = {
     # sent in the list payload to avoid per-row bloat.
     "read_only",
     "is_read_only",
+    "viewer",
+    "shared_by",
+    "share_id",
     "gateway_routing",
 }
 
@@ -9103,6 +9282,9 @@ _LOGIN_LOCALE = {
         "lang": "en",
         "title": "Sign in",
         "subtitle": "Enter your password to continue",
+        "username_placeholder": "Username",
+        "username_label": "Username",
+        "password_label": "Password",
         "placeholder": "Password",
         "btn": "Sign in",
         "invalid_pw": "Invalid password",
@@ -9112,6 +9294,7 @@ _LOGIN_LOCALE = {
         "lang": "fr-FR",
         "title": "Se connecter",
         "subtitle": "Entrez votre mot de passe pour continuer",
+        "username_placeholder": "Nom d’utilisateur",
         "placeholder": "Mot de passe",
         "btn": "Se connecter",
         "invalid_pw": "Mot de passe invalide",
@@ -9121,6 +9304,7 @@ _LOGIN_LOCALE = {
         "lang": "es-ES",
         "title": "Iniciar sesi\u00f3n",
         "subtitle": "Introduce tu contrase\u00f1a para continuar",
+        "username_placeholder": "Nombre de usuario",
         "placeholder": "Contrase\u00f1a",
         "btn": "Entrar",
         "invalid_pw": "Contrase\u00f1a inv\u00e1lida",
@@ -9130,6 +9314,7 @@ _LOGIN_LOCALE = {
         "lang": "de-DE",
         "title": "Anmelden",
         "subtitle": "Geben Sie Ihr Passwort ein, um fortzufahren",
+        "username_placeholder": "Benutzername",
         "placeholder": "Passwort",
         "btn": "Anmelden",
         "invalid_pw": "Ung\u00fcltiges Passwort",
@@ -9139,6 +9324,7 @@ _LOGIN_LOCALE = {
         "lang": "ru-RU",
         "title": "\u0412\u043e\u0439\u0442\u0438",
         "subtitle": "\u0412\u0432\u0435\u0434\u0438\u0442\u0435 \u043f\u0430\u0440\u043e\u043b\u044c, \u0447\u0442\u043e\u0431\u044b \u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c",
+        "username_placeholder": "\u0418\u043c\u044f \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044f",
         "placeholder": "\u041f\u0430\u0440\u043e\u043b\u044c",
         "btn": "\u0412\u043e\u0439\u0442\u0438",
         "invalid_pw": "\u041d\u0435\u0432\u0435\u0440\u043d\u044b\u0439 \u043f\u0430\u0440\u043e\u043b\u044c",
@@ -9148,6 +9334,7 @@ _LOGIN_LOCALE = {
         "lang": "zh-CN",
         "title": "\u767b\u5f55",
         "subtitle": "\u8f93\u5165\u5bc6\u7801\u7ee7\u7eed\u4f7f\u7528",
+        "username_placeholder": "\u7528\u6237\u540d",
         "placeholder": "\u5bc6\u7801",
         "btn": "\u767b\u5f55",
         "invalid_pw": "\u5bc6\u7801\u9519\u8bef",
@@ -9157,6 +9344,7 @@ _LOGIN_LOCALE = {
         "lang": "zh-TW",
         "title": "\u767b\u5f55",
         "subtitle": "\u8f38\u5165\u5bc6\u78bc\u7e7c\u7e8c\u4f7f\u7528",
+        "username_placeholder": "\u4f7f\u7528\u8005\u540d",
         "placeholder": "\u5bc6\u78bc",
         "btn": "\u767b\u5f55",
         "invalid_pw": "\u5bc6\u78bc\u932f\u8aa4",
@@ -9169,6 +9357,7 @@ _LOGIN_LOCALE = {
         "lang": "it-IT",
         "title": "Accedi",
         "subtitle": "Inserisci la password per continuare",
+        "username_placeholder": "Username",
         "placeholder": "Password",
         "btn": "Accedi",
         "invalid_pw": "Password non valida",
@@ -9178,6 +9367,7 @@ _LOGIN_LOCALE = {
         "lang": "ja-JP",
         "title": "\u30b5\u30a4\u30f3\u30a4\u30f3",
         "subtitle": "\u30d1\u30b9\u30ef\u30fc\u30c9\u3092\u5165\u529b\u3057\u3066\u7d9a\u884c",
+        "username_placeholder": "\u30e6\u30fc\u30b6\u30fc\u540d",
         "placeholder": "\u30d1\u30b9\u30ef\u30fc\u30c9",
         "btn": "\u30b5\u30a4\u30f3\u30a4\u30f3",
         "invalid_pw": "\u30d1\u30b9\u30ef\u30fc\u30c9\u304c\u7121\u52b9\u3067\u3059",
@@ -9187,6 +9377,7 @@ _LOGIN_LOCALE = {
         "lang": "pt-BR",
         "title": "Entrar",
         "subtitle": "Digite sua senha para continuar",
+        "username_placeholder": "Nome de usuário",
         "placeholder": "Senha",
         "btn": "Entrar",
         "invalid_pw": "Senha inv\u00e1lida",
@@ -9196,6 +9387,7 @@ _LOGIN_LOCALE = {
         "lang": "ko-KR",
         "title": "\ub85c\uadf8\uc778",
         "subtitle": "\uacc4\uc18d\ud558\ub824\uba74 \ube44\ubc00\ubc88\ud638\ub97c \uc785\ub825\ud558\uc138\uc694",
+        "username_placeholder": "\uc0ac\uc6a9\uc790\uba85",
         "placeholder": "\ube44\ubc00\ubc88\ud638",
         "btn": "\ub85c\uadf8\uc778",
         "invalid_pw": "\ube44\ubc00\ubc88\ud638\uac00 \uc62c\ubc14\ub974\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4",
@@ -9205,6 +9397,7 @@ _LOGIN_LOCALE = {
         "lang": "tr-TR",
         "title": "Oturum a\u00e7",
         "subtitle": "Devam etmek i\u00e7in \u015fifrenizi girin",
+        "username_placeholder": "Kullanıcı adı",
         "placeholder": "\u015eifre",
         "btn": "Oturum a\u00e7",
         "invalid_pw": "Ge\u00e7ersiz \u015fifre",
@@ -9214,6 +9407,7 @@ _LOGIN_LOCALE = {
         "lang": "pl-PL",
         "title": "Zaloguj si\u0119",
         "subtitle": "Wpisz has\u0142o, aby kontynuowa\u0107",
+        "username_placeholder": "Nazwa użytkownika",
         "placeholder": "Has\u0142o",
         "btn": "Zaloguj si\u0119",
         "invalid_pw": "Nieprawid\u0142owe has\u0142o",
@@ -9223,6 +9417,7 @@ _LOGIN_LOCALE = {
         "lang": "vi",
         "title": "\u0110\u0103ng nh\u1eadp",
         "subtitle": "Nh\u1eadp m\u1eadt kh\u1ea9u c\u1ee7a b\u1ea1n \u0111\u1ec3 ti\u1ebfp t\u1ee5c",
+        "username_placeholder": "Tên người dùng",
         "placeholder": "M\u1eadt kh\u1ea9u",
         "btn": "\u0110\u0103ng nh\u1eadp",
         "invalid_pw": "M\u1eadt kh\u1ea9u kh\u00f4ng h\u1ee3p l\u1ec7",
@@ -9297,7 +9492,10 @@ button:hover{background:rgba(124,185,255,.25)}
   <h1>{{BOT_NAME}}</h1>
   <p class="sub">{{LOGIN_SUBTITLE}}</p>
   <form id="login-form" data-invalid-pw="{{LOGIN_INVALID_PW}}" data-conn-failed="{{LOGIN_CONN_FAILED}}">
-    <input type="password" id="pw" placeholder="{{LOGIN_PLACEHOLDER}}" autofocus>
+    <label for="username">{{LOGIN_USERNAME_LABEL}}</label>
+    <input type="text" id="username" name="username" placeholder="{{LOGIN_USERNAME_PLACEHOLDER}}" autocomplete="username" required autofocus>
+    <label for="pw">{{LOGIN_PASSWORD_LABEL}}</label>
+    <input type="password" id="pw" name="password" placeholder="{{LOGIN_PLACEHOLDER}}" autocomplete="current-password" required>
     <button type="submit">{{LOGIN_BTN}}</button>
     <button type="button" id="passkey-login" class="passkey-login" style="display:none">Sign in with passkey</button>
     {{OIDC_LOGIN_HTML}}
@@ -11943,11 +12141,11 @@ def handle_get(handler, parsed) -> bool:
 
             csrf_token = ""
             try:
-                from api.auth import csrf_token_for_session, is_auth_enabled, parse_cookie, verify_session
+                from api.auth import csrf_token_for_session, is_auth_enabled, parse_cookie, verify_any_session
 
                 if is_auth_enabled():
                     cookie_val = parse_cookie(handler)
-                    if cookie_val and verify_session(cookie_val):
+                    if verify_any_session(cookie_val):
                         csrf_token = csrf_token_for_session(cookie_val) or ""
             except Exception:
                 csrf_token = ""
@@ -12018,6 +12216,9 @@ def handle_get(handler, parsed) -> bool:
             .replace(
                 "{{LOGIN_PLACEHOLDER}}", _html.escape(_login_strings["placeholder"])
             )
+            .replace("{{LOGIN_USERNAME_PLACEHOLDER}}", _html.escape(_login_strings.get("username_placeholder", "Username")))
+            .replace("{{LOGIN_USERNAME_LABEL}}", _html.escape(_login_strings.get("username_label", _login_strings.get("username_placeholder", "Username"))))
+            .replace("{{LOGIN_PASSWORD_LABEL}}", _html.escape(_login_strings.get("password_label", _login_strings.get("placeholder", "Password"))))
             .replace("{{LOGIN_BTN}}", _html.escape(_login_strings["btn"]))
             .replace("{{LOGIN_INVALID_PW}}", _html.escape(_login_strings["invalid_pw"]))
             .replace(
@@ -12084,21 +12285,33 @@ def handle_get(handler, parsed) -> bool:
         return True
 
     if parsed.path == "/api/auth/status":
-        from api.auth import _passkey_feature_flag_enabled, get_password_hash, is_auth_enabled, is_oidc_auth_enabled, parse_cookie, verify_session
+        from api.auth import _passkey_feature_flag_enabled, get_password_hash, get_user_from_session, is_auth_enabled, is_oidc_auth_enabled, parse_cookie, verify_any_session
         from api.passkeys import registered_credentials
 
         logged_in = False
+        current_user = None
         auth_enabled = is_auth_enabled()
         oidc_enabled = is_oidc_auth_enabled()
         if auth_enabled:
             cv = parse_cookie(handler)
-            logged_in = bool(cv and verify_session(cv))
+            logged_in = verify_any_session(cv)
+            if logged_in and cv:
+                rbac_user = get_user_from_session(cv)
+                if rbac_user:
+                    from api.user_store import DEFAULT_USER_PANELS
+                    current_user = {
+                        "id": rbac_user.get("id"),
+                        "username": rbac_user.get("username"),
+                        "role": rbac_user.get("role", "user"),
+                        "panels": rbac_user.get("panels") or list(DEFAULT_USER_PANELS),
+                    }
         passkey_flag = _passkey_feature_flag_enabled()
         passkeys = registered_credentials() if passkey_flag else []
         password_auth_enabled = get_password_hash() is not None
         return j(handler, {
             "auth_enabled": auth_enabled,
             "logged_in": logged_in,
+            "user": current_user,
             "oidc_enabled": oidc_enabled,
             "password_auth_enabled": password_auth_enabled,
             "passwordless_enabled": bool(passkeys) and not password_auth_enabled,
@@ -12150,7 +12363,12 @@ def handle_get(handler, parsed) -> bool:
             handler.end_headers()
         return True
 
-    if parsed.path.startswith("/api/") and not _guard_request_session_visibility(handler, parsed, method="GET"):
+    # File-manager routes handle their own profile/authorization internally
+    # via get_session_for_file_ops, so skip the blanket session-visibility guard.
+    if parsed.path.startswith("/api/") and not parsed.path.startswith("/api/file") \
+            and not parsed.path.startswith("/api/escape/file") \
+            and not parsed.path == "/api/folder/download" \
+            and not _guard_request_session_visibility(handler, parsed, method="GET"):
         return True
 
     # ── Insights / knowledge status ──
@@ -12535,9 +12753,9 @@ def handle_get(handler, parsed) -> bool:
         try:
             _t1 = _time.monotonic()
             s = get_session(sid, metadata_only=(not load_messages))
-            _session_profile = getattr(s, 'profile', None) or None
-            if not _session_visible_to_active_profile(_session_profile, handler):
+            if not _session_visible_to_request(s, handler):
                 return bad(handler, "Session not found", 404)
+            _session_profile = getattr(s, 'profile', None) or None
             original_stream_id = getattr(s, "active_stream_id", None)
             _clear_stale_stream_state(s)
             cli_meta = _lookup_cli_session_metadata(sid) if _session_requires_cli_metadata_lookup(s) else {}
@@ -12763,6 +12981,22 @@ def handle_get(handler, parsed) -> bool:
                 "threshold_tokens": _threshold_tokens,
                 "last_prompt_tokens": getattr(s, "last_prompt_tokens", 0) or 0,
             }
+            # Mark read-only shared viewers so the frontend can lock the composer.
+            if not _session_visible_to_current_rbac_user(getattr(s, "rbac_user_id", None), handler):
+                if _session_shared_with_current_user(getattr(s, "session_id", None), handler):
+                    raw["viewer"] = "shared"
+                    try:
+                        from api import share_store as _share_store
+                        _share = next(
+                            (x for x in _share_store.list_shares_for_session(STATE_DIR, getattr(s, "session_id", ""))
+                             if str(x.get("to_user_id") or "") == str(_current_rbac_user_id(handler) or "")),
+                            None,
+                        )
+                        if _share:
+                            raw["shared_by"] = _share.get("owner_name")
+                            raw["share_id"] = _share.get("id")
+                    except Exception:
+                        pass
             if original_stream_id:
                 try:
                     journal = find_run_summary(original_stream_id)
@@ -12994,10 +13228,16 @@ def handle_get(handler, parsed) -> bool:
             sidebar_source = parse_qs(parsed.query).get("sidebar_source", [""])[0].strip().lower() or None
             if sidebar_source not in ("webui", "cli"):
                 sidebar_source = None
+            rbac_user_id = _current_rbac_user_id(handler)
+            rbac_is_admin = _current_rbac_user_is_admin(handler)
+            rbac_scope_enabled = bool(rbac_user_id) or _rbac_users_configured()
             # /api/sessions is the default sidebar contract, so keep the route-owned
             # visible-row filter in the shared cache builder for both cache hits and misses.
             key = _session_list_cache_key(
                 active_profile=active_profile,
+                rbac_user_id=rbac_user_id,
+                rbac_scope_enabled=rbac_scope_enabled,
+                rbac_is_admin=rbac_is_admin,
                 all_profiles=all_profiles,
                 show_cli_sessions=show_cli_sessions,
                 show_claude_code_sessions=show_claude_code_sessions,
@@ -13020,6 +13260,9 @@ def handle_get(handler, parsed) -> bool:
                 key=key,
                 builder=lambda: _build_session_list_cache_payload(
                     active_profile=active_profile,
+                    rbac_user_id=rbac_user_id,
+                    rbac_scope_enabled=rbac_scope_enabled,
+                    rbac_is_admin=rbac_is_admin,
                     all_profiles=all_profiles,
                     show_cli_sessions=show_cli_sessions,
                     show_claude_code_sessions=show_claude_code_sessions,
@@ -13038,7 +13281,17 @@ def handle_get(handler, parsed) -> bool:
                 diag=diag,
             )
             diag.stage("response_write")
-            return j(handler, _session_list_payload_to_response(payload), pretty=False)
+            response = _session_list_payload_to_response(payload)
+            current_rbac_user = _current_rbac_user(handler)
+            if current_rbac_user:
+                response["rbac_user_id"] = current_rbac_user.get("id")
+                response["rbac_username"] = current_rbac_user.get("username")
+                response["rbac_role"] = current_rbac_user.get("role", "user")
+            else:
+                response["rbac_user_id"] = None
+                response["rbac_username"] = None
+                response["rbac_role"] = None
+            return j(handler, response, pretty=False)
         finally:
             diag.finish()
 
@@ -13709,7 +13962,7 @@ def _require_passkey_registration_auth(handler) -> tuple[bool, str, int]:
     passkey-only instance, but only through the same local/private-network
     onboarding gate used for first password setup.
     """
-    from api.auth import is_auth_enabled, parse_cookie, verify_session
+    from api.auth import is_auth_enabled, parse_cookie, verify_any_session
 
     auth_enabled = is_auth_enabled()
     if not auth_enabled:
@@ -13717,7 +13970,7 @@ def _require_passkey_registration_auth(handler) -> tuple[bool, str, int]:
             return True, "", 200
         return False, "Authentication required", 401
     cookie_val = parse_cookie(handler)
-    if not cookie_val or not verify_session(cookie_val):
+    if not verify_any_session(cookie_val):
         return False, "Authentication required", 401
     return True, "", 200
 
@@ -13734,6 +13987,14 @@ def _validate_session_toolsets_shape(toolsets):
 def handle_post(handler, parsed) -> bool:
     """Handle all POST routes. Returns True if handled, False for 404."""
     diag = RequestDiagnostics.maybe_start("POST", parsed.path, logger=logger)
+    # RBAC login must be dispatched before the legacy single-password route.
+    # Both endpoints historically used this path, but RBAC needs a username.
+    if parsed.path == "/api/auth/login":
+        from api.rbac_routes import try_handle_rbac
+        if try_handle_rbac("POST", parsed, handler):
+            if diag:
+                diag.finish()
+            return True
     if parsed.path == "/api/csp-report":
         if diag:
             diag.stage("csp_report")
@@ -14167,16 +14428,28 @@ def handle_post(handler, parsed) -> bool:
                 # thread the drain snapshot already missed).
                 if _register_background_commit_thread(t):
                     t.start()
+        _rbac_owner_id = _current_rbac_user_id(handler)
         s = new_session(
             workspace=workspace,
             model=model,
             model_provider=model_provider,
             profile=body.get("profile") or None,
+            rbac_user_id=_rbac_owner_id,
             project_id=body.get("project_id") or None,
             worktree_info=worktree_info,
             enabled_toolsets=enabled_toolsets,
         )
-        if worktree_info:
+        # Always persist new sessions so they survive a page refresh.  The
+        # #1171 ghost-session guard only applies to the list-level visible_only
+        # filter; persisting an empty session is safe — it will be included in
+        # the list response when owned by the viewer or when it has messages.
+        try:
+            s.save()
+            _persisted = True
+        except Exception:
+            logger.exception("failed to persist new session %s", getattr(s, "session_id", None))
+            _persisted = False
+        if worktree_info or _persisted:
             publish_session_list_changed(
                 "session_new",
                 profile=getattr(s, "profile", None),
@@ -14223,6 +14496,7 @@ def handle_post(handler, parsed) -> bool:
                 archived=False,
                 project_id=session.project_id,
                 profile=session.profile,
+                rbac_user_id=_current_rbac_user_id(handler) or getattr(session, "rbac_user_id", None),
                 input_tokens=session.input_tokens,
                 output_tokens=session.output_tokens,
                 estimated_cost=session.estimated_cost,
@@ -14836,6 +15110,13 @@ def handle_post(handler, parsed) -> bool:
                 delete_cli_session(sid)
             except Exception:
                 logger.debug("Failed to delete CLI session %s", sid)
+        # Remove any share records pointing at the deleted session so the
+        # recipient's "收到的分享" section never shows dangling rows.
+        try:
+            from api import share_store as _share_store
+            _share_store.remove_shares_for_session(STATE_DIR, sid)
+        except Exception:
+            logger.debug("Failed to remove share records for deleted session %s", sid)
         _publish_session_list_changed("session_delete", profile=event_profile)
         return j(handler, {"ok": True, **worktree_retained})
 
@@ -15050,6 +15331,7 @@ def handle_post(handler, parsed) -> bool:
             model=source.model,
             model_provider=getattr(source, "model_provider", None),
             profile=getattr(source, "profile", None),
+            rbac_user_id=_current_rbac_user_id(handler) or getattr(source, "rbac_user_id", None),
             title=branch_title,
             messages=forked_messages,
             project_id=getattr(source, "project_id", None),
@@ -15487,7 +15769,7 @@ def handle_post(handler, parsed) -> bool:
             parse_cookie,
             set_auth_cookie,
             verify_password,
-            verify_session,
+            verify_any_session,
         )
 
         if "bot_name" in body:
@@ -15496,7 +15778,7 @@ def handle_post(handler, parsed) -> bool:
         auth_enabled_before = is_auth_enabled()
         password_auth_enabled_before = auth_enabled_before and get_password_hash() is not None
         current_cookie = parse_cookie(handler)
-        logged_in_before = bool(current_cookie and verify_session(current_cookie))
+        logged_in_before = verify_any_session(current_cookie)
         requested_password = bool(
             isinstance(body.get("_set_password"), str)
             and body.get("_set_password", "").strip()
@@ -16444,6 +16726,10 @@ def handle_put(handler, parsed) -> bool:
     )
     if proxy_result is not False:
         return proxy_result
+    # RBAC routes (admin user role/panels update, etc.)
+    from api.rbac_routes import try_handle_rbac
+    if try_handle_rbac("PUT", parsed, handler):
+        return True
     body = read_body(handler)
     if not _guard_request_session_visibility(handler, parsed, body=body, method="PUT"):
         return True
@@ -17867,11 +18153,11 @@ def _handle_tts(handler, parsed):
         from api.helpers import bad as _bad
         return _bad(handler, "text too long (max 5000 characters)", 400)
 
-    from api.auth import is_auth_enabled, parse_cookie, verify_session
+        from api.auth import is_auth_enabled, parse_cookie, verify_any_session
     cv = None
     if is_auth_enabled():
         cv = parse_cookie(handler)
-        if not (cv and verify_session(cv)):
+        if not verify_any_session(cv):
             from api.helpers import bad as _bad
             return _bad(handler, "unauthorized", 401)
 
@@ -18279,14 +18565,14 @@ def _handle_media(handler, parsed):
       (os.pathsep-separated list of absolute paths; ":" on POSIX, ";" on Windows)
     """
     import os as _os
-    from api.auth import is_auth_enabled, parse_cookie, verify_session
+    from api.auth import is_auth_enabled, parse_cookie, verify_any_session
     _HOME = Path(_os.path.expanduser("~"))
     _HERMES_HOME = Path(_os.getenv("HERMES_HOME", str(_HOME / ".hermes"))).expanduser()
 
     # Auth check
     if is_auth_enabled():
         cv = parse_cookie(handler)
-        if not (cv and verify_session(cv)):
+        if not verify_any_session(cv):
             body = b'{"error":"Authentication required"}'
             handler.send_response(401)
             handler.send_header("Content-Type", "application/json")
@@ -21172,7 +21458,7 @@ def _handle_session_compression_recovery_start(handler, body):
         source = get_session(sid)
     except KeyError:
         return bad(handler, "Session not found", 404)
-    if not _session_visible_to_active_profile(getattr(source, "profile", None), handler):
+    if not _session_visible_to_request(source, handler):
         return bad(handler, "Session not found", 404)
     recovery = compression_recovery_payload_for_session(source)
     if not recovery:
@@ -21201,6 +21487,7 @@ def _handle_session_compression_recovery_start(handler, body):
                 archived=False,
                 project_id=getattr(source, "project_id", None),
                 profile=getattr(source, "profile", None),
+                rbac_user_id=_current_rbac_user_id(handler) or getattr(source, "rbac_user_id", None),
                 session_source="fork",
                 personality=getattr(source, "personality", None),
                 enabled_toolsets=copy.deepcopy(getattr(source, "enabled_toolsets", None)),
@@ -21504,6 +21791,15 @@ def _handle_chat_start(handler, body, diag=None):
                 s.profile = requested_profile
             else:
                 return bad(handler, "Session not found", 404)
+        if not _session_visible_to_current_rbac_user(getattr(s, "rbac_user_id", None), handler):
+            # Shared (read-only) viewers get a clear 403 instead of a 404 so
+            # the frontend can render an informative read-only state.
+            if _session_shared_with_current_user(getattr(s, "session_id", None), handler):
+                return j(handler, {"error": "shared session is read-only", "type": "read_only_shared_session"}, status=403)
+            return bad(handler, "Session not found", 404)
+        current_rbac_user_id = _current_rbac_user_id(handler)
+        if current_rbac_user_id and not getattr(s, "rbac_user_id", None):
+            s.rbac_user_id = current_rbac_user_id
         diag.stage("normalize_message") if diag else None
         msg = str(body.get("message", "")).strip()
         if not msg:
@@ -25140,6 +25436,7 @@ def _handle_session_import(handler, body):
         messages=messages,
         tool_calls=body.get("tool_calls", []),
         profile=get_active_profile_name(),
+        rbac_user_id=_current_rbac_user_id(handler),
     )
     s.pinned = body.get("pinned", False)
     with LOCK:

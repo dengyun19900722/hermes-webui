@@ -1,5 +1,44 @@
 # ZK 运维智能体 - 版本变更日志
 
+## [v1.2.0] — 2026-07-23
+
+### Added
+
+- **ZKREQ-139: RBAC 用户权限系统** — 完整的多用户角色权限体系
+  - 用户注册/登录会话管理，`/setup` 首次初始化创建 admin 用户
+  - 用户 CRUD 管理 API + 管理面板（设置 → 用户管理）
+  - 角色判断：`is_admin` / `require_role` 辅助函数
+  - 用户级会话隔离：每个用户的会话数据在 `users.json` 中被标识和隔离
+  - 会话分享：支持用户间分享和 Token 链接分享两种模式
+  - 审计日志：RBAC 用户创建/删除/角色变更、会话分享等操作全量留痕
+- **ZKREQ-140: RBAC 面板级权限控制**
+  - 用户记录新增 `panels` 字段（可访问面板列表），默认 `["chat","tasks","skills","knowledge"]`
+  - admin 不受 panels 限制；普通用户只能看到被授权的面板
+  - `settings` 面板对非 admin 完全隐藏
+  - 用户管理面板支持可视化的面板权限编辑（复选框多选 → `PUT /api/admin/users/{id}/panels`）
+- **ZKREQ-141: 知识库评分与元数据系统**
+  - 笔记创建时自动记录创建者（从 `_current_rbac_user` 注入），侧边栏笔记行显示 @creator 和平均评分星标
+  - 笔记详情页评分区域：创建者显示 + 只读星标 + 交互式 1-5 星控件 + 提交按钮
+  - hover 实时预览高亮、点击选星、提交后即时刷新摘要
+  - 详情页 Markdown 内容增加完整排版样式（标题、代码块、表格、引用、图片圆角阴影等）
+- **ZKREQ-142: Workspace 文件下载修复**
+  - `handle_get` 中 `/api/file*` 路由跳过全局 `_guard_request_session_visibility` 守卫
+  - 修复 RBAC 会话可见性守卫拦截 workspace 文件下载请求的回归
+- 笔记保存后自动刷新编辑器视图
+
+### Changed
+
+- 登录页重构为用户名+密码认证表单
+- 知识库评分条样式优化：移除深色背景填充，改用轻量 `border-bottom` 细线；星标统一金色 `#eab308`
+- 知识库 TOC 目录增大字号、增加 `.active` 高亮、层级缩进优化
+- `/api/auth/status` 响应增加 `user.panels` 字段
+- 设置页新增「用户管理」面板（与 Appearance/Preferences 并列）
+- `handle_put` 路由增加 `try_handle_rbac` 派发，修复 `PUT .../panels` 无法访问的 Bug
+
+### Security
+
+- 用户管理设置页面仅 admin 可见，非 admin 用户隐藏 settings 面板入口
+
 ## [v1.1.1] — 2026-07-06
 
 ### Added

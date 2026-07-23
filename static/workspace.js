@@ -27,6 +27,22 @@ async function api(path,opts={}){
       delete fetchOpts.retryTimeouts;
       delete fetchOpts.retryStatuses;
       delete fetchOpts.retryDelayMs;
+      const hasBody=Object.prototype.hasOwnProperty.call(fetchOpts,'body')&&fetchOpts.body!=null;
+      const body=hasBody?fetchOpts.body:null;
+      const isNativeBody=hasBody&&(
+        (typeof FormData!=='undefined'&&body instanceof FormData)||
+        (typeof URLSearchParams!=='undefined'&&body instanceof URLSearchParams)||
+        (typeof Blob!=='undefined'&&body instanceof Blob)||
+        (typeof ArrayBuffer!=='undefined'&&body instanceof ArrayBuffer)||
+        (typeof ArrayBuffer!=='undefined'&&ArrayBuffer.isView&&ArrayBuffer.isView(body))
+      );
+      if(hasBody&&typeof body!=='string'&&!isNativeBody){
+        fetchOpts.body=JSON.stringify(body);
+      }
+      const fetchHeaders=isNativeBody
+        ? (fetchOpts.headers||{})
+        : Object.assign({'Content-Type':'application/json'},fetchOpts.headers||{});
+      fetchOpts.headers=fetchHeaders;
 
       const useTimeout=Number.isFinite(Number(timeoutMs))&&Number(timeoutMs)>0;
       if(useTimeout&&typeof AbortController!=='undefined'){
@@ -40,7 +56,7 @@ async function api(path,opts={}){
         fetchOpts.signal=controller.signal;
       }
       const requestPromise=(async()=>{
-        const res=await fetch(url.href,{credentials:'include',headers:{'Content-Type':'application/json'},...fetchOpts});
+        const res=await fetch(url.href,{credentials:'include',...fetchOpts});
         if(!res.ok){
           // 401 means the auth session expired. Redirect to login so the user can
           // re-authenticate. This is especially important for iOS PWA (standalone mode)

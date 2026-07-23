@@ -151,6 +151,23 @@ def test_prune_session_from_index_removes_requested_row_only():
     assert s_b.path.exists()
 
 
+def test_save_invalidates_persisted_id_snapshot_before_incremental_index_write():
+    index_file = models.SESSION_INDEX_FILE
+    s_a = _make_session("sess_cache_a", "A", updated_at=100)
+    s_b = _make_session("sess_cache_b", "B", updated_at=200)
+    s_a.save()
+
+    models._PERSISTED_SESSION_IDS_CACHE = (
+        models.SESSION_DIR,
+        models.SESSION_DIR.stat().st_mtime_ns,
+        frozenset(),
+    )
+    s_b.save()
+
+    ids = {entry["session_id"] for entry in _read_index(index_file)}
+    assert ids == {"sess_cache_a", "sess_cache_b"}
+
+
 def test_all_sessions_backfills_last_message_at_for_legacy_index_rows():
     index_file = models.SESSION_INDEX_FILE
     s = Session(

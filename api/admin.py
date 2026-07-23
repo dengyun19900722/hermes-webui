@@ -13,6 +13,7 @@ from typing import Any
 from api import audit as _audit
 from api.auth import _hash_password, _state_dir
 from api.user_store import (
+    DEFAULT_USER_PANELS,
     add_user as _add_user,
     find_user_by_id,
     find_user_by_username,
@@ -29,10 +30,18 @@ def _strip_sensitive(user: dict) -> dict:
 def list_users() -> list[dict[str, Any]]:
     """List all users (without password hashes)."""
     users = load_users(_state_dir())
-    return [_strip_sensitive(u) for u in users]
+    result = []
+    for u in users:
+        u = _strip_sensitive(u)
+        # Ensure panels field exists for backward compat
+        if "panels" not in u:
+            u["panels"] = list(DEFAULT_USER_PANELS)
+        result.append(u)
+    return result
 
 
-def create_user(username: str, password: str, role: str = "user") -> dict:
+def create_user(username: str, password: str, role: str = "user",
+                panels: list[str] | None = None) -> dict:
     """Create a new user. Raises ValueError on duplicate username or invalid role."""
     if role not in ("user", "admin"):
         raise ValueError(f"Invalid role: {role}")
@@ -42,6 +51,7 @@ def create_user(username: str, password: str, role: str = "user") -> dict:
         "username": username,
         "password_hash": _hash_password(password),
         "role": role,
+        "panels": panels if panels is not None else list(DEFAULT_USER_PANELS),
         "created_at": datetime.utcnow().isoformat() + "Z",
         "last_login": None,
     })
@@ -50,9 +60,32 @@ def create_user(username: str, password: str, role: str = "user") -> dict:
         action="user.create",
         actor_id="system", actor_name="system",
         target_type="user", target_id=user["id"], target_name=username,
-        details={"role": role},
+        details={"role": role, "panels": user.get("panels")},
     )
     return _strip_sensitive(user)
+
+
+def update_user_panels(
+    user_id: str, panels: list[str],
+    *, actor_id: str = "system", actor_name: str = "system",
+) -> dict | None:
+    """Update a user's panel permissions. Returns updated user or None if not found."""
+    from api.user_store import load_users, save_users
+    users = load_users(_state_dir())
+    for user in users:
+        if user.get("id") == user_id:
+            old_panels = list(user.get("panels", DEFAULT_USER_PANELS))
+            user["panels"] = list(panels)
+            save_users(_state_dir(), users)
+            _audit.write(
+                category="rbac",
+                action="user.panels_change",
+                actor_id=actor_id, actor_name=actor_name,
+                target_type="user", target_id=user_id, target_name=user.get("username"),
+                details={"old_panels": old_panels, "new_panels": panels},
+            )
+            return _strip_sensitive(user)
+    return None
 
 
 def update_user_role(
