@@ -763,7 +763,8 @@ async function saveKnowledgeNote(){
       _knowledgeDirty=false;
       _knowledgePreEditSnapshot=null;
       await loadKnowledgeNotes(true);
-      await openKnowledgeNote(data.path,null,{silent:true});
+      // 强制 force=true 跳过缓存,否则编辑器仍显示保存前的旧内容
+      await openKnowledgeNote(data.path, null, {silent: true, force: true});
       return;
     }
     const data=await api('/api/notes',{method:'POST',body:JSON.stringify({title,category,content})});
