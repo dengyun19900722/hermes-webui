@@ -12274,6 +12274,14 @@ def handle_get(handler, parsed) -> bool:
         )
         return t(handler, _page, content_type="text/html; charset=utf-8")
 
+    if parsed.path == "/setup":
+        _setup_path = Path(__file__).resolve().parent.parent / "static" / "setup.html"
+        try:
+            _setup_html = _setup_path.read_text(encoding="utf-8")
+            return t(handler, _setup_html, content_type="text/html; charset=utf-8")
+        except Exception as exc:
+            return bad(handler, f"Setup page not found: {exc}", status=404)
+
     if parsed.path == "/api/auth/oidc/start":
         from api.auth_oidc import OIDCAuthError, OIDCConfigError, build_authorization_redirect
 
