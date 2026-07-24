@@ -9594,12 +9594,15 @@ p{font-size:12px;color:#8888aa;margin-bottom:16px;line-height:1.5}
 .field label{color:#8888aa}
 .field .val{color:#e8e8f0;font-family:monospace;font-size:11px;word-break:break-all;max-width:180px;text-align:right}
 .import-area{border:1px dashed rgba(255,255,255,.15);border-radius:10px;padding:14px;margin-bottom:12px}
-.import-area p{margin-bottom:8px;font-size:11px}
-input[type=file]{width:100%;font-size:11px;color:#8888aa;margin-bottom:10px}
-button{width:100%;padding:9px;border-radius:10px;border:none;background:rgba(124,185,255,.15);
-  border:1px solid rgba(124,185,255,.3);color:#7cb9ff;font-size:13px;font-weight:600;cursor:pointer;
-  transition:all .15s}
-button:hover{background:rgba(124,185,255,.25)}
+.import-area p{margin-bottom:10px;font-size:11px}
+.file-picker-btn{display:block;width:100%;padding:9px;border-radius:10px;border:1px solid rgba(124,185,255,.3);
+  background:rgba(124,185,255,.15);color:#7cb9ff;font-size:13px;font-weight:600;cursor:pointer;
+  text-align:center;transition:all .15s;margin-bottom:8px;box-sizing:border-box}
+.file-picker-btn:hover{background:rgba(124,185,255,.25)}
+#importBtn{width:100%;padding:9px;border-radius:10px;border:none;background:var(--accent-bg,rgba(124,185,255,.15));
+  border:1px solid var(--accent-bg-strong,rgba(124,185,255,.3));color:var(--accent-text,#7cb9ff);
+  font-size:13px;font-weight:600;cursor:pointer;transition:all .15s;box-sizing:border-box}
+#importBtn:hover{background:var(--accent-bg-strong,rgba(124,185,255,.25))}
 .err{color:#e94560;font-size:12px;margin-top:10px;display:none}
 .status{font-size:11px;color:#8888aa;margin-top:10px;display:none}
 </style></head><body>
@@ -9612,19 +9615,25 @@ button:hover{background:rgba(124,185,255,.25)}
   </div>
   <div class="import-area">
     <p>选择 License 文件（.lic / .txt）</p>
-    <input type="file" id="licenseFileInput" accept=".lic,.txt">
-    <button onclick="doImport()">导入 License</button>
+    <input type="file" id="licenseFileInput" accept=".lic,.txt" style="display:none">
+    <div class="file-picker-btn" id="filePickerBtn" onclick="document.getElementById('licenseFileInput').click()">选择文件</div>
+    <div style="font-size:11px;color:#8888aa;margin-bottom:8px" id="fileChosen">未选择文件</div>
+    <button id="importBtn" onclick="doImport()">导入 License</button>
   </div>
   <div class="err" id="err"></div>
   <div class="status" id="status"></div>
 </div>
 <script>
+var _selectedLicenseFile=null;
+document.getElementById('licenseFileInput').addEventListener('change',function(){
+  _selectedLicenseFile=this.files[0];
+  document.getElementById('fileChosen').textContent=_selectedLicenseFile?_selectedLicenseFile.name:'未选择文件';
+});
 function doImport(){
-  var f=document.getElementById('licenseFileInput');
   var e=document.getElementById('err');
   var s=document.getElementById('status');
   e.style.display='none';s.style.display='none';
-  if(!f.files.length){e.textContent='请选择 License 文件';e.style.display='block';return}
+  if(!_selectedLicenseFile){e.textContent='请先点击「选择文件」选取 License 文件';e.style.display='block';return}
   var fr=new FileReader();
   fr.onload=function(){
     s.textContent='正在验证...';s.style.display='block';
@@ -9642,7 +9651,9 @@ function doImport(){
       e.textContent='请求失败: '+(x.message||x);e.style.display='block';s.style.display='none'
     })
   };
-  fr.readAsText(f.files[0]);
+  fr.readAsText(_selectedLicenseFile);
+  document.getElementById('importBtn').disabled=true;
+  document.getElementById('importBtn').textContent='正在验证...';
 }
 </script>
 </body></html>"""
