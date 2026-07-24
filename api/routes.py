@@ -12196,6 +12196,39 @@ def handle_get(handler, parsed) -> bool:
         except Exception as exc:
             return _serve_shell_unavailable(handler, exc)
 
+    if parsed.path == "/license/activate":
+        # After successful activation the JS calls location.reload() against
+        # this URL. If license is now valid, bounce to the app root so the
+        # page doesn't 404 with `{"error":"not found"}`.
+        try:
+            from api.license import check_license_status, init_license_config
+            from api.config import DEFAULT_WORKSPACE
+            _lws = Path(DEFAULT_WORKSPACE)
+            _lconf = init_license_config(_lws)
+            _lstatus = check_license_status(_lws)
+        except Exception:
+            _lstatus = {"status": "not_initialized"}
+        if _lstatus.get("status") == "valid":
+            handler.send_response(302)
+            handler.send_header("Location", "/")
+            handler.send_header("Cache-Control", "no-store")
+            handler.send_header("Content-Length", "0")
+            _security_headers(handler)
+            handler.end_headers()
+            return True
+        # License still invalid — fall through to the activation-page render
+        # in the `/` handler below. We render it directly here so the URL
+        # stays stable for the activation page reload.
+        _settings = load_settings()
+        _bot_name = _html.escape(_settings.get("bot_name") or "Hermes")
+        page = (
+            _LICENSE_PAGE_HTML
+            .replace("{{BOT_NAME}}", _bot_name)
+            .replace("{{PLATFORM_ID}}", _html.escape(_lconf.get("platform_id") or "N/A"))
+            .replace("{{MAC_ADDRESS}}", _html.escape(_lconf.get("mac_address") or "N/A"))
+        )
+        return t(handler, page, content_type="text/html; charset=utf-8")
+
     if parsed.path == "/login":
         _settings = load_settings()
         _bn = _html.escape(_settings.get("bot_name") or "Hermes")

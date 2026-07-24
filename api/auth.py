@@ -59,6 +59,16 @@ PUBLIC_PATHS = frozenset({
     # License admin endpoints — 初始部署时无需登录即可生成/查询 License
     '/api/admin/license/generate',
     '/api/admin/license/list',
+    # License activation flow is pre-auth: the user cannot log in until the
+    # platform license is imported. The license middleware already gates
+    # `/license/activate` (returns the activation HTML when license is invalid
+    # and falls through when valid). The auth check would otherwise redirect
+    # the relative `login?next=...` against the current `/license/activate`
+    # URL, producing `/license/login?next=/license/activate` — a non-public
+    # path that is whitelisted by license_middleware → relative-redirect
+    # loop (ERR_TOO_MANY_REDIRECTS).
+    '/api/license/import',
+    '/api/license/apply',
     # Token share links are public by design (anyone holding the token).
     '/api/shared/session',
 })
@@ -766,7 +776,11 @@ def check_auth(handler, parsed) -> bool:
     if not is_auth_enabled():
         return True
     # Public paths don't require auth
-    if parsed.path in PUBLIC_PATHS or parsed.path.startswith('/static/') or parsed.path.startswith('/session/static/'):
+    if (parsed.path in PUBLIC_PATHS
+            or parsed.path.startswith('/static/')
+            or parsed.path.startswith('/session/static/')
+            or parsed.path == '/license'
+            or parsed.path.startswith('/license/')):
         return True
     # Check session cookie
     cookie_val = parse_cookie(handler)
