@@ -11962,12 +11962,14 @@ def _require_license(handler, parsed) -> bool | None:
     """
     path = parsed.path
 
-    # Always allow license admin, auth, static files, login, CSP
+    # Always allow license admin, auth, static files, license page, login, CSP
     if (
         path.startswith("/api/license/")
         or path.startswith("/api/auth/")
         or path.startswith("/static/")
         or path.startswith("/session/static/")
+        or path == "/license"
+        or path.startswith("/license/")
         or path in ("/login", "/api/csp-report", "/api/shutdown")
         or path in ("/manifest.json", "/manifest.webmanifest")
         or path in ("/session/manifest.json", "/session/manifest.webmanifest")
