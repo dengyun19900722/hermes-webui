@@ -2783,7 +2783,23 @@ async function populateModelDropdown(opts={}){
     const modelsUrl=new URL('api/models',document.baseURI||location.href);
     const requestedFreshness=opts&&opts.freshness?String(opts.freshness):'';
     if(opts&&opts.freshness) modelsUrl.searchParams.set('freshness',opts.freshness);
-    const _modelsRes=await fetch(modelsUrl.href,{credentials:'include'});
+    // Defense-in-depth: abort the fetch after 60s so a hanging provider
+    // doesn't freeze the dropdown forever (backend _handle_live_models
+    // now has its own 30s timeout, but this guards other paths).
+    const _fetchController=new AbortController();
+    const _fetchTimeoutId=setTimeout(()=>_fetchController.abort(),60000);
+    let _modelsRes;
+    try{
+      _modelsRes=await fetch(modelsUrl.href,{credentials:'include',signal:_fetchController.signal});
+    }catch(_fetchErr){
+      clearTimeout(_fetchTimeoutId);
+      if(_fetchErr.name==='AbortError'){
+        console.debug('[hermes] Model fetch timed out after 60s');
+        return;
+      }
+      throw _fetchErr; // re-throw to outer catch for network errors
+    }
+    clearTimeout(_fetchTimeoutId);
     if(requestSeq!==_modelDropdownRequestSeq) return;
     const customRedirectIfUnauth=opts&&typeof opts.redirectIfUnauth==='function'?opts.redirectIfUnauth:null;
     if(customRedirectIfUnauth){
@@ -3000,7 +3016,21 @@ async function _fetchLiveModels(provider, sel, requestSeq=null){
   try{
     const url=new URL('api/models/live',document.baseURI||location.href);
     url.searchParams.set('provider',provider);
-    const _liveRes=await fetch(url.href,{credentials:'include'});
+    // Background enrichment — 20s timeout, no toast needed if it fails.
+    const _liveController=new AbortController();
+    const _liveTimeoutId=setTimeout(()=>_liveController.abort(),20000);
+    let _liveRes;
+    try{
+      _liveRes=await fetch(url.href,{credentials:'include',signal:_liveController.signal});
+    }catch(_liveFetchErr){
+      clearTimeout(_liveTimeoutId);
+      if(_liveFetchErr.name==='AbortError'){
+        console.debug('[hermes] Live model fetch timed out for',provider);
+        return;
+      }
+      throw _liveFetchErr;
+    }
+    clearTimeout(_liveTimeoutId);
     if(requestSeq!==null&&requestSeq!==_modelDropdownRequestSeq) return;
     if(_redirectIfUnauth(_liveRes)) return;
     const data=await _liveRes.json();

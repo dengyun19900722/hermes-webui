@@ -19608,6 +19608,9 @@ def _handle_live_models(handler, parsed):
         # Delegate to the agent's live-fetch + fallback resolver.
         # provider_model_ids() tries live endpoints first and falls back to
         # the static _PROVIDER_MODELS list — it never raises.
+        # Wrap in a thread with 30s timeout: the agent's HTTP client has no
+        # socket timeout of its own, so an unreachable provider endpoint can
+        # hang for 60-120s (kernel TCP timeout), blocking the whole request.
         try:
             import sys as _sys
             import os as _os
@@ -19617,9 +19620,16 @@ def _handle_live_models(handler, parsed):
             if _agent_dir not in _sys.path:
                 _sys.path.insert(0, _agent_dir)
             from hermes_cli.models import provider_model_ids as _pmi
-            ids = _pmi(provider)
+
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _exec:
+                _fut = _exec.submit(_pmi, provider)
+                ids = _fut.result(timeout=30)
         except Exception as _import_err:
-            logger.debug("provider_model_ids import failed for %s: %s", provider, _import_err)
+            if _import_err.__class__.__name__ == 'TimeoutError':
+                logger.warning("provider_model_ids timed out for provider=%s after 30s", provider)
+            else:
+                logger.debug("provider_model_ids import failed for %s: %s", provider, _import_err)
             ids = []
 
         if not ids:

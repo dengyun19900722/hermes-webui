@@ -8977,6 +8977,24 @@ async function loadSettingsPanel(){
       setLocale(resolvedLanguage);
       if(typeof applyLocaleToDOM==='function') applyLocaleToDOM();
     }
+    // Language preference — populate from LOCALES bundle (do this before the
+    // potentially-slow /api/models call so the language picker appears quickly).
+    const langSel=$('settingsLanguage');
+    if(langSel){
+      langSel.innerHTML='';
+      if(typeof LOCALES!=='undefined'){
+        for(const [code,bundle] of Object.entries(LOCALES)){
+          const opt=document.createElement('option');
+          opt.value=code;opt.textContent=bundle._label||code;
+          langSel.appendChild(opt);
+        }
+      }
+      langSel.value=resolvedLanguage;
+      langSel.addEventListener('change',function(){
+        if(typeof setLocale==='function'){setLocale(this.value);if(typeof applyLocaleToDOM==='function')applyLocaleToDOM();}
+        _schedulePreferencesAutosave();
+      },{once:false});
+    }
     // Populate model dropdown from /api/models + live model fetch (#872)
     const modelSel=$('settingsModel');
     if(modelSel){
@@ -9027,23 +9045,6 @@ async function loadSettingsPanel(){
     // Send key preference
     const sendKeySel=$('settingsSendKey');
     if(sendKeySel){sendKeySel.value=settings.send_key||'enter';sendKeySel.addEventListener('change',_schedulePreferencesAutosave,{once:false});}
-    // Language preference — populate from LOCALES bundle
-    const langSel=$('settingsLanguage');
-    if(langSel){
-      langSel.innerHTML='';
-      if(typeof LOCALES!=='undefined'){
-        for(const [code,bundle] of Object.entries(LOCALES)){
-          const opt=document.createElement('option');
-          opt.value=code;opt.textContent=bundle._label||code;
-          langSel.appendChild(opt);
-        }
-      }
-      langSel.value=resolvedLanguage;
-      langSel.addEventListener('change',function(){
-        if(typeof setLocale==='function'){setLocale(this.value);if(typeof applyLocaleToDOM==='function')applyLocaleToDOM();}
-        _schedulePreferencesAutosave();
-      },{once:false});
-    }
     const showUsageCb=$('settingsShowTokenUsage');
     if(showUsageCb){showUsageCb.checked=!!settings.show_token_usage;showUsageCb.addEventListener('change',_schedulePreferencesAutosave,{once:false});}
     const maxTokensField=$('settingsMaxTokens');
