@@ -14,6 +14,7 @@ import secrets
 import tempfile
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 from api.config import STATE_DIR, get_config, load_settings
@@ -49,7 +50,7 @@ def _resolve_session_ttl() -> int:
 
 # ── Public paths (no auth required) ─────────────────────────────────────────
 PUBLIC_PATHS = frozenset({
-    '/login', '/health', '/favicon.ico', '/sw.js',
+    '/login', '/setup', '/health', '/favicon.ico', '/sw.js',
     '/api/auth/login', '/api/auth/status',
     '/api/auth/oidc/start', '/api/auth/oidc/callback',
     '/api/auth/passkey/options', '/api/auth/passkey/login',
@@ -58,6 +59,23 @@ PUBLIC_PATHS = frozenset({
     # License admin endpoints — 初始部署时无需登录即可生成/查询 License
     '/api/admin/license/generate',
     '/api/admin/license/list',
+    # License activation flow is pre-auth: the user cannot log in until the
+    # platform license is imported. The license middleware already gates
+    # `/license/activate` (returns the activation HTML when license is invalid
+    # and falls through when valid). The auth check would otherwise redirect
+    # the relative `login?next=...` against the current `/license/activate`
+    # URL, producing `/license/login?next=/license/activate` — a non-public
+    # path that is whitelisted by license_middleware → relative-redirect
+    # loop (ERR_TOO_MANY_REDIRECTS).
+    # First-time admin registration (POST /api/auth/register) and the
+    # setup-or-login decision endpoint (GET /api/auth/init_status) are also
+    # pre-auth — the admin account does not exist yet.
+    '/api/auth/register',
+    '/api/auth/init_status',
+    '/api/license/import',
+    '/api/license/apply',
+    # Token share links are public by design (anyone holding the token).
+    '/api/shared/session',
 })
 
 COOKIE_NAME = 'hermes_session'
@@ -502,7 +520,18 @@ def get_oidc_startup_warning() -> str | None:
 
 
 def is_auth_enabled() -> bool:
-    """True if password auth, passkeys, or OIDC login is configured."""
+    """True if any supported authentication mode is configured.
+
+    RBAC users are also an authentication source. Without this check, the
+    first-admin wizard can persist users successfully while the server keeps
+    reporting auth as disabled, so the RBAC login page is never reached.
+    """
+    try:
+        from api.user_store import load_users
+        if load_users(_state_dir()):
+            return True
+    except Exception:
+        pass
     return (
         is_password_auth_enabled()
         or are_passkeys_enabled()
@@ -588,8 +617,13 @@ def verify_session(cookie_value: str) -> bool:
 
 def _session_token_from_cookie_value(cookie_value: str) -> str | None:
     """Return the raw server-side session token from a signed cookie value."""
-    if not cookie_value or '.' not in cookie_value:
+    if not cookie_value:
         return None
+    if '.' not in cookie_value:
+        try:
+            return cookie_value if get_user_from_session(cookie_value) else None
+        except Exception:
+            return None
     token, _sig = cookie_value.rsplit('.', 1)
     return token or None
 
@@ -602,7 +636,7 @@ def sign_profile_cookie_value(profile_name: str, session_cookie_value: str | Non
     the HttpOnly session token prevents a client from forging
     ``hermes_profile=<other-profile>`` and bypassing profile visibility guards.
     """
-    if not session_cookie_value or not verify_session(session_cookie_value):
+    if not session_cookie_value or not verify_any_session(session_cookie_value):
         raise ValueError("active auth session is required to sign profile cookie")
     token = _session_token_from_cookie_value(session_cookie_value)
     if not token:
@@ -619,7 +653,7 @@ def verify_profile_cookie_value(cookie_value: str, session_cookie_value: str | N
     """Verify a session-bound profile cookie and return its profile name."""
     if not cookie_value or '.' not in cookie_value:
         return None
-    if not session_cookie_value or not verify_session(session_cookie_value):
+    if not session_cookie_value or not verify_any_session(session_cookie_value):
         return None
     profile_name, sig = cookie_value.rsplit('.', 1)
     token = _session_token_from_cookie_value(session_cookie_value)
@@ -658,7 +692,7 @@ def csrf_token_for_session(cookie_value: str) -> str | None:
 
 def verify_csrf_token(cookie_value: str, csrf_token: str) -> bool:
     """Verify a submitted CSRF token against the authenticated session."""
-    if not cookie_value or not csrf_token or not verify_session(cookie_value):
+    if not cookie_value or not csrf_token or not verify_any_session(cookie_value):
         return False
     expected = csrf_token_for_session(cookie_value)
     return bool(expected and hmac.compare_digest(str(csrf_token), expected))
@@ -686,6 +720,19 @@ def parse_cookie(handler) -> str | None:
         return None
     morsel = cookie.get(_resolve_cookie_name())
     return morsel.value if morsel else None
+
+
+def verify_any_session(cookie_value: str | None) -> bool:
+    """Verify either the legacy signed session or an RBAC user session."""
+    if not cookie_value:
+        return False
+    if verify_session(cookie_value):
+        return True
+    try:
+        from api.auth import get_user_from_session
+        return get_user_from_session(cookie_value) is not None
+    except Exception:
+        return False
 
 
 def _safe_login_inner_next(query: str | None) -> str:
@@ -734,11 +781,15 @@ def check_auth(handler, parsed) -> bool:
     if not is_auth_enabled():
         return True
     # Public paths don't require auth
-    if parsed.path in PUBLIC_PATHS or parsed.path.startswith('/static/') or parsed.path.startswith('/session/static/'):
+    if (parsed.path in PUBLIC_PATHS
+            or parsed.path.startswith('/static/')
+            or parsed.path.startswith('/session/static/')
+            or parsed.path == '/license'
+            or parsed.path.startswith('/license/')):
         return True
     # Check session cookie
     cookie_val = parse_cookie(handler)
-    if cookie_val and verify_session(cookie_val):
+    if verify_any_session(cookie_val):
         return True
     # Not authorized
     if parsed.path.startswith('/api/'):
@@ -880,3 +931,163 @@ def clear_auth_cookie(handler) -> None:
     cookie[name]['path'] = '/'
     cookie[name]['max-age'] = '0'
     handler.send_header('Set-Cookie', cookie[name].OutputString())
+
+
+# ── RBAC multi-user support ────────────────────────────────────────────────
+
+def _state_dir() -> Path:
+    """Return the state directory used for users.json storage."""
+    return STATE_DIR
+
+
+def needs_initialization() -> bool:
+    """Return True if no users exist yet (first deployment)."""
+    from api.user_store import load_users
+    return len(load_users(_state_dir())) == 0
+
+
+def is_initialized() -> bool:
+    """Return True if at least one user has been registered."""
+    return not needs_initialization()
+
+
+def initialize_first_admin(username: str, password: str) -> dict:
+    """Create the initial admin user. Raises ValueError if already initialized.
+
+    Hashes password via PBKDF2-SHA256 (same scheme as existing single-password
+    auth) so admins created here can authenticate via the same flow.
+    """
+    if not needs_initialization():
+        raise ValueError("System already initialized")
+    from api.user_store import add_user
+    password_hash = _hash_password(password)
+    return add_user(_state_dir(), {
+        "username": username,
+        "password_hash": password_hash,
+        "role": "admin",
+        "created_at": datetime.utcnow().isoformat() + "Z",
+        "last_login": None,
+    })
+
+
+# ── Multi-user session store ─────────────────────────────────────────────────
+
+_USER_SESSION_TTL = 86400 * 30  # 30 days
+_user_sessions: dict[str, dict] = {}  # token -> {user_id, expires_at}
+_USER_SESSION_LOCK = threading.Lock()
+_USER_SESSIONS_FILE = STATE_DIR / ".rbac-sessions.json"
+
+
+def _load_user_sessions() -> dict[str, dict]:
+    try:
+        data = json.loads(_USER_SESSIONS_FILE.read_text(encoding="utf-8"))
+        now = time.time()
+        return {
+            token: value for token, value in data.items()
+            if isinstance(token, str) and isinstance(value, dict)
+            and isinstance(value.get("user_id"), str)
+            and float(value.get("expires_at", 0)) > now
+        }
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _save_user_sessions() -> None:
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        _USER_SESSIONS_FILE.write_text(
+            json.dumps(_user_sessions), encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
+def verify_password_against_hash(plain: str, expected_hash: str) -> bool:
+    """Verify plaintext against a stored PBKDF2 hash (constant-time compare)."""
+    return hmac.compare_digest(_hash_password(plain), expected_hash)
+
+
+def authenticate(username: str, password: str) -> dict | None:
+    """Verify username/password. Returns user dict on success, None on failure.
+
+    On success, also updates ``last_login`` timestamp on disk so the
+    admin can see who is using the system.
+    """
+    from api.user_store import find_user_by_username, save_users, load_users
+    user = find_user_by_username(_state_dir(), username)
+    if not user:
+        return None
+    if not verify_password_against_hash(password, user["password_hash"]):
+        return None
+    # 更新 last_login
+    user["last_login"] = datetime.utcnow().isoformat() + "Z"
+    users = load_users(_state_dir())
+    for i, u in enumerate(users):
+        if u.get("id") == user["id"]:
+            users[i] = user
+            break
+    save_users(_state_dir(), users)
+    return user
+
+
+def create_user_session(user_id: str) -> str:
+    """Create a new auth session token bound to user_id. Returns hex token."""
+    token = secrets.token_hex(32)
+    with _USER_SESSION_LOCK:
+        _user_sessions.update(_load_user_sessions())
+        _user_sessions[token] = {
+            "user_id": user_id,
+            "expires_at": time.time() + _USER_SESSION_TTL,
+        }
+        _save_user_sessions()
+    return token
+
+
+def get_user_from_session(token: str) -> dict | None:
+    """Return user dict for a valid session token, or None if expired/invalid."""
+    if not token:
+        return None
+    with _USER_SESSION_LOCK:
+        _user_sessions.update(_load_user_sessions())
+        session = _user_sessions.get(token)
+        if not session:
+            return None
+        if time.time() > session["expires_at"]:
+            _user_sessions.pop(token, None)
+            _save_user_sessions()
+            return None
+        user_id = session["user_id"]
+    from api.user_store import find_user_by_id
+    return find_user_by_id(_state_dir(), user_id)
+
+
+def invalidate_user_session(token: str) -> None:
+    """Invalidate a session token. No-op if token was never issued."""
+    if not token:
+        return
+    with _USER_SESSION_LOCK:
+        _user_sessions.pop(token, None)
+        _save_user_sessions()
+
+
+# ── Role check helpers ────────────────────────────────────────────────────────
+
+def is_admin(user: dict | None) -> bool:
+    """Return True if user has admin role. None / missing role → False."""
+    if not user:
+        return False
+    return user.get("role") == "admin"
+
+
+def require_role(user: dict | None, role: str) -> None:
+    """Raise PermissionError if user doesn't have the required role.
+
+    Use in route handlers before performing privileged operations:
+        user = get_user_from_session(token)
+        require_role(user, "admin")
+        # ... admin-only logic ...
+    """
+    if not user:
+        raise PermissionError("Authentication required")
+    if user.get("role") != role:
+        raise PermissionError(f"Requires role: {role}")

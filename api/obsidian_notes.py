@@ -191,7 +191,7 @@ def _note_payload(path: Path) -> dict:
     stat = path.stat()
     rel = _relative(path)
     parts = PurePosixPath(rel).parts
-    return {
+    payload = {
         "type": "note",
         "name": path.name,
         "title": path.stem,
@@ -200,6 +200,20 @@ def _note_payload(path: Path) -> dict:
         "mtime": stat.st_mtime,
         "size": stat.st_size,
     }
+    # Inject meta summary (creator_name, rating_count, rating_average) for tree/list responses
+    try:
+        from api.obsidian_meta import load_meta, compute_rating_summary, get_creator
+        meta_dir = vault_root() / ".meta"
+        creator = get_creator(meta_dir, rel)
+        summary = compute_rating_summary(meta_dir, rel)
+        payload["meta"] = {
+            "creator_name": creator["creator_name"] if creator else "",
+            "rating_count": summary["count"],
+            "rating_average": summary["average"],
+        }
+    except Exception:
+        payload["meta"] = {"creator_name": "", "rating_count": 0, "rating_average": 0.0}
+    return payload
 
 
 def _dir_payload(path: Path) -> dict:
@@ -920,14 +934,35 @@ def handle_notes_get(handler, parsed) -> bool:
 def handle_notes_post(handler, parsed, body: dict) -> bool:
     try:
         if parsed.path == "/api/notes":
-            return j(
-                handler,
-                create_note(
-                    body.get("title", ""),
-                    category=body.get("category") or body.get("dir") or "",
-                    content=body.get("content"),
-                ),
-            ) or True
+            result = create_note(
+                body.get("title", ""),
+                category=body.get("category") or body.get("dir") or "",
+                content=body.get("content"),
+            )
+            # Try to record creator in meta sidecar
+            try:
+                from api.routes import _current_rbac_user
+                user = _current_rbac_user(handler)
+                if user and user.get("id"):
+                    from api.obsidian_meta import ensure_meta
+                    ensure_meta(
+                        vault_root() / ".meta",
+                        result.get("path", ""),
+                        creator_id=user["id"],
+                        creator_name=user.get("username", ""),
+                    )
+                    # Refresh meta in response
+                    from api.obsidian_meta import get_creator, compute_rating_summary
+                    creator = get_creator(vault_root() / ".meta", result.get("path", ""))
+                    summary = compute_rating_summary(vault_root() / ".meta", result.get("path", ""))
+                    result["meta"] = {
+                        "creator_name": creator["creator_name"] if creator else "",
+                        "rating_count": summary["count"],
+                        "rating_average": summary["average"],
+                    }
+            except Exception:
+                pass
+            return j(handler, result) or True
         if parsed.path == "/api/notes/content":
             return j(handler, update_note(body.get("path", ""), body.get("content", ""))) or True
         if parsed.path == "/api/notes/delete":

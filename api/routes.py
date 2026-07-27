@@ -525,6 +525,123 @@ def _session_visible_to_active_profile(session_profile, handler=None) -> bool:
     return _profiles_match(session_profile, active_profile)
 
 
+def _rbac_users_configured() -> bool:
+    try:
+        from api.auth import _state_dir
+        from api.user_store import load_users
+
+        return bool(load_users(_state_dir()))
+    except Exception:
+        return False
+
+
+def _current_rbac_user(handler) -> dict | None:
+    """Return the RBAC user dict for this request, or None for legacy/no-RBAC auth."""
+    if handler is None:
+        return None
+    handler_dict = getattr(handler, "__dict__", None)
+    if isinstance(handler_dict, dict) and "_hermes_current_rbac_user" in handler_dict:
+        return handler_dict.get("_hermes_current_rbac_user")
+    user = None
+    try:
+        from api.auth import get_user_from_session, parse_cookie
+        token = parse_cookie(handler)
+        user = get_user_from_session(token) if token else None
+    except Exception:
+        user = None
+    try:
+        setattr(handler, "_hermes_current_rbac_user", user)
+    except Exception:
+        pass
+    return user
+
+
+def _current_rbac_user_id(handler) -> str | None:
+    """Return the RBAC user id for this request, or None for legacy/no-RBAC auth."""
+    if handler is None:
+        return None
+    handler_dict = getattr(handler, "__dict__", None)
+    if isinstance(handler_dict, dict) and "_hermes_current_rbac_user_id" in handler_dict:
+        return handler_dict.get("_hermes_current_rbac_user_id") or None
+    user = _current_rbac_user(handler)
+    user_id = str(user.get("id")).strip() if user and user.get("id") else None
+    user_id = user_id or None
+    try:
+        setattr(handler, "_hermes_current_rbac_user_id", user_id)
+    except Exception:
+        pass
+    return user_id
+
+
+def _current_rbac_user_is_admin(handler) -> bool:
+    """Return True when the current request is authenticated as an RBAC admin."""
+    user = _current_rbac_user(handler)
+    if not user:
+        return False
+    try:
+        from api.auth import is_admin
+        return is_admin(user)
+    except Exception:
+        return user.get("role") == "admin"
+
+
+def _session_visible_to_current_rbac_user(session_rbac_user_id, handler=None) -> bool:
+    """Return whether a session is visible to the current RBAC user.
+
+    Rules (kept in sync with the list filter in _build_session_list_cache_payload):
+    - Admin role sees ALL sessions (including legacy rows without rbac_user_id).
+    - Sessions without rbac_user_id (legacy / unowned) stay visible only when
+      RBAC users are not configured; with RBAC enabled they are admin-only.
+    - Rows with an owner are visible only to that owner (and to admin).
+    - When no RBAC user id is resolved (legacy auth or no auth) but RBAC users
+      are configured, owned and ownerless rows are hidden.
+
+    The list filter and this check use the same predicate so the sidebar and
+    direct session access stay consistent.
+    """
+    owner = str(session_rbac_user_id or "").strip()
+    if _current_rbac_user_is_admin(handler):
+        return True
+    if not owner:
+        return not _rbac_users_configured()
+    current_user_id = _current_rbac_user_id(handler)
+    if not current_user_id:
+        # No RBAC user id resolved (legacy auth or no auth). Fall back to
+        # "if RBAC is not configured, see everything; otherwise legacy
+        # authenticated users see unowned sessions only".
+        return not _rbac_users_configured()
+    return owner == current_user_id
+
+
+def _session_shared_with_current_user(session_id, handler=None) -> bool:
+    """True when the session has a live user-share addressed to the requester."""
+    sid = str(session_id or "").strip()
+    uid = _current_rbac_user_id(handler)
+    if not sid or not uid:
+        return False
+    try:
+        from api import share_store
+        return sid in share_store.shared_session_ids_for_user(STATE_DIR, uid)
+    except Exception:
+        return False
+
+
+def _session_visible_to_request(session, handler=None) -> bool:
+    """Read-level visibility: profile + (owner OR admin OR live user-share)."""
+    if not _session_visible_to_active_profile(getattr(session, "profile", None), handler):
+        return False
+    if _session_visible_to_current_rbac_user(getattr(session, "rbac_user_id", None), handler):
+        return True
+    return _session_shared_with_current_user(getattr(session, "session_id", None), handler)
+
+
+def _session_write_allowed_for_request(session, handler=None) -> bool:
+    """Write-level guard: shared (non-owner, non-admin) viewers are read-only."""
+    if _session_visible_to_current_rbac_user(getattr(session, "rbac_user_id", None), handler):
+        return True
+    return not _session_shared_with_current_user(getattr(session, "session_id", None), handler)
+
+
 def _request_session_visibility_exempt(method: str, path: str | None) -> bool:
     if not path:
         return False
@@ -541,7 +658,7 @@ def _request_session_visibility_exempt(method: str, path: str | None) -> bool:
 
 
 def _session_id_visible_to_request_profile(handler, sid, *, emit_error: bool = True) -> bool:
-    """Return whether ``sid`` belongs to the active profile."""
+    """Return whether ``sid`` belongs to the active profile and RBAC owner."""
     if not isinstance(sid, str) or not sid:
         return True
     if not is_safe_session_id(sid):
@@ -550,7 +667,7 @@ def _session_id_visible_to_request_profile(handler, sid, *, emit_error: bool = T
         session = get_session(sid, metadata_only=True)
     except KeyError:
         return True
-    if not _session_visible_to_active_profile(getattr(session, "profile", None), handler):
+    if not _session_visible_to_request(session, handler):
         if emit_error:
             bad(handler, "Session not found", 404)
         return False
@@ -1896,6 +2013,9 @@ def _session_list_cache_key(
     archived_limit: int | None = None,
     archived_offset: int = 0,
     show_claude_code_sessions: bool = True,
+    rbac_user_id: str | None = None,
+    rbac_scope_enabled: bool = False,
+    rbac_is_admin: bool = False,
 ) -> tuple:
     return _route_session_list_cache_key(
         active_profile=active_profile,
@@ -1911,7 +2031,7 @@ def _session_list_cache_key(
         sidebar_source=sidebar_source,
         archived_limit=archived_limit,
         archived_offset=archived_offset,
-    ) + (bool(show_claude_code_sessions),)
+    ) + (bool(show_claude_code_sessions), str(rbac_user_id or ""), bool(rbac_scope_enabled), bool(rbac_is_admin))
 
 _ROUTE_SESSION_LIST_CACHE_DYNAMIC_EXPORTS = {
     "_SESSIONS_CACHE_ALL_PROFILES_INVALIDATION_VERSION",
@@ -2003,6 +2123,11 @@ def _prune_orphaned_webui_zero_message_sessions(rows, *, diag_stage=None):
         and not s.get("active_stream_id")
         and not s.get("has_pending_user_message")
         and not s.get("worktree_path")
+        # RBAC-owned empty sessions are deliberate, durable user-created rows.
+        # They may have a title but no state.db messages yet, so treating them
+        # as #4985 stale zero-message orphans hides freshly-created chats after
+        # the sidebar refresh.
+        and not str(s.get("rbac_user_id") or "").strip()
         and (
             s.get("title", "Untitled") != "Untitled"
             or _numeric_count(s.get("message_count")) > 0
@@ -2156,6 +2281,9 @@ def _build_session_list_cache_payload(
     sidebar_source: str | None = None,
     archived_limit: int | None = None,
     archived_offset: int = 0,
+    rbac_user_id: str | None = None,
+    rbac_scope_enabled: bool = False,
+    rbac_is_admin: bool = False,
     diag=None,
 ) -> dict:
     diag_stage = diag.stage if diag is not None else lambda *_a, **_k: None
@@ -2393,6 +2521,43 @@ def _build_session_list_cache_payload(
     else:
         scoped = [s for s in merged if _profiles_match(s.get("profile"), active_profile)]
         other_profile_count = 0 if _is_isolated_profile_mode() else len(merged) - len(scoped)
+    _shared_sids: set = set()
+    _shares_by_sid: dict[str, dict] = {}
+    if rbac_scope_enabled or rbac_user_id or _rbac_users_configured():
+        if rbac_is_admin:
+            pass  # admin sees all sessions
+        elif not rbac_user_id:
+            # RBAC is configured but this request did not resolve to a concrete
+            # user. Do not fall back to ownerless legacy rows; otherwise a stale
+            # password-session/failed cookie parse can expose all legacy chats.
+            scoped = []
+        else:
+            try:
+                from api import share_store
+                _shares = share_store.list_shares_for_user(STATE_DIR, rbac_user_id)
+                _shared_sids = {str(share.get("session_id") or "") for share in _shares}
+                _shares_by_sid = {
+                    str(share.get("session_id") or ""): share
+                    for share in _shares
+                    if str(share.get("session_id") or "")
+                }
+            except Exception:
+                _shared_sids = set()
+                _shares_by_sid = {}
+            scoped = [
+                s for s in scoped
+                if str(s.get("rbac_user_id") or "").strip() == str(rbac_user_id or "")  # owned by current user
+                or str(s.get("session_id") or "") in _shared_sids  # shared with current user
+            ]
+            for s in scoped:
+                sid = str(s.get("session_id") or "")
+                owner = str(s.get("rbac_user_id") or "").strip()
+                if sid in _shared_sids and owner != str(rbac_user_id or ""):
+                    share = _shares_by_sid.get(sid) or {}
+                    s["read_only"] = True
+                    s["viewer"] = "shared"
+                    s["shared_by"] = share.get("owner_name") or share.get("owner_id")
+                    s["share_id"] = share.get("id")
     diag_stage("messaging_dedupe")
     archived_scoped = _keep_latest_messaging_session_per_source(
         list(scoped),
@@ -2407,12 +2572,22 @@ def _build_session_list_cache_payload(
         archived_scoped = _cap_recent_cli_sessions(archived_scoped, cli_cap=CLI_VISIBLE_SESSION_CAP)
         visible_scoped = _cap_recent_cli_sessions(visible_scoped, cli_cap=CLI_VISIBLE_SESSION_CAP)
     if visible_only:
-        archived_scoped = [
-            s for s in archived_scoped if _session_has_server_visible_messages(s)
-        ]
-        visible_scoped = [
-            s for s in visible_scoped if _session_has_server_visible_messages(s)
-        ]
+        def _visible_or_rbac_owned_or_shared(s: dict) -> bool:
+            """Visible rows have content signals, or are deliberate RBAC rows.
+
+            The #1171 ghost-session guard hides empty anonymous sessions. RBAC
+            owner/shared empty sessions must remain visible because they
+            represent a deliberate user action or a deliberate share grant.
+            """
+            if _session_has_server_visible_messages(s):
+                return True
+            if rbac_user_id:
+                owner = str(s.get("rbac_user_id") or "").strip()
+                sid = str(s.get("session_id") or "")
+                return (bool(owner) and owner == str(rbac_user_id)) or sid in _shared_sids
+            return False
+        archived_scoped = [s for s in archived_scoped if _visible_or_rbac_owned_or_shared(s)]
+        visible_scoped = [s for s in visible_scoped if _visible_or_rbac_owned_or_shared(s)]
     if exclude_hidden:
         archived_scoped = [s for s in archived_scoped if not s.get("default_hidden")]
         visible_scoped = [s for s in visible_scoped if not s.get("default_hidden")]
@@ -9027,6 +9202,7 @@ _SIDEBAR_SESSION_RESPONSE_FIELDS = {
     "archived",
     "project_id",
     "profile",
+    "rbac_user_id",
     "input_tokens",
     "output_tokens",
     "estimated_cost",
@@ -9071,6 +9247,9 @@ _SIDEBAR_SESSION_RESPONSE_FIELDS = {
     # sent in the list payload to avoid per-row bloat.
     "read_only",
     "is_read_only",
+    "viewer",
+    "shared_by",
+    "share_id",
     "gateway_routing",
 }
 
@@ -9103,6 +9282,9 @@ _LOGIN_LOCALE = {
         "lang": "en",
         "title": "Sign in",
         "subtitle": "Enter your password to continue",
+        "username_placeholder": "Username",
+        "username_label": "Username",
+        "password_label": "Password",
         "placeholder": "Password",
         "btn": "Sign in",
         "invalid_pw": "Invalid password",
@@ -9112,6 +9294,7 @@ _LOGIN_LOCALE = {
         "lang": "fr-FR",
         "title": "Se connecter",
         "subtitle": "Entrez votre mot de passe pour continuer",
+        "username_placeholder": "Nom d’utilisateur",
         "placeholder": "Mot de passe",
         "btn": "Se connecter",
         "invalid_pw": "Mot de passe invalide",
@@ -9121,6 +9304,7 @@ _LOGIN_LOCALE = {
         "lang": "es-ES",
         "title": "Iniciar sesi\u00f3n",
         "subtitle": "Introduce tu contrase\u00f1a para continuar",
+        "username_placeholder": "Nombre de usuario",
         "placeholder": "Contrase\u00f1a",
         "btn": "Entrar",
         "invalid_pw": "Contrase\u00f1a inv\u00e1lida",
@@ -9130,6 +9314,7 @@ _LOGIN_LOCALE = {
         "lang": "de-DE",
         "title": "Anmelden",
         "subtitle": "Geben Sie Ihr Passwort ein, um fortzufahren",
+        "username_placeholder": "Benutzername",
         "placeholder": "Passwort",
         "btn": "Anmelden",
         "invalid_pw": "Ung\u00fcltiges Passwort",
@@ -9139,6 +9324,7 @@ _LOGIN_LOCALE = {
         "lang": "ru-RU",
         "title": "\u0412\u043e\u0439\u0442\u0438",
         "subtitle": "\u0412\u0432\u0435\u0434\u0438\u0442\u0435 \u043f\u0430\u0440\u043e\u043b\u044c, \u0447\u0442\u043e\u0431\u044b \u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c",
+        "username_placeholder": "\u0418\u043c\u044f \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044f",
         "placeholder": "\u041f\u0430\u0440\u043e\u043b\u044c",
         "btn": "\u0412\u043e\u0439\u0442\u0438",
         "invalid_pw": "\u041d\u0435\u0432\u0435\u0440\u043d\u044b\u0439 \u043f\u0430\u0440\u043e\u043b\u044c",
@@ -9148,6 +9334,7 @@ _LOGIN_LOCALE = {
         "lang": "zh-CN",
         "title": "\u767b\u5f55",
         "subtitle": "\u8f93\u5165\u5bc6\u7801\u7ee7\u7eed\u4f7f\u7528",
+        "username_placeholder": "\u7528\u6237\u540d",
         "placeholder": "\u5bc6\u7801",
         "btn": "\u767b\u5f55",
         "invalid_pw": "\u5bc6\u7801\u9519\u8bef",
@@ -9157,6 +9344,7 @@ _LOGIN_LOCALE = {
         "lang": "zh-TW",
         "title": "\u767b\u5f55",
         "subtitle": "\u8f38\u5165\u5bc6\u78bc\u7e7c\u7e8c\u4f7f\u7528",
+        "username_placeholder": "\u4f7f\u7528\u8005\u540d",
         "placeholder": "\u5bc6\u78bc",
         "btn": "\u767b\u5f55",
         "invalid_pw": "\u5bc6\u78bc\u932f\u8aa4",
@@ -9169,6 +9357,7 @@ _LOGIN_LOCALE = {
         "lang": "it-IT",
         "title": "Accedi",
         "subtitle": "Inserisci la password per continuare",
+        "username_placeholder": "Username",
         "placeholder": "Password",
         "btn": "Accedi",
         "invalid_pw": "Password non valida",
@@ -9178,6 +9367,7 @@ _LOGIN_LOCALE = {
         "lang": "ja-JP",
         "title": "\u30b5\u30a4\u30f3\u30a4\u30f3",
         "subtitle": "\u30d1\u30b9\u30ef\u30fc\u30c9\u3092\u5165\u529b\u3057\u3066\u7d9a\u884c",
+        "username_placeholder": "\u30e6\u30fc\u30b6\u30fc\u540d",
         "placeholder": "\u30d1\u30b9\u30ef\u30fc\u30c9",
         "btn": "\u30b5\u30a4\u30f3\u30a4\u30f3",
         "invalid_pw": "\u30d1\u30b9\u30ef\u30fc\u30c9\u304c\u7121\u52b9\u3067\u3059",
@@ -9187,6 +9377,7 @@ _LOGIN_LOCALE = {
         "lang": "pt-BR",
         "title": "Entrar",
         "subtitle": "Digite sua senha para continuar",
+        "username_placeholder": "Nome de usuário",
         "placeholder": "Senha",
         "btn": "Entrar",
         "invalid_pw": "Senha inv\u00e1lida",
@@ -9196,6 +9387,7 @@ _LOGIN_LOCALE = {
         "lang": "ko-KR",
         "title": "\ub85c\uadf8\uc778",
         "subtitle": "\uacc4\uc18d\ud558\ub824\uba74 \ube44\ubc00\ubc88\ud638\ub97c \uc785\ub825\ud558\uc138\uc694",
+        "username_placeholder": "\uc0ac\uc6a9\uc790\uba85",
         "placeholder": "\ube44\ubc00\ubc88\ud638",
         "btn": "\ub85c\uadf8\uc778",
         "invalid_pw": "\ube44\ubc00\ubc88\ud638\uac00 \uc62c\ubc14\ub974\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4",
@@ -9205,6 +9397,7 @@ _LOGIN_LOCALE = {
         "lang": "tr-TR",
         "title": "Oturum a\u00e7",
         "subtitle": "Devam etmek i\u00e7in \u015fifrenizi girin",
+        "username_placeholder": "Kullanıcı adı",
         "placeholder": "\u015eifre",
         "btn": "Oturum a\u00e7",
         "invalid_pw": "Ge\u00e7ersiz \u015fifre",
@@ -9214,6 +9407,7 @@ _LOGIN_LOCALE = {
         "lang": "pl-PL",
         "title": "Zaloguj si\u0119",
         "subtitle": "Wpisz has\u0142o, aby kontynuowa\u0107",
+        "username_placeholder": "Nazwa użytkownika",
         "placeholder": "Has\u0142o",
         "btn": "Zaloguj si\u0119",
         "invalid_pw": "Nieprawid\u0142owe has\u0142o",
@@ -9223,6 +9417,7 @@ _LOGIN_LOCALE = {
         "lang": "vi",
         "title": "\u0110\u0103ng nh\u1eadp",
         "subtitle": "Nh\u1eadp m\u1eadt kh\u1ea9u c\u1ee7a b\u1ea1n \u0111\u1ec3 ti\u1ebfp t\u1ee5c",
+        "username_placeholder": "Tên người dùng",
         "placeholder": "M\u1eadt kh\u1ea9u",
         "btn": "\u0110\u0103ng nh\u1eadp",
         "invalid_pw": "M\u1eadt kh\u1ea9u kh\u00f4ng h\u1ee3p l\u1ec7",
@@ -9297,7 +9492,10 @@ button:hover{background:rgba(124,185,255,.25)}
   <h1>{{BOT_NAME}}</h1>
   <p class="sub">{{LOGIN_SUBTITLE}}</p>
   <form id="login-form" data-invalid-pw="{{LOGIN_INVALID_PW}}" data-conn-failed="{{LOGIN_CONN_FAILED}}">
-    <input type="password" id="pw" placeholder="{{LOGIN_PLACEHOLDER}}" autofocus>
+    <label for="username">{{LOGIN_USERNAME_LABEL}}</label>
+    <input type="text" id="username" name="username" placeholder="{{LOGIN_USERNAME_PLACEHOLDER}}" autocomplete="username" required autofocus>
+    <label for="pw">{{LOGIN_PASSWORD_LABEL}}</label>
+    <input type="password" id="pw" name="password" placeholder="{{LOGIN_PLACEHOLDER}}" autocomplete="current-password" required>
     <button type="submit">{{LOGIN_BTN}}</button>
     <button type="button" id="passkey-login" class="passkey-login" style="display:none">Sign in with passkey</button>
     {{OIDC_LOGIN_HTML}}
@@ -9396,12 +9594,15 @@ p{font-size:12px;color:#8888aa;margin-bottom:16px;line-height:1.5}
 .field label{color:#8888aa}
 .field .val{color:#e8e8f0;font-family:monospace;font-size:11px;word-break:break-all;max-width:180px;text-align:right}
 .import-area{border:1px dashed rgba(255,255,255,.15);border-radius:10px;padding:14px;margin-bottom:12px}
-.import-area p{margin-bottom:8px;font-size:11px}
-input[type=file]{width:100%;font-size:11px;color:#8888aa;margin-bottom:10px}
-button{width:100%;padding:9px;border-radius:10px;border:none;background:rgba(124,185,255,.15);
-  border:1px solid rgba(124,185,255,.3);color:#7cb9ff;font-size:13px;font-weight:600;cursor:pointer;
-  transition:all .15s}
-button:hover{background:rgba(124,185,255,.25)}
+.import-area p{margin-bottom:10px;font-size:11px}
+.file-picker-btn{display:block;width:100%;padding:9px;border-radius:10px;border:1px solid rgba(124,185,255,.3);
+  background:rgba(124,185,255,.15);color:#7cb9ff;font-size:13px;font-weight:600;cursor:pointer;
+  text-align:center;transition:all .15s;margin-bottom:8px;box-sizing:border-box}
+.file-picker-btn:hover{background:rgba(124,185,255,.25)}
+#importBtn{width:100%;padding:9px;border-radius:10px;border:none;background:var(--accent-bg,rgba(124,185,255,.15));
+  border:1px solid var(--accent-bg-strong,rgba(124,185,255,.3));color:var(--accent-text,#7cb9ff);
+  font-size:13px;font-weight:600;cursor:pointer;transition:all .15s;box-sizing:border-box}
+#importBtn:hover{background:var(--accent-bg-strong,rgba(124,185,255,.25))}
 .err{color:#e94560;font-size:12px;margin-top:10px;display:none}
 .status{font-size:11px;color:#8888aa;margin-top:10px;display:none}
 </style></head><body>
@@ -9414,19 +9615,25 @@ button:hover{background:rgba(124,185,255,.25)}
   </div>
   <div class="import-area">
     <p>选择 License 文件（.lic / .txt）</p>
-    <input type="file" id="licenseFileInput" accept=".lic,.txt">
-    <button onclick="doImport()">导入 License</button>
+    <input type="file" id="licenseFileInput" accept=".lic,.txt" style="display:none">
+    <div class="file-picker-btn" id="filePickerBtn" onclick="document.getElementById('licenseFileInput').click()">选择文件</div>
+    <div style="font-size:11px;color:#8888aa;margin-bottom:8px" id="fileChosen">未选择文件</div>
+    <button id="importBtn" onclick="doImport()">导入 License</button>
   </div>
   <div class="err" id="err"></div>
   <div class="status" id="status"></div>
 </div>
 <script>
+var _selectedLicenseFile=null;
+document.getElementById('licenseFileInput').addEventListener('change',function(){
+  _selectedLicenseFile=this.files[0];
+  document.getElementById('fileChosen').textContent=_selectedLicenseFile?_selectedLicenseFile.name:'未选择文件';
+});
 function doImport(){
-  var f=document.getElementById('licenseFileInput');
   var e=document.getElementById('err');
   var s=document.getElementById('status');
   e.style.display='none';s.style.display='none';
-  if(!f.files.length){e.textContent='请选择 License 文件';e.style.display='block';return}
+  if(!_selectedLicenseFile){e.textContent='请先点击「选择文件」选取 License 文件';e.style.display='block';return}
   var fr=new FileReader();
   fr.onload=function(){
     s.textContent='正在验证...';s.style.display='block';
@@ -9444,7 +9651,9 @@ function doImport(){
       e.textContent='请求失败: '+(x.message||x);e.style.display='block';s.style.display='none'
     })
   };
-  fr.readAsText(f.files[0]);
+  fr.readAsText(_selectedLicenseFile);
+  document.getElementById('importBtn').disabled=true;
+  document.getElementById('importBtn').textContent='正在验证...';
 }
 </script>
 </body></html>"""
@@ -11743,9 +11952,7 @@ def _render_index_shell_base() -> str:
             return cached[1]
     from urllib.parse import quote
 
-    version_token = quote(WEBUI_VERSION, safe="")
-    base = (
-        _INDEX_HTML_PATH.read_text(encoding="utf-8")
+    version_token = quote(WEBad_text(encoding="utf-8")
         .replace("__WEBUI_VERSION__", version_token)
         .replace("__MAX_UPLOAD_BYTES__", str(MAX_UPLOAD_BYTES))
     )
@@ -11764,12 +11971,14 @@ def _require_license(handler, parsed) -> bool | None:
     """
     path = parsed.path
 
-    # Always allow license admin, auth, static files, login, CSP
+    # Always allow license admin, auth, static files, license page, login, CSP
     if (
         path.startswith("/api/license/")
         or path.startswith("/api/auth/")
         or path.startswith("/static/")
         or path.startswith("/session/static/")
+        or path == "/license"
+        or path.startswith("/license/")
         or path in ("/login", "/api/csp-report", "/api/shutdown")
         or path in ("/manifest.json", "/manifest.webmanifest")
         or path in ("/session/manifest.json", "/session/manifest.webmanifest")
@@ -11821,6 +12030,11 @@ def handle_get(handler, parsed) -> bool:
     # License check (blocks API calls if license invalid)
     blocked = _require_license(handler, parsed)
     if blocked is True:
+        return True
+
+    # RBAC routes (must come after license gate; auth check happens inside handlers)
+    from api.rbac_routes import try_handle_rbac
+    if try_handle_rbac("GET", parsed, handler):
         return True
 
     # ── License routes ─────────────────────────────────────────────────────────
@@ -11947,14 +12161,18 @@ def handle_get(handler, parsed) -> bool:
 
             csrf_token = ""
             try:
-                from api.auth import csrf_token_for_session, is_auth_enabled, parse_cookie, verify_session
+                from api.auth import csrf_token_for_session, is_auth_enabled, parse_cookie, verify_any_session
 
                 if is_auth_enabled():
                     cookie_val = parse_cookie(handler)
-                    if cookie_val and verify_session(cookie_val):
+                    if verify_any_session(cookie_val):
                         csrf_token = csrf_token_for_session(cookie_val) or ""
             except Exception:
                 csrf_token = ""
+
+            from urllib.parse import quote
+            from api.updates import WEBUI_VERSION
+            version_token = quote(WEBUI_VERSION, safe="")
 
             html = (
                 _INDEX_HTML_PATH.read_text(encoding="utf-8")
@@ -11971,7 +12189,18 @@ def handle_get(handler, parsed) -> bool:
                 lw = Path(DEFAULT_WORKSPACE)
                 lconf = init_license_config(lw)
                 lstatus = check_license_status(lw)
-            except Exception:
+            except Exception as _lic_exc:
+                # lw may not be assigned (import/property error before it),
+                # so build the log payload without referencing it directly.
+                try:
+                    _lic_ws = str(Path(DEFAULT_WORKSPACE))
+                except Exception:
+                    _lic_ws = "?"
+                logger.exception(
+                    "[license] init/check failed: workspace=%s status=%s",
+                    _lic_ws,
+                    type(_lic_exc).__name__,
+                )
                 lconf = {}
                 lstatus = {"status": "not_initialized", "activated": False}
 
@@ -11998,6 +12227,47 @@ def handle_get(handler, parsed) -> bool:
         except Exception as exc:
             return _serve_shell_unavailable(handler, exc)
 
+    if parsed.path == "/license/activate":
+        # After successful activation the JS calls location.reload() against
+        # this URL. If license is now valid, bounce to the app root so the
+        # page doesn't 404 with `{"error":"not found"}`.
+        try:
+            from api.license import check_license_status, init_license_config
+            _lws = Path(DEFAULT_WORKSPACE)
+            _lconf = init_license_config(_lws)
+            _lstatus = check_license_status(_lws)
+        except Exception as _lic_exc:
+            try:
+                _lic_ws2 = str(Path(DEFAULT_WORKSPACE))
+            except Exception:
+                _lic_ws2 = "?"
+            logger.exception(
+                "[license] /license/activate init/check failed: workspace=%s",
+                _lic_ws2,
+            )
+            _lconf = {}
+            _lstatus = {"status": "not_initialized"}
+        if _lstatus.get("status") == "valid":
+            handler.send_response(302)
+            handler.send_header("Location", "/")
+            handler.send_header("Cache-Control", "no-store")
+            handler.send_header("Content-Length", "0")
+            _security_headers(handler)
+            handler.end_headers()
+            return True
+        # License still invalid — fall through to the activation-page render
+        # in the `/` handler below. We render it directly here so the URL
+        # stays stable for the activation page reload.
+        _settings = load_settings()
+        _bot_name = _html.escape(_settings.get("bot_name") or "Hermes")
+        page = (
+            _LICENSE_PAGE_HTML
+            .replace("{{BOT_NAME}}", _bot_name)
+            .replace("{{PLATFORM_ID}}", _html.escape(_lconf.get("platform_id") or "N/A"))
+            .replace("{{MAC_ADDRESS}}", _html.escape(_lconf.get("mac_address") or "N/A"))
+        )
+        return t(handler, page, content_type="text/html; charset=utf-8")
+
     if parsed.path == "/login":
         _settings = load_settings()
         _bn = _html.escape(_settings.get("bot_name") or "Hermes")
@@ -12018,6 +12288,9 @@ def handle_get(handler, parsed) -> bool:
             .replace(
                 "{{LOGIN_PLACEHOLDER}}", _html.escape(_login_strings["placeholder"])
             )
+            .replace("{{LOGIN_USERNAME_PLACEHOLDER}}", _html.escape(_login_strings.get("username_placeholder", "Username")))
+            .replace("{{LOGIN_USERNAME_LABEL}}", _html.escape(_login_strings.get("username_label", _login_strings.get("username_placeholder", "Username"))))
+            .replace("{{LOGIN_PASSWORD_LABEL}}", _html.escape(_login_strings.get("password_label", _login_strings.get("placeholder", "Password"))))
             .replace("{{LOGIN_BTN}}", _html.escape(_login_strings["btn"]))
             .replace("{{LOGIN_INVALID_PW}}", _html.escape(_login_strings["invalid_pw"]))
             .replace(
@@ -12026,6 +12299,14 @@ def handle_get(handler, parsed) -> bool:
             .replace("{{OIDC_LOGIN_HTML}}", _oidc_login_html(parsed))
         )
         return t(handler, _page, content_type="text/html; charset=utf-8")
+
+    if parsed.path == "/setup":
+        _setup_path = Path(__file__).resolve().parent.parent / "static" / "setup.html"
+        try:
+            _setup_html = _setup_path.read_text(encoding="utf-8")
+            return t(handler, _setup_html, content_type="text/html; charset=utf-8")
+        except Exception as exc:
+            return bad(handler, f"Setup page not found: {exc}", status=404)
 
     if parsed.path == "/api/auth/oidc/start":
         from api.auth_oidc import OIDCAuthError, OIDCConfigError, build_authorization_redirect
@@ -12084,21 +12365,33 @@ def handle_get(handler, parsed) -> bool:
         return True
 
     if parsed.path == "/api/auth/status":
-        from api.auth import _passkey_feature_flag_enabled, get_password_hash, is_auth_enabled, is_oidc_auth_enabled, parse_cookie, verify_session
+        from api.auth import _passkey_feature_flag_enabled, get_password_hash, get_user_from_session, is_auth_enabled, is_oidc_auth_enabled, parse_cookie, verify_any_session
         from api.passkeys import registered_credentials
 
         logged_in = False
+        current_user = None
         auth_enabled = is_auth_enabled()
         oidc_enabled = is_oidc_auth_enabled()
         if auth_enabled:
             cv = parse_cookie(handler)
-            logged_in = bool(cv and verify_session(cv))
+            logged_in = verify_any_session(cv)
+            if logged_in and cv:
+                rbac_user = get_user_from_session(cv)
+                if rbac_user:
+                    from api.user_store import DEFAULT_USER_PANELS
+                    current_user = {
+                        "id": rbac_user.get("id"),
+                        "username": rbac_user.get("username"),
+                        "role": rbac_user.get("role", "user"),
+                        "panels": rbac_user.get("panels") or list(DEFAULT_USER_PANELS),
+                    }
         passkey_flag = _passkey_feature_flag_enabled()
         passkeys = registered_credentials() if passkey_flag else []
         password_auth_enabled = get_password_hash() is not None
         return j(handler, {
             "auth_enabled": auth_enabled,
             "logged_in": logged_in,
+            "user": current_user,
             "oidc_enabled": oidc_enabled,
             "password_auth_enabled": password_auth_enabled,
             "passwordless_enabled": bool(passkeys) and not password_auth_enabled,
@@ -12150,7 +12443,12 @@ def handle_get(handler, parsed) -> bool:
             handler.end_headers()
         return True
 
-    if parsed.path.startswith("/api/") and not _guard_request_session_visibility(handler, parsed, method="GET"):
+    # File-manager routes handle their own profile/authorization internally
+    # via get_session_for_file_ops, so skip the blanket session-visibility guard.
+    if parsed.path.startswith("/api/") and not parsed.path.startswith("/api/file") \
+            and not parsed.path.startswith("/api/escape/file") \
+            and not parsed.path == "/api/folder/download" \
+            and not _guard_request_session_visibility(handler, parsed, method="GET"):
         return True
 
     # ── Insights / knowledge status ──
@@ -12347,6 +12645,14 @@ def handle_get(handler, parsed) -> bool:
         with profile_env_for_active_request_readonly("/api/providers", logger_override=logger):
             return j(handler, get_providers())
 
+    if parsed.path == "/api/custom_providers":
+        try:
+            from api.custom_providers import list_custom_providers
+            return j(handler, {"providers": list_custom_providers()})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("custom_providers list failed")
+            return bad(handler, f"list failed: {exc}", status=500)
+
     # ── Plugins/hooks visibility (read-only, no callback/source internals) ──
     if parsed.path == "/api/plugins":
         return _handle_plugins(handler, parsed)
@@ -12527,9 +12833,9 @@ def handle_get(handler, parsed) -> bool:
         try:
             _t1 = _time.monotonic()
             s = get_session(sid, metadata_only=(not load_messages))
-            _session_profile = getattr(s, 'profile', None) or None
-            if not _session_visible_to_active_profile(_session_profile, handler):
+            if not _session_visible_to_request(s, handler):
                 return bad(handler, "Session not found", 404)
+            _session_profile = getattr(s, 'profile', None) or None
             original_stream_id = getattr(s, "active_stream_id", None)
             _clear_stale_stream_state(s)
             cli_meta = _lookup_cli_session_metadata(sid) if _session_requires_cli_metadata_lookup(s) else {}
@@ -12755,6 +13061,22 @@ def handle_get(handler, parsed) -> bool:
                 "threshold_tokens": _threshold_tokens,
                 "last_prompt_tokens": getattr(s, "last_prompt_tokens", 0) or 0,
             }
+            # Mark read-only shared viewers so the frontend can lock the composer.
+            if not _session_visible_to_current_rbac_user(getattr(s, "rbac_user_id", None), handler):
+                if _session_shared_with_current_user(getattr(s, "session_id", None), handler):
+                    raw["viewer"] = "shared"
+                    try:
+                        from api import share_store as _share_store
+                        _share = next(
+                            (x for x in _share_store.list_shares_for_session(STATE_DIR, getattr(s, "session_id", ""))
+                             if str(x.get("to_user_id") or "") == str(_current_rbac_user_id(handler) or "")),
+                            None,
+                        )
+                        if _share:
+                            raw["shared_by"] = _share.get("owner_name")
+                            raw["share_id"] = _share.get("id")
+                    except Exception:
+                        pass
             if original_stream_id:
                 try:
                     journal = find_run_summary(original_stream_id)
@@ -12986,10 +13308,16 @@ def handle_get(handler, parsed) -> bool:
             sidebar_source = parse_qs(parsed.query).get("sidebar_source", [""])[0].strip().lower() or None
             if sidebar_source not in ("webui", "cli"):
                 sidebar_source = None
+            rbac_user_id = _current_rbac_user_id(handler)
+            rbac_is_admin = _current_rbac_user_is_admin(handler)
+            rbac_scope_enabled = bool(rbac_user_id) or _rbac_users_configured()
             # /api/sessions is the default sidebar contract, so keep the route-owned
             # visible-row filter in the shared cache builder for both cache hits and misses.
             key = _session_list_cache_key(
                 active_profile=active_profile,
+                rbac_user_id=rbac_user_id,
+                rbac_scope_enabled=rbac_scope_enabled,
+                rbac_is_admin=rbac_is_admin,
                 all_profiles=all_profiles,
                 show_cli_sessions=show_cli_sessions,
                 show_claude_code_sessions=show_claude_code_sessions,
@@ -13012,6 +13340,9 @@ def handle_get(handler, parsed) -> bool:
                 key=key,
                 builder=lambda: _build_session_list_cache_payload(
                     active_profile=active_profile,
+                    rbac_user_id=rbac_user_id,
+                    rbac_scope_enabled=rbac_scope_enabled,
+                    rbac_is_admin=rbac_is_admin,
                     all_profiles=all_profiles,
                     show_cli_sessions=show_cli_sessions,
                     show_claude_code_sessions=show_claude_code_sessions,
@@ -13030,7 +13361,17 @@ def handle_get(handler, parsed) -> bool:
                 diag=diag,
             )
             diag.stage("response_write")
-            return j(handler, _session_list_payload_to_response(payload), pretty=False)
+            response = _session_list_payload_to_response(payload)
+            current_rbac_user = _current_rbac_user(handler)
+            if current_rbac_user:
+                response["rbac_user_id"] = current_rbac_user.get("id")
+                response["rbac_username"] = current_rbac_user.get("username")
+                response["rbac_role"] = current_rbac_user.get("role", "user")
+            else:
+                response["rbac_user_id"] = None
+                response["rbac_username"] = None
+                response["rbac_role"] = None
+            return j(handler, response, pretty=False)
         finally:
             diag.finish()
 
@@ -13701,7 +14042,7 @@ def _require_passkey_registration_auth(handler) -> tuple[bool, str, int]:
     passkey-only instance, but only through the same local/private-network
     onboarding gate used for first password setup.
     """
-    from api.auth import is_auth_enabled, parse_cookie, verify_session
+    from api.auth import is_auth_enabled, parse_cookie, verify_any_session
 
     auth_enabled = is_auth_enabled()
     if not auth_enabled:
@@ -13709,7 +14050,7 @@ def _require_passkey_registration_auth(handler) -> tuple[bool, str, int]:
             return True, "", 200
         return False, "Authentication required", 401
     cookie_val = parse_cookie(handler)
-    if not cookie_val or not verify_session(cookie_val):
+    if not verify_any_session(cookie_val):
         return False, "Authentication required", 401
     return True, "", 200
 
@@ -13726,6 +14067,14 @@ def _validate_session_toolsets_shape(toolsets):
 def handle_post(handler, parsed) -> bool:
     """Handle all POST routes. Returns True if handled, False for 404."""
     diag = RequestDiagnostics.maybe_start("POST", parsed.path, logger=logger)
+    # RBAC login must be dispatched before the legacy single-password route.
+    # Both endpoints historically used this path, but RBAC needs a username.
+    if parsed.path == "/api/auth/login":
+        from api.rbac_routes import try_handle_rbac
+        if try_handle_rbac("POST", parsed, handler):
+            if diag:
+                diag.finish()
+            return True
     if parsed.path == "/api/csp-report":
         if diag:
             diag.stage("csp_report")
@@ -13860,6 +14209,13 @@ def handle_post(handler, parsed) -> bool:
     # License gate: block non-license POST endpoints when not activated
     blocked = _require_license(handler, parsed)
     if blocked is True:
+        if diag:
+            diag.finish()
+        return True
+
+    # RBAC routes (must come after license gate; auth check happens inside handlers)
+    from api.rbac_routes import try_handle_rbac
+    if try_handle_rbac("POST", parsed, handler):
         if diag:
             diag.finish()
         return True
@@ -14159,16 +14515,28 @@ def handle_post(handler, parsed) -> bool:
                 # thread the drain snapshot already missed).
                 if _register_background_commit_thread(t):
                     t.start()
+        _rbac_owner_id = _current_rbac_user_id(handler)
         s = new_session(
             workspace=workspace,
             model=model,
             model_provider=model_provider,
             profile=body.get("profile") or None,
+            rbac_user_id=_rbac_owner_id,
             project_id=body.get("project_id") or None,
             worktree_info=worktree_info,
             enabled_toolsets=enabled_toolsets,
         )
-        if worktree_info:
+        # Always persist new sessions so they survive a page refresh.  The
+        # #1171 ghost-session guard only applies to the list-level visible_only
+        # filter; persisting an empty session is safe — it will be included in
+        # the list response when owned by the viewer or when it has messages.
+        try:
+            s.save()
+            _persisted = True
+        except Exception:
+            logger.exception("failed to persist new session %s", getattr(s, "session_id", None))
+            _persisted = False
+        if worktree_info or _persisted:
             publish_session_list_changed(
                 "session_new",
                 profile=getattr(s, "profile", None),
@@ -14215,6 +14583,7 @@ def handle_post(handler, parsed) -> bool:
                 archived=False,
                 project_id=session.project_id,
                 profile=session.profile,
+                rbac_user_id=_current_rbac_user_id(handler) or getattr(session, "rbac_user_id", None),
                 input_tokens=session.input_tokens,
                 output_tokens=session.output_tokens,
                 estimated_cost=session.estimated_cost,
@@ -14331,6 +14700,76 @@ def handle_post(handler, parsed) -> bool:
             return j(handler, apply_self_hosted_provider_setup(body))
         except ValueError as exc:
             return bad(handler, str(exc), 400)
+
+    # --- /api/custom_providers (Custom OpenAI-compatible providers) ---
+    if parsed.path == "/api/custom_providers":
+        # POST: action = upsert | delete
+        action = (body.get("action") or "upsert").strip().lower()
+        if action == "delete":
+            slug = (body.get("slug") or "").strip().lower()
+            if not slug:
+                return bad(handler, "slug is required")
+            from api.custom_providers import delete_custom_provider_across_profiles
+            from api.config import invalidate_models_cache
+            result = delete_custom_provider_across_profiles(slug=slug)
+            invalidate_models_cache()
+            return j(handler, result)
+
+        # action == "upsert" (default)
+        provider = body.get("provider")
+        if not isinstance(provider, dict):
+            return bad(handler, "provider body required")
+        try:
+            from api.custom_providers import (
+                validate_provider_body,
+                upsert_custom_provider_across_profiles,
+                probe_models,
+                ValidationError,
+            )
+            validate_provider_body(provider)
+        except ValidationError as e:
+            return bad(handler, str(e), status=400)
+
+        # Optional pre-save probe (skip when client says skip_probe=true)
+        skip_probe = bool(body.get("skip_probe"))
+        if not skip_probe and provider.get("api_key"):
+            probe = probe_models(provider["base_url"], api_key=provider["api_key"])
+            if not probe.get("ok"):
+                return bad(handler, probe.get("error", "probe_failed"), status=400)
+
+        try:
+            from api.config import invalidate_models_cache
+            result = upsert_custom_provider_across_profiles(provider=provider)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("custom_providers upsert failed")
+            return bad(handler, f"upsert failed: {exc}", status=500)
+        invalidate_models_cache()
+        return j(handler, result)
+
+
+    if parsed.path == "/api/custom_providers/probe_models":
+        base_url = (body.get("base_url") or "").strip()
+        api_key = body.get("api_key")
+        slug = (body.get("slug") or "").strip().lower() or None
+        if not base_url and not slug:
+            return bad(handler, "base_url or slug required")
+        from api.custom_providers import probe_models
+        return j(handler, probe_models(
+            base_url, api_key=api_key, slug=slug, timeout=4.0))
+
+
+    if parsed.path == "/api/custom_providers/set_default":
+        slug = (body.get("slug") or "").strip().lower()
+        model = (body.get("model") or "").strip()
+        if not slug or not model:
+            return bad(handler, "slug and model required")
+        from api.custom_providers import set_default_across_profiles
+        from api.config import invalidate_models_cache
+        result = set_default_across_profiles(slug=slug, model=model)
+        if result.get("error"):
+            return bad(handler, result["error"], status=400)
+        invalidate_models_cache()
+        return j(handler, result)
 
     if parsed.path == "/api/models/refresh":
         provider_id = (body.get("provider") or "").strip().lower()
@@ -14758,6 +15197,13 @@ def handle_post(handler, parsed) -> bool:
                 delete_cli_session(sid)
             except Exception:
                 logger.debug("Failed to delete CLI session %s", sid)
+        # Remove any share records pointing at the deleted session so the
+        # recipient's "收到的分享" section never shows dangling rows.
+        try:
+            from api import share_store as _share_store
+            _share_store.remove_shares_for_session(STATE_DIR, sid)
+        except Exception:
+            logger.debug("Failed to remove share records for deleted session %s", sid)
         _publish_session_list_changed("session_delete", profile=event_profile)
         return j(handler, {"ok": True, **worktree_retained})
 
@@ -14972,6 +15418,7 @@ def handle_post(handler, parsed) -> bool:
             model=source.model,
             model_provider=getattr(source, "model_provider", None),
             profile=getattr(source, "profile", None),
+            rbac_user_id=_current_rbac_user_id(handler) or getattr(source, "rbac_user_id", None),
             title=branch_title,
             messages=forked_messages,
             project_id=getattr(source, "project_id", None),
@@ -15409,7 +15856,7 @@ def handle_post(handler, parsed) -> bool:
             parse_cookie,
             set_auth_cookie,
             verify_password,
-            verify_session,
+            verify_any_session,
         )
 
         if "bot_name" in body:
@@ -15418,7 +15865,7 @@ def handle_post(handler, parsed) -> bool:
         auth_enabled_before = is_auth_enabled()
         password_auth_enabled_before = auth_enabled_before and get_password_hash() is not None
         current_cookie = parse_cookie(handler)
-        logged_in_before = bool(current_cookie and verify_session(current_cookie))
+        logged_in_before = verify_any_session(current_cookie)
         requested_password = bool(
             isinstance(body.get("_set_password"), str)
             and body.get("_set_password", "").strip()
@@ -16319,6 +16766,10 @@ def handle_delete(handler, parsed) -> bool:
     )
     if proxy_result is not False:
         return proxy_result
+    # RBAC routes (session share revoke, admin user delete, etc.)
+    from api.rbac_routes import try_handle_rbac
+    if try_handle_rbac("DELETE", parsed, handler):
+        return True
     body = read_body(handler)
     if not _guard_request_session_visibility(handler, parsed, body=body, method="DELETE"):
         return True
@@ -16369,6 +16820,10 @@ def handle_put(handler, parsed) -> bool:
     )
     if proxy_result is not False:
         return proxy_result
+    # RBAC routes (admin user role/panels update, etc.)
+    from api.rbac_routes import try_handle_rbac
+    if try_handle_rbac("PUT", parsed, handler):
+        return True
     body = read_body(handler)
     if not _guard_request_session_visibility(handler, parsed, body=body, method="PUT"):
         return True
@@ -17792,11 +18247,11 @@ def _handle_tts(handler, parsed):
         from api.helpers import bad as _bad
         return _bad(handler, "text too long (max 5000 characters)", 400)
 
-    from api.auth import is_auth_enabled, parse_cookie, verify_session
+        from api.auth import is_auth_enabled, parse_cookie, verify_any_session
     cv = None
     if is_auth_enabled():
         cv = parse_cookie(handler)
-        if not (cv and verify_session(cv)):
+        if not verify_any_session(cv):
             from api.helpers import bad as _bad
             return _bad(handler, "unauthorized", 401)
 
@@ -18204,14 +18659,14 @@ def _handle_media(handler, parsed):
       (os.pathsep-separated list of absolute paths; ":" on POSIX, ";" on Windows)
     """
     import os as _os
-    from api.auth import is_auth_enabled, parse_cookie, verify_session
+    from api.auth import is_auth_enabled, parse_cookie, verify_any_session
     _HOME = Path(_os.path.expanduser("~"))
     _HERMES_HOME = Path(_os.getenv("HERMES_HOME", str(_HOME / ".hermes"))).expanduser()
 
     # Auth check
     if is_auth_enabled():
         cv = parse_cookie(handler)
-        if not (cv and verify_session(cv)):
+        if not verify_any_session(cv):
             body = b'{"error":"Authentication required"}'
             handler.send_response(401)
             handler.send_header("Content-Type", "application/json")
@@ -19176,6 +19631,9 @@ def _handle_live_models(handler, parsed):
         # Delegate to the agent's live-fetch + fallback resolver.
         # provider_model_ids() tries live endpoints first and falls back to
         # the static _PROVIDER_MODELS list — it never raises.
+        # Wrap in a thread with 30s timeout: the agent's HTTP client has no
+        # socket timeout of its own, so an unreachable provider endpoint can
+        # hang for 60-120s (kernel TCP timeout), blocking the whole request.
         try:
             import sys as _sys
             import os as _os
@@ -19185,9 +19643,16 @@ def _handle_live_models(handler, parsed):
             if _agent_dir not in _sys.path:
                 _sys.path.insert(0, _agent_dir)
             from hermes_cli.models import provider_model_ids as _pmi
-            ids = _pmi(provider)
+
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _exec:
+                _fut = _exec.submit(_pmi, provider)
+                ids = _fut.result(timeout=30)
         except Exception as _import_err:
-            logger.debug("provider_model_ids import failed for %s: %s", provider, _import_err)
+            if _import_err.__class__.__name__ == 'TimeoutError':
+                logger.warning("provider_model_ids timed out for provider=%s after 30s", provider)
+            else:
+                logger.debug("provider_model_ids import failed for %s: %s", provider, _import_err)
             ids = []
 
         if not ids:
@@ -20318,29 +20783,59 @@ def _active_stream_blocks_chat_start(session, stream_id: str | None) -> bool:
     very fresh pending turn must also block duplicate chat_start requests. If we
     only check STREAMS here, a second request can race through the registration
     gap and overwrite the sidecar owner.
+
+    Grace semantics: once ``pending_started_at`` is older than
+    `_REPAIR_STALE_PENDING_GRACE_SECONDS` (default 30s), any matching entry in
+    STREAMS / ACTIVE_RUNS / pending_user_message is treated as a presumed
+    STUCK-ORPHAN worker that did not release the lock in time (e.g. long
+    C-level tool call, refresh + crashed SSE consumer, agent.interrupt()
+    blocked in foreign code) and the new chat_start is allowed to proceed
+    with proactive cancel_stream() in the caller. This matches the original
+    pending_user_message grace and prevents permanent 409s after a refresh +
+    retry cycle. (Codex brick-gate hardening, #5345 / #5198 follow-up.)
     """
     if not stream_id:
         return False
+    try:
+        from api.models import _REPAIR_STALE_PENDING_GRACE_SECONDS
+        grace_seconds = float(_REPAIR_STALE_PENDING_GRACE_SECONDS)
+    except Exception:
+        grace_seconds = 30.0
+    try:
+        pending_started_at = float(getattr(session, "pending_started_at", None) or 0)
+    except Exception:
+        pending_started_at = 0.0
+    # Fallback: if pending_started_at is unset/zero, use ACTIVE_RUNS[stream_id]
+    # ["started_at"] (always set by register_active_run). This handles older
+    # sessions loaded without the pending_started_at field, and stuck turns
+    # where the worker is still alive in STREAMS / ACTIVE_RUNS after their
+    # pending_* fields were cleared.
+    active_run_started_at = 0.0
+    if not pending_started_at:
+        try:
+            from api import config as _live_cfg_for_blocks
+            with _live_cfg_for_blocks.ACTIVE_RUNS_LOCK:
+                _entry = (_live_cfg_for_blocks.ACTIVE_RUNS or {}).get(stream_id) or {}
+            active_run_started_at = float((_entry or {}).get("started_at") or 0)
+        except Exception:
+            active_run_started_at = 0.0
+    effective_started_at = pending_started_at or active_run_started_at
+    # Past grace: ANY registration in STREAMS / ACTIVE_RUNS / pending_* is
+    # presumed-orphan (the worker did not release within the grace window),
+    # so the lock does NOT block. The caller's proactive cancel path is
+    # responsible for tearing the orphan down before a new stream starts.
+    past_grace = bool(effective_started_at) and (time.time() - effective_started_at) >= grace_seconds
     with STREAMS_LOCK:
-        if stream_id in STREAMS:
+        if stream_id in STREAMS and not past_grace:
             return True
     try:
         from api import config as _live_config
         with _live_config.ACTIVE_RUNS_LOCK:
-            if stream_id in (_live_config.ACTIVE_RUNS or {}):
+            if stream_id in (_live_config.ACTIVE_RUNS or {}) and not past_grace:
                 return True
     except Exception:
         pass
     if getattr(session, "pending_user_message", None):
-        try:
-            from api.models import _REPAIR_STALE_PENDING_GRACE_SECONDS
-            grace_seconds = float(_REPAIR_STALE_PENDING_GRACE_SECONDS)
-        except Exception:
-            grace_seconds = 30.0
-        try:
-            pending_started_at = float(getattr(session, "pending_started_at", None) or 0)
-        except Exception:
-            pending_started_at = 0.0
         if pending_started_at and time.time() - pending_started_at < grace_seconds:
             return True
     return False
@@ -20435,12 +20930,159 @@ def _start_chat_stream_for_session(
     diag.stage("active_stream_check") if diag else None
     current_stream_id = getattr(s, "active_stream_id", None)
     if current_stream_id:
-        if _active_stream_blocks_chat_start(s, current_stream_id):
+        # ── Stuck-orphan auto-recovery (#5345 / #5198 follow-up) ──
+        # If the active_stream_id has been pending past the grace period
+        # with no progress, the worker is almost certainly a zombie from
+        # a tab refresh / cancelled prior turn that did not release the
+        # lock in time (a long tool-call C syscall can block the worker's
+        # `finally` for minutes). Proactively cancel_stream() it so the
+        # follow-up chat_start can proceed without a manual Stop click.
+        # Threshold = _REPAIR_STALE_PENDING_GRACE_SECONDS exactly, so the
+        # orphan-recovery window matches the existing pending_user_message
+        # grace that operators already understand. (#5345)
+        try:
+            from api.models import _REPAIR_STALE_PENDING_GRACE_SECONDS
+            _orphan_grace_seconds = float(_REPAIR_STALE_PENDING_GRACE_SECONDS or 30)
+        except Exception:
+            _orphan_grace_seconds = 30.0
+        try:
+            _pending_started_at_for_age = float(getattr(s, "pending_started_at", None) or 0)
+        except Exception:
+            _pending_started_at_for_age = 0.0
+        # Fallback: if pending_started_at is unset/zero (older sessions loaded
+        # before the field existed, or a stuck turn that already had its
+        # pending_* cleared while the worker is still alive in STREAMS), use
+        # ACTIVE_RUNS[stream_id]["started_at"] as the proxy. That field is
+        # always set by register_active_run() when the worker starts, so it
+        # is the most reliable "how long has this worker been alive" signal.
+        _active_run_started_at = 0.0
+        if not _pending_started_at_for_age:
+            try:
+                from api import config as _live_cfg_for_age
+                with _live_cfg_for_age.ACTIVE_RUNS_LOCK:
+                    _entry = (_live_cfg_for_age.ACTIVE_RUNS or {}).get(current_stream_id) or {}
+                _active_run_started_at = float((_entry or {}).get("started_at") or 0)
+            except Exception:
+                _active_run_started_at = 0.0
+        _effective_started_at = _pending_started_at_for_age or _active_run_started_at
+        _past_grace = bool(_effective_started_at) and (time.time() - _effective_started_at) >= _orphan_grace_seconds
+        if _past_grace and current_stream_id:
+            diag.stage("orphan_auto_cancel") if diag else None
+            try:
+                from api.streaming import cancel_stream as _auto_cancel_stream
+                _auto_cancel_stream(current_stream_id)
+            except Exception:
+                logger.debug(
+                    "auto-cancel of stuck active stream %s failed",
+                    current_stream_id, exc_info=True,
+                )
+            # Drop the orphan from local session state so the session_lock
+            # path below sees a clean slate. cancel_stream() tears down
+            # STREAMS / ACTIVE_RUNS / session.active_stream_id (DB) for us;
+            # _clear_stale_stream_state mirrors that into the local handle.
+            _clear_stale_stream_state(s)
+            current_stream_id = None
+        # ── Fresh-stream dedupe (rapid double-fire mitigation) ──
+        # When the blocking active_stream_id was set within the last ~2s and the
+        # worker is still in the "starting" phase, a second chat_start within
+        # milliseconds is almost certainly a frontend double-fire (Enter + click,
+        # auto-retry on a hung request, SSE reconnect race) — NOT a legitimate
+        # user action. Returning 409 here forces the JS into its queue+toast path
+        # which shows "Current session is still running. Reconnected and queued
+        # your message." — confusing for a brand-new "first input on new session"
+        # UX (v2 diag: pending_age_s ≈ 0.01–0.5s, active_run_phase="starting").
+        #
+        # Instead, return 200 with the EXISTING stream_id and `_deduped: true` so
+        # the frontend can silently attach to the in-flight turn and the user
+        # does not see an error. The original 409 path still fires for older
+        # streams (≥2s) so genuine "user typed after long wait" cases are still
+        # caught.
+        # Hoist the diag age computation so the dedupe path and the 409 path
+        # share the same probe — both can read in_streams / active_runs / age.
+        _in_streams = current_stream_id in STREAMS if current_stream_id else False
+        _in_active_runs = False
+        _active_run_started_at_diag = 0.0
+        _active_run_phase = None
+        _active_run_session_id = None
+        try:
+            from api import config as _live_cfg
+            with _live_cfg.ACTIVE_RUNS_LOCK:
+                _ar_entry = (_live_cfg.ACTIVE_RUNS or {}).get(current_stream_id) or {}
+            _in_active_runs = bool(_ar_entry)
+            _active_run_started_at_diag = float((_ar_entry or {}).get("started_at") or 0)
+            _active_run_phase = (_ar_entry or {}).get("phase")
+            _active_run_session_id = (_ar_entry or {}).get("session_id")
+        except Exception:
+            pass
+        _pending_user_msg = bool(getattr(s, "pending_user_message", None))
+        _pending_started_at_diag = 0.0
+        try:
+            _pending_started_at_diag = float(getattr(s, "pending_started_at", None) or 0)
+        except Exception:
+            _pending_started_at_diag = 0.0
+        _now = time.time()
+        try:
+            from api.models import _REPAIR_STALE_PENDING_GRACE_SECONDS as _g
+            _grace_diag = float(_g or 30)
+        except Exception:
+            _grace_diag = 30.0
+        _effective_diag = _pending_started_at_diag or _active_run_started_at_diag
+        _pending_age = (_now - _pending_started_at_diag) if _pending_started_at_diag else None
+        _active_age = (_now - _active_run_started_at_diag) if _active_run_started_at_diag else None
+        _eff_age = (_now - _effective_diag) if _effective_diag else None
+        _past_grace_diag = bool(_effective_diag) and _eff_age is not None and _eff_age >= _grace_diag
+        # Fresh-dup detection: only dedupe while the worker is still in
+        # "starting" (i.e. has not yet emitted its first SSE event). Once it
+        # transitions to "running" / "tool_calling" / etc. a duplicate request
+        # really is a separate user action and should 409 normally.
+        _dedupe_window_seconds = 2.0
+        _dedupe_age = _eff_age if _eff_age is not None else _active_age if _active_age is not None else _pending_age
+        _is_fresh_dup = (
+            current_stream_id
+            and _dedupe_age is not None
+            and _dedupe_age < _dedupe_window_seconds
+            and (_active_run_phase is None or _active_run_phase == "starting")
+        )
+        if _is_fresh_dup:
+            diag.stage("dedupe_fresh_dup") if diag else None
+            logger.info(
+                "chat_start deduped into fresh stream: session=%s stream=%s age=%.3fs phase=%s",
+                getattr(s, "session_id", "?"), current_stream_id,
+                _dedupe_age or 0.0, _active_run_phase,
+            )
+            return {
+                "stream_id": current_stream_id,
+                "session_id": s.session_id,
+                "pending_started_at": _pending_started_at_diag,
+                "turn_id": None,
+                "title": getattr(s, "title", None),
+                "_deduped": True,
+                "_dedup_reason": "fresh_stream_within_2s",
+                "_dedup_age_s": _dedupe_age,
+            }
+        elif _active_stream_blocks_chat_start(s, current_stream_id):
             diag.stage("response_write") if diag else None
             return {
                 "error": "session already has an active stream",
                 "active_stream_id": current_stream_id,
+                "_source": "session_active_stream_id",
                 "_status": 409,
+                "_diag": {
+                    "diag_version": 2,
+                    "in_streams": _in_streams,
+                    "in_active_runs": _in_active_runs,
+                    "has_pending_user_message": _pending_user_msg,
+                    "pending_started_at": _pending_started_at_diag,
+                    "pending_age_s": _pending_age,
+                    "active_run_started_at": _active_run_started_at_diag,
+                    "active_run_age_s": _active_age,
+                    "active_run_phase": _active_run_phase,
+                    "active_run_session_id": _active_run_session_id,
+                    "effective_started_at": _effective_diag,
+                    "effective_age_s": _eff_age,
+                    "orphan_grace_s": _grace_diag,
+                    "past_grace": _past_grace_diag,
+                },
             }
         # Stale stream id from a previous run; clear and continue.
         diag.stage("stale_stream_cleanup") if diag else None
@@ -20469,20 +21111,37 @@ def _start_chat_stream_for_session(
             if locked_stream_id:
                 if _active_stream_blocks_chat_start(s, locked_stream_id):
                     diag.stage("response_write") if diag else None
+                    _diag = {"in_streams": False, "in_active_runs": False, "has_pending_user_message": False}
+                    try:
+                        _diag["in_streams"] = locked_stream_id in STREAMS
+                        from api import config as _cfg2
+                        _diag["in_active_runs"] = locked_stream_id in (_cfg2.ACTIVE_RUNS or {})
+                        _diag["has_pending_user_message"] = bool(getattr(s, "pending_user_message", None))
+                    except Exception:
+                        pass
                     return {
                         "error": "session already has an active stream",
                         "active_stream_id": locked_stream_id,
+                        "_source": "session_active_stream_id_locked",
                         "_status": 409,
+                        "_diag": _diag,
                     }
                 needs_stale_cleanup = True
             else:
                 blocking_run_stream_id = _active_run_stream_for_session(s.session_id)
                 if blocking_run_stream_id:
                     diag.stage("response_write") if diag else None
+                    _diag = {"in_streams": False, "in_active_runs": blocking_run_stream_id is not None}
+                    try:
+                        _diag["in_streams"] = blocking_run_stream_id in STREAMS if blocking_run_stream_id else False
+                    except Exception:
+                        pass
                     return {
                         "error": "session already has an active stream",
                         "active_stream_id": blocking_run_stream_id,
+                        "_source": "active_runs",
                         "_status": 409,
+                        "_diag": _diag,
                     }
                 needs_stale_cleanup = False
                 stream_id = uuid.uuid4().hex
@@ -20507,6 +21166,7 @@ def _start_chat_stream_for_session(
                 return {
                     "error": "session already has an active stream",
                     "active_stream_id": getattr(s, "active_stream_id", None),
+                    "_source": "stale_cleanup_failed",
                     "_status": 409,
                 }
     if was_hidden_empty_session:
@@ -20902,7 +21562,7 @@ def _handle_session_compression_recovery_start(handler, body):
         source = get_session(sid)
     except KeyError:
         return bad(handler, "Session not found", 404)
-    if not _session_visible_to_active_profile(getattr(source, "profile", None), handler):
+    if not _session_visible_to_request(source, handler):
         return bad(handler, "Session not found", 404)
     recovery = compression_recovery_payload_for_session(source)
     if not recovery:
@@ -20931,6 +21591,7 @@ def _handle_session_compression_recovery_start(handler, body):
                 archived=False,
                 project_id=getattr(source, "project_id", None),
                 profile=getattr(source, "profile", None),
+                rbac_user_id=_current_rbac_user_id(handler) or getattr(source, "rbac_user_id", None),
                 session_source="fork",
                 personality=getattr(source, "personality", None),
                 enabled_toolsets=copy.deepcopy(getattr(source, "enabled_toolsets", None)),
@@ -21234,6 +21895,15 @@ def _handle_chat_start(handler, body, diag=None):
                 s.profile = requested_profile
             else:
                 return bad(handler, "Session not found", 404)
+        if not _session_visible_to_current_rbac_user(getattr(s, "rbac_user_id", None), handler):
+            # Shared (read-only) viewers get a clear 403 instead of a 404 so
+            # the frontend can render an informative read-only state.
+            if _session_shared_with_current_user(getattr(s, "session_id", None), handler):
+                return j(handler, {"error": "shared session is read-only", "type": "read_only_shared_session"}, status=403)
+            return bad(handler, "Session not found", 404)
+        current_rbac_user_id = _current_rbac_user_id(handler)
+        if current_rbac_user_id and not getattr(s, "rbac_user_id", None):
+            s.rbac_user_id = current_rbac_user_id
         diag.stage("normalize_message") if diag else None
         msg = str(body.get("message", "")).strip()
         if not msg:
@@ -21344,7 +22014,6 @@ def _handle_chat_start(handler, body, diag=None):
             if restore_err is not None:
                 return bad(handler, f"failed to restore compression recovery: {_sanitize_error(restore_err)}", 500)
             return j(handler, {"error": response["error"]}, status=501)
-        )
         client_ip = _client_ip_for_audit(handler)
         s.pending_client_ip = client_ip if client_ip and client_ip != "-" else None
         from api.runtime_adapter import (
@@ -24871,6 +25540,7 @@ def _handle_session_import(handler, body):
         messages=messages,
         tool_calls=body.get("tool_calls", []),
         profile=get_active_profile_name(),
+        rbac_user_id=_current_rbac_user_id(handler),
     )
     s.pinned = body.get("pinned", False)
     with LOCK:

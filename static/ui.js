@@ -9,7 +9,7 @@ const S={session:null,messages:[],entries:[],busy:false,pendingFiles:[],toolCall
 
 function assistantDisplayName(){
   if(S.activeProfile&&S.activeProfile!=='default') return S.activeProfile.charAt(0).toUpperCase()+S.activeProfile.slice(1);
-  return window._botName||'Hermes';
+  return window._botName||'ZK运维智能体';
 }
 const INFLIGHT={};  // keyed by session_id while request in-flight
 const SESSION_QUEUES={};  // keyed by session_id for queued follow-up turns
@@ -2783,7 +2783,23 @@ async function populateModelDropdown(opts={}){
     const modelsUrl=new URL('api/models',document.baseURI||location.href);
     const requestedFreshness=opts&&opts.freshness?String(opts.freshness):'';
     if(opts&&opts.freshness) modelsUrl.searchParams.set('freshness',opts.freshness);
-    const _modelsRes=await fetch(modelsUrl.href,{credentials:'include'});
+    // Defense-in-depth: abort the fetch after 60s so a hanging provider
+    // doesn't freeze the dropdown forever (backend _handle_live_models
+    // now has its own 30s timeout, but this guards other paths).
+    const _fetchController=new AbortController();
+    const _fetchTimeoutId=setTimeout(()=>_fetchController.abort(),60000);
+    let _modelsRes;
+    try{
+      _modelsRes=await fetch(modelsUrl.href,{credentials:'include',signal:_fetchController.signal});
+    }catch(_fetchErr){
+      clearTimeout(_fetchTimeoutId);
+      if(_fetchErr.name==='AbortError'){
+        console.debug('[hermes] Model fetch timed out after 60s');
+        return;
+      }
+      throw _fetchErr; // re-throw to outer catch for network errors
+    }
+    clearTimeout(_fetchTimeoutId);
     if(requestSeq!==_modelDropdownRequestSeq) return;
     const customRedirectIfUnauth=opts&&typeof opts.redirectIfUnauth==='function'?opts.redirectIfUnauth:null;
     if(customRedirectIfUnauth){
@@ -3000,7 +3016,21 @@ async function _fetchLiveModels(provider, sel, requestSeq=null){
   try{
     const url=new URL('api/models/live',document.baseURI||location.href);
     url.searchParams.set('provider',provider);
-    const _liveRes=await fetch(url.href,{credentials:'include'});
+    // Background enrichment — 20s timeout, no toast needed if it fails.
+    const _liveController=new AbortController();
+    const _liveTimeoutId=setTimeout(()=>_liveController.abort(),20000);
+    let _liveRes;
+    try{
+      _liveRes=await fetch(url.href,{credentials:'include',signal:_liveController.signal});
+    }catch(_liveFetchErr){
+      clearTimeout(_liveTimeoutId);
+      if(_liveFetchErr.name==='AbortError'){
+        console.debug('[hermes] Live model fetch timed out for',provider);
+        return;
+      }
+      throw _liveFetchErr;
+    }
+    clearTimeout(_liveTimeoutId);
     if(requestSeq!==null&&requestSeq!==_modelDropdownRequestSeq) return;
     if(_redirectIfUnauth(_liveRes)) return;
     const data=await _liveRes.json();
@@ -3912,7 +3942,182 @@ function renderModelDropdown(){
   dd.appendChild(_searchRow);
   dd.appendChild(_custSep);
   dd.appendChild(_custRow);
+  // === Composer quick-add entry (see spec §2.8) — composer dropdown only ===
+  if((opts.dropdownId||'composerModelDropdown')==='composerModelDropdown' && typeof _injectComposerQuickAdd==='function'){
+    _injectComposerQuickAdd(dd);
+  }
   _filterModels('');
+}
+
+// Append a "➕ Add custom model…" row at the bottom of the composer dropdown.
+function _injectComposerQuickAdd(dd){
+  if(!dd || dd.querySelector('.composer-quickadd')) return;
+  const sep=document.createElement('div');
+  sep.className='model-quickadd-sep';
+  const row=document.createElement('div');
+  row.className='composer-quickadd';
+  // Strip the leading "➕ " from the label since the icon is rendered inline
+  const labelText=String(t('custom_provider_composer_quickadd_label')||'+ Add custom model').replace(/^[+\s➕]+/,'').trim();
+  row.innerHTML=`<span class="cp-qa-icon">➕</span><span>${esc(labelText)}</span>`;
+  row.addEventListener('click', ()=>{
+    if(typeof closeModelDropdown==='function') closeModelDropdown();
+    if(typeof _openComposerQuickAddModal==='function'){
+      setTimeout(()=>_openComposerQuickAddModal(), 60);
+    }
+  });
+  sep.appendChild(row);
+  dd.appendChild(sep);
+}
+
+// === Composer quick-add mini modal (see spec §2.8) ===
+let _composerQuickAddModal=null;
+
+function _openComposerQuickAddModal(){
+  if(_composerQuickAddModal) return;
+  const overlay=document.createElement('div');
+  overlay.className='composer-quickadd-overlay';
+
+  const card=document.createElement('div');
+  card.className='composer-quickadd-modal';
+  card.innerHTML=`
+    <h3>${esc(t('custom_provider_quickadd_title'))}</h3>
+    <p class="cp-qa-subtitle">${esc(t('custom_provider_quickadd_subtitle'))}</p>
+    <div class="form-row">
+      <label>${esc(t('custom_provider_field_name'))}</label>
+      <input id="qaName" type="text" placeholder="(optional)" />
+    </div>
+    <div class="form-row">
+      <label>${esc(t('custom_provider_field_base_url'))}<span class="required">*</span></label>
+      <input id="qaBaseUrl" type="text" placeholder="https://relay.example.com/v1" />
+    </div>
+    <div class="form-row">
+      <label>${esc(t('custom_provider_field_api_key'))}</label>
+      <input id="qaApiKey" type="password" autocomplete="off" />
+    </div>
+    <div id="qaBanner" class="probe-banner" style="display:none"></div>
+    <div class="actions">
+      <button type="button" class="btn-ghost" data-action="cancel">${esc(t('cancel'))}</button>
+      <button type="button" class="btn-primary" data-action="add">${esc(t('add'))} &amp; switch</button>
+    </div>
+  `;
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  _composerQuickAddModal=overlay;
+
+  // Debounced auto-probe on base_url input
+  let probeTimer=null;
+  const baseUrlInput=card.querySelector('#qaBaseUrl');
+  baseUrlInput.addEventListener('input', ()=>{
+    clearTimeout(probeTimer);
+    const baseUrl=baseUrlInput.value.trim();
+    if(!baseUrl) return;
+    probeTimer=setTimeout(async ()=>{
+      try{
+        const probe=await api('/api/custom_providers/probe_models',{
+          method:'POST',
+          body:JSON.stringify({base_url:baseUrl, api_key:card.querySelector('#qaApiKey').value || null}),
+        });
+        if(probe && probe.ok){
+          _showQaBanner(card,'ok',`Found ${(probe.models||[]).length} models`);
+        }
+      }catch(e){ /* silent */ }
+    }, 300);
+  });
+
+  // ESC + overlay click close
+  overlay.addEventListener('keydown', (ev)=>{
+    if(ev.key==='Escape') _closeComposerQuickAdd();
+  });
+  overlay.addEventListener('click', (ev)=>{
+    if(ev.target===overlay) _closeComposerQuickAdd();
+  });
+
+  card.addEventListener('click', async (ev)=>{
+    const action=ev.target.getAttribute && ev.target.getAttribute('data-action');
+    if(!action) return;
+    if(action==='cancel') _closeComposerQuickAdd();
+    if(action==='add') await _submitComposerQuickAdd(card);
+  });
+
+  // Auto-focus base URL input
+  setTimeout(()=>baseUrlInput.focus(), 50);
+}
+
+function _closeComposerQuickAdd(){
+  if(_composerQuickAddModal){
+    _composerQuickAddModal.remove();
+    _composerQuickAddModal=null;
+  }
+}
+
+async function _submitComposerQuickAdd(card){
+  const btn=card.querySelector('[data-action="add"]');
+  if(btn) btn.disabled=true;
+  const baseUrl=(card.querySelector('#qaBaseUrl').value||'').trim();
+  const apiKey=card.querySelector('#qaApiKey').value || null;
+  const rawName=(card.querySelector('#qaName').value||'').trim();
+
+  // Derive name from baseurl host if empty
+  let name=rawName;
+  if(!name){
+    try{
+      const u=new URL(baseUrl);
+      name=u.host;
+    }catch(e){
+      name='Custom';
+    }
+  }
+
+  // Probe to get models (fall back to ['default'])
+  let models=['default'];
+  try{
+    const probe=await api('/api/custom_providers/probe_models',{
+      method:'POST',
+      body:JSON.stringify({base_url:baseUrl, api_key:apiKey}),
+    });
+    if(probe && probe.ok && probe.models && probe.models.length) models=probe.models;
+  }catch(e){ /* fall through with default */ }
+
+  try{
+    const result=await api('/api/custom_providers',{
+      method:'POST',
+      body:JSON.stringify({action:'upsert', provider:{name, base_url:baseUrl, api_key:apiKey, models}}),
+    });
+    if(!result || !result.ok){
+      const msg=(result && result.error) || t('custom_provider_save_failed');
+      _showQaBanner(card,'error', msg);
+      if(btn) btn.disabled=false;
+      return;
+    }
+    _closeComposerQuickAdd();
+    if(typeof showToast==='function'){
+      showToast(t('custom_provider_quickadd_added_toast')(name), 3000);
+    }
+    // Best-effort auto-select: refresh the dropdown and select the new provider's first model.
+    const slug=(result.provider && result.provider.slug) || '';
+    if(slug && models[0]){
+      const sel=(typeof $==='function') ? $('modelSelect') : document.getElementById('modelSelect');
+      if(sel && typeof selectModelFromDropdown==='function'){
+        try{
+          await selectModelFromDropdown(models[0], 'custom:'+slug);
+        }catch(e){ /* the option may not exist yet; next user interaction will fetch it */ }
+      }
+    }
+    // Refresh the open dropdown so the new provider is visible
+    if(typeof _refreshOpenModelDropdown==='function') _refreshOpenModelDropdown();
+  }catch(e){
+    _showQaBanner(card,'error', String(e && e.message || e));
+    if(btn) btn.disabled=false;
+  }
+}
+
+function _showQaBanner(card, kind, msg){
+  const banner=card.querySelector('#qaBanner');
+  if(!banner) return;
+  banner.style.display='block';
+  const cls = kind === 'error' ? 'probe-banner error' : 'probe-banner success';
+  banner.className = cls;
+  banner.textContent=msg;
 }
 
 async function selectModelFromDropdown(value){
@@ -3950,8 +4155,13 @@ async function toggleModelDropdown(){
   if(typeof closeReasoningDropdown==='function') closeReasoningDropdown();
   if(typeof closeToolsetsDropdown==='function') closeToolsetsDropdown();
   if(typeof window._ensureModelDropdownReady==='function'){
-    const ready=window._ensureModelDropdownReady();
-    if(ready&&typeof ready.catch==='function') ready.catch(()=>{});
+    // Must await the populate promise — otherwise renderModelDropdown() below
+    // reads from the stale <select> while /api/models is still in flight
+    // (#WebUI custom-model-config: new custom provider not visible after save).
+    try{
+      const ready=window._ensureModelDropdownReady();
+      if(ready&&typeof ready.then==='function') await ready;
+    }catch(_){ /* populate failed — renderModelDropdown will fall back to whatever's in <select> */ }
   }
   if(dd.classList.contains('open')) return;
   renderModelDropdown();
@@ -6355,11 +6565,7 @@ function renderMd(raw){
     t=t.replace(/\x00C(\d+)\x00/g,(_,i)=>_code_stash[+i]);
     // Stash [label](url) links before autolink so the URL in href= is not re-linked
     const _link_stash=[];
-<<<<<<< HEAD
-    t=t.replace(/\[([^\]]+)\]\(((?:https?:\/\/|file:\/\/|workspace:\/\/|hermes-log:\/\/|mailto:|tel:)[^\s\)]+)\)/g,(_,lb,u)=>{_link_stash.push(`<a href="${_markdownHref(u)}" target="_blank" rel="noopener">${esc(lb)}</a>`);return `\x00L${_link_stash.length-1}\x00`;});
-=======
-    t=t.replace(/\[([^\]]+)\]\(((?:https?:\/\/|file:\/\/|workspace:\/\/|session:\/\/|mailto:|tel:|message:)[^\s\)]+)\)/g,(_,lb,u)=>{_link_stash.push(_markdownAnchor(lb,u));return `\x00L${_link_stash.length-1}\x00`;});
->>>>>>> f80e641a9a84adf1496247c69aef611116202a4a
+    t=t.replace(/\[([^\]]+)\]\(((?:https?:\/\/|file:\/\/|workspace:\/\/|session:\/\/|hermes-log:\/\/|mailto:|tel:|message:)[^\s\)]+)\)/g,(_,lb,u)=>{_link_stash.push(_markdownAnchor(lb,u));return `\x00L${_link_stash.length-1}\x00`;});
     t=t.replace(/(https?:\/\/[^\s<>"')\]]+)/g,(url)=>{const trail=url.match(/[.,;:!?)]$/)?url.slice(-1):'';const clean=trail?url.slice(0,-1):url;return `<a href="${clean}" target="_blank" rel="noopener">${esc(clean)}</a>${trail}`;});
     t=t.replace(/\x00L(\d+)\x00/g,(_,i)=>_link_stash[+i]);
     t=t.replace(/\x00G(\d+)\x00/g,(_,i)=>_img_stash[+i]);
@@ -6500,11 +6706,7 @@ function renderMd(raw){
   // Stash existing <a> tags first to avoid re-linking already-linked URLs.
   const _a_stash=[];
   s=s.replace(/(<a\b[^>]*>[\s\S]*?<\/a>)/g,m=>{_a_stash.push(m);return `\x00A${_a_stash.length-1}\x00`;});
-<<<<<<< HEAD
-  s=s.replace(/\[([^\]]+)\]\(((?:https?:\/\/|file:\/\/|workspace:\/\/|hermes-log:\/\/|mailto:|tel:)[^\s\)]+)\)/g,(_,label,url)=>`<a href="${_markdownHref(url)}" target="_blank" rel="noopener">${esc(label)}</a>`);
-=======
-  s=s.replace(/\[([^\]]+)\]\(((?:https?:\/\/|file:\/\/|workspace:\/\/|session:\/\/|mailto:|tel:|message:)[^\s\)]+)\)/g,(_,label,url)=>_markdownAnchor(label,url));
->>>>>>> f80e641a9a84adf1496247c69aef611116202a4a
+  s=s.replace(/\[([^\]]+)\]\(((?:https?:\/\/|file:\/\/|workspace:\/\/|session:\/\/|hermes-log:\/\/|mailto:|tel:|message:)[^\s\)]+)\)/g,(_,label,url)=>_markdownAnchor(label,url));
   s=s.replace(/\x00A(\d+)\x00/g,(_,i)=>_a_stash[+i]);
   // Restore raw <pre> only after markdown rewrites so literal preformatted
   // content stays placeholder-protected, then let the sanitizer normalize tags.
@@ -6591,12 +6793,8 @@ function renderMd(raw){
     if(!compact) return false;
     if(/^(javascript|data|vbscript):/i.test(compact)) return false;
     if(/^https?:\/\//i.test(raw)) return true;
-<<<<<<< HEAD
     if(/^hermes-log:\/\/context\?/i.test(raw)) return true;
-    if(/^(mailto:|tel:)/i.test(raw)) return true;
-=======
     if(/^(mailto:|tel:|message:)/i.test(raw)) return true;
->>>>>>> f80e641a9a84adf1496247c69aef611116202a4a
     if(img && /^api\//i.test(raw)) return true;
     if(!img && (/^api\//i.test(raw) || /^#/.test(raw) || _isInternalSessionHref(raw))) return true;
     return false;
@@ -6646,11 +6844,7 @@ function renderMd(raw){
       if(!_isSafeUrl(a.href,false)) return '<a>';
       const target=a.target==='_blank'?' target="_blank"':'';
       const rel=a.rel==='noopener'?' rel="noopener"':'';
-<<<<<<< HEAD
-      const cls=_cls(a.class,['msg-media-link','skill-linked-file','skill-file-back','log-context-ref']);
-=======
-      const cls=_cls(a.class,['msg-media-link','skill-linked-file','skill-file-back','session-link']);
->>>>>>> f80e641a9a84adf1496247c69aef611116202a4a
+      const cls=_cls(a.class,['msg-media-link','skill-linked-file','skill-file-back','session-link','log-context-ref']);
       const download=a.download?` download="${esc(a.download)}"`:'';
       return `<a${cls} href="${esc(_safeAttrValue(a.href))}"${target}${rel}${download}>`;
     }
@@ -7524,15 +7718,11 @@ function showConfirmDialog(opts={}){
   if(title) title.textContent=opts.title||t('dialog_confirm_title');
   if(desc) desc.textContent=opts.message||'';
   if(input){input.style.display='none';input.value='';}
-<<<<<<< HEAD
-  if(cancelBtn) cancelBtn.textContent=opts.cancelLabel||t('cancel');
-  if(cancelBtn) cancelBtn.style.display=opts.hideCancel?'none':'';
-=======
   if(cancelBtn){
     if(opts.hideCancel){cancelBtn.style.display='none';}
     else{cancelBtn.style.display='';cancelBtn.textContent=opts.cancelLabel||t('cancel');}
   }
->>>>>>> f80e641a9a84adf1496247c69aef611116202a4a
+  if(cancelBtn) cancelBtn.style.display=opts.hideCancel?'none':'';
   if(confirmBtn){
     confirmBtn.textContent=opts.confirmLabel||t('dialog_confirm_btn');
     confirmBtn.classList.toggle('danger',!!opts.danger);
@@ -7565,11 +7755,6 @@ function showPromptDialog(opts={}){
     input.value=prefill;input.placeholder=opts.placeholder||'';
     input.autocomplete='off';input.spellcheck=false;
   }
-<<<<<<< HEAD
-  if(cancelBtn) cancelBtn.textContent=opts.cancelLabel||t('cancel');
-  if(confirmBtn){confirmBtn.textContent=opts.confirmLabel||t('create');confirmBtn.classList.remove('danger');}
-  if(dialog){dialog.setAttribute('role','dialog');dialog.classList.toggle('app-dialog--wide',!!opts.wide);}
-=======
   if(cancelBtn){
     // A prior showConfirmDialog({hideCancel:true}) (e.g. the outside-symlink info
     // dialog, #4581) may have hidden the shared Cancel button; always restore it
@@ -7581,8 +7766,7 @@ function showPromptDialog(opts={}){
     confirmBtn.textContent=opts.confirmLabel||t('create');
     confirmBtn.classList.toggle('danger',!!opts.danger);
   }
-  if(dialog) dialog.setAttribute('role',opts.danger?'alertdialog':'dialog');
->>>>>>> f80e641a9a84adf1496247c69aef611116202a4a
+  if(dialog){dialog.setAttribute('role',opts.danger?'alertdialog':'dialog');dialog.classList.toggle('app-dialog--wide',!!opts.wide);}
   if(overlay){overlay.style.display='flex';overlay.setAttribute('aria-hidden','false');}
   return new Promise(resolve=>{
     APP_DIALOG.resolve=resolve;
@@ -16068,7 +16252,6 @@ async function regenerateResponse(btn) {
   } catch(e) { setStatus(t('regen_failed') + e.message); }
 }
 
-<<<<<<< HEAD
 const LOG_CONTEXT_PRESETS=[20,50,100];
 let _logContextDialog=null;
 let _logContextState=null;
@@ -16353,7 +16536,286 @@ function enhanceLogContextRefs(container){
   });
 }
 
-=======
+function _logContextLabel(key,fallback){
+  try{
+    const val=(typeof t==='function')?t(key):'';
+    return val&&val!==key?val:fallback;
+  }catch(_){
+    return fallback;
+  }
+}
+
+function _parseLogContextHref(href){
+  try{
+    const url=new URL(String(href||''),document.baseURI||location.href);
+    if(url.protocol!=='hermes-log:'||url.hostname!=='context') return null;
+    const source=(url.searchParams.get('source')||'').trim();
+    const hostIp=(url.searchParams.get('host_ip')||url.searchParams.get('ip')||'').trim();
+    const account=(url.searchParams.get('account')||url.searchParams.get('user')||'').trim();
+    const path=(url.searchParams.get('path')||'').trim();
+    const line=Number.parseInt(url.searchParams.get('line')||'',10);
+    if((!source&&!hostIp)||!path||!Number.isFinite(line)||line<1) return null;
+    return {source,host_ip:hostIp,account,path,line};
+  }catch(_){
+    return null;
+  }
+}
+
+function _ensureLogContextDialog(){
+  if(_logContextDialog) return _logContextDialog;
+  const overlay=document.createElement('div');
+  overlay.id='logContextDialog';
+  overlay.className='app-dialog-overlay log-context-overlay';
+  overlay.style.display='none';
+  overlay.setAttribute('aria-hidden','true');
+  overlay.innerHTML=`
+    <div class="app-dialog app-dialog--wide log-context-dialog" role="dialog" aria-modal="true">
+      <div class="app-dialog-header">
+        <div>
+          <div class="app-dialog-title log-context-title">${esc(_logContextLabel('log_context_title','Log context'))}</div>
+          <div class="log-context-meta"></div>
+        </div>
+        <button type="button" class="app-dialog-close log-context-close" aria-label="${esc(_logContextLabel('close','Close'))}">${typeof li==='function'?li('x',16):'x'}</button>
+      </div>
+      <div class="log-context-controls">
+        <div class="log-context-presets"></div>
+        <label>${esc(_logContextLabel('log_context_before','Before'))} <input class="log-context-before" type="number" min="0" step="1" value="50"></label>
+        <label>${esc(_logContextLabel('log_context_after','After'))} <input class="log-context-after" type="number" min="0" step="1" value="50"></label>
+        <button type="button" class="app-dialog-btn log-context-refresh">${esc(_logContextLabel('refresh','Refresh'))}</button>
+      </div>
+      <div class="log-context-error" hidden></div>
+      <div class="log-context-body" role="region" aria-live="polite"></div>
+      <button type="button" class="log-context-scroll-btn" hidden>${esc(_logContextLabel('log_context_scroll_to','↑ Current line'))}</button>
+      <div class="app-dialog-actions log-context-actions">
+        <button type="button" class="app-dialog-btn log-context-copy">${esc(_logContextLabel('copy','Copy'))}</button>
+        <button type="button" class="app-dialog-btn log-context-append">${esc(_logContextLabel('log_context_append','Use in reply'))}</button>
+        <button type="button" class="app-dialog-btn log-context-close-secondary">${esc(_logContextLabel('close','Close'))}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const presets=overlay.querySelector('.log-context-presets');
+  LOG_CONTEXT_PRESETS.forEach(count=>{
+    const btn=document.createElement('button');
+    btn.type='button';
+    btn.className='log-context-preset';
+    btn.dataset.count=String(count);
+    btn.textContent=String(count);
+    const beforeLabel=_logContextLabel('log_context_before','before'),afterLabel=_logContextLabel('log_context_after','after');
+    btn.title=`${count} ${beforeLabel} / ${count} ${afterLabel}`;
+    btn.addEventListener('click',()=>{
+      overlay.querySelector('.log-context-before').value=String(count);
+      overlay.querySelector('.log-context-after').value=String(count);
+      _fetchAndRenderLogContext();
+    });
+    presets.appendChild(btn);
+  });
+  overlay.addEventListener('click',e=>{if(e.target===overlay)_closeLogContextDialog();});
+  overlay.querySelectorAll('.log-context-close,.log-context-close-secondary').forEach(btn=>btn.addEventListener('click',_closeLogContextDialog));
+  overlay.querySelector('.log-context-refresh').addEventListener('click',_fetchAndRenderLogContext);
+  overlay.querySelector('.log-context-copy').addEventListener('click',_copyLogContextDialogText);
+  overlay.querySelector('.log-context-append').addEventListener('click',_appendLogContextToComposer);
+  overlay.querySelector('.log-context-scroll-btn').addEventListener('click',()=>{
+    const body=overlay.querySelector('.log-context-body');
+    const matchLine=body?.querySelector('.log-context-line.match');
+    if(matchLine){matchLine.scrollIntoView({block:'center',behavior:'smooth'});}
+    overlay.querySelector('.log-context-scroll-btn').classList.remove('visible');
+  });
+  overlay.addEventListener('keydown',e=>{if(e.key==='Escape')_closeLogContextDialog();});
+  _logContextDialog=overlay;
+  return overlay;
+}
+
+function _closeLogContextDialog(){
+  if(!_logContextDialog)return;
+  _logContextDialog.style.display='none';
+  _logContextDialog.setAttribute('aria-hidden','true');
+}
+
+function _openLogContextDialog(ref){
+  const overlay=_ensureLogContextDialog();
+  _logContextState={ref,payload:null};
+  const target=[ref.source,ref.host_ip,ref.account].filter(Boolean).join('  ');
+  overlay.querySelector('.log-context-meta').textContent=`${target}  ${ref.path}:${ref.line}`;
+  overlay.querySelector('.log-context-error').hidden=true;
+  overlay.querySelector('.log-context-error').textContent='';
+  overlay.querySelector('.log-context-body').textContent=_logContextLabel('loading','Loading...');
+  overlay.style.display='flex';
+  overlay.setAttribute('aria-hidden','false');
+  setTimeout(()=>overlay.querySelector('.log-context-refresh')?.focus(),0);
+  _fetchAndRenderLogContext();
+}
+
+async function _fetchAndRenderLogContext(){
+  const overlay=_ensureLogContextDialog();
+  const state=_logContextState;
+  if(!state||!state.ref)return;
+  const beforeInput=overlay.querySelector('.log-context-before');
+  const afterInput=overlay.querySelector('.log-context-after');
+  const before=Math.max(0,Number.parseInt(beforeInput.value||'50',10)||0);
+  const after=Math.max(0,Number.parseInt(afterInput.value||'50',10)||0);
+  const body=overlay.querySelector('.log-context-body');
+  const err=overlay.querySelector('.log-context-error');
+  if(err){err.hidden=true;err.textContent='';}
+  if(body)body.textContent=_logContextLabel('loading','Loading...');
+  const url=new URL('api/log-context',document.baseURI||location.href);
+  if(state.ref.source)url.searchParams.set('source',state.ref.source);
+  if(state.ref.host_ip)url.searchParams.set('host_ip',state.ref.host_ip);
+  if(state.ref.account)url.searchParams.set('account',state.ref.account);
+  url.searchParams.set('path',state.ref.path);
+  url.searchParams.set('line',String(state.ref.line));
+  url.searchParams.set('before',String(before));
+  url.searchParams.set('after',String(after));
+  if(S.session&&S.session.session_id)url.searchParams.set('session_id',S.session.session_id);
+  try{
+    const res=await fetch(url.href,{credentials:'include',cache:'no-store'});
+    if(_redirectIfUnauth(res))return;
+    const payload=await res.json().catch(()=>({ok:false,error:`HTTP ${res.status}`}));
+    if(!res.ok||payload.ok===false)throw new Error(payload.error||payload.code||`HTTP ${res.status}`);
+    state.payload=payload;
+    _renderLogContextPayload(payload);
+  }catch(e){
+    state.payload=null;
+    if(body)body.textContent='';
+    if(err){err.hidden=false;err.textContent=String(e&&e.message?e.message:e);}
+  }
+}
+
+function _renderLogContextPayload(payload){
+  const overlay=_ensureLogContextDialog();
+  const body=overlay.querySelector('.log-context-body');
+  if(!body)return;
+  body.innerHTML='';
+  const lines=Array.isArray(payload.lines)?payload.lines:[];
+  if(!lines.length){
+    const empty=document.createElement('div');
+    empty.className='log-context-empty';
+    empty.textContent=_logContextLabel('log_context_empty','No lines returned.');
+    body.appendChild(empty);
+    return;
+  }
+  const frag=document.createDocumentFragment();
+  lines.forEach(item=>{
+    const row=document.createElement('div');
+    row.className='log-context-line';
+    if(item&&item.match)row.classList.add('match');
+    const no=document.createElement('span');
+    no.className='log-context-line-no';
+    no.textContent=String(item&&item.no!=null?item.no:'');
+    const text=document.createElement('span');
+    text.className='log-context-line-text';
+    text.textContent=String(item&&item.text!=null?item.text:'');
+    row.appendChild(no);
+    row.appendChild(text);
+    frag.appendChild(row);
+  });
+  body.appendChild(frag);
+
+  // Auto-scroll to the match (current) line
+  const matchLine=body.querySelector('.log-context-line.match');
+  const scrollBtn=overlay.querySelector('.log-context-scroll-btn');
+  if(matchLine&&scrollBtn){
+    scrollBtn.hidden=false;
+    requestAnimationFrame(()=>{
+      matchLine.scrollIntoView({block:'center',behavior:'auto'});
+      _monitorLogContextScroll(overlay,matchLine);
+    });
+  }else if(scrollBtn){
+    scrollBtn.hidden=true;
+    scrollBtn.classList.remove('visible');
+  }
+}
+
+function _monitorLogContextScroll(overlay,matchLine){
+  const body=overlay.querySelector('.log-context-body');
+  const btn=overlay.querySelector('.log-context-scroll-btn');
+  if(!body||!btn)return;
+  const check=()=>{
+    const bodyRect=body.getBoundingClientRect();
+    const matchRect=matchLine.getBoundingClientRect();
+    const fullyVisible=matchRect.top>=bodyRect.top+2&&matchRect.bottom<=bodyRect.bottom-2;
+    btn.classList.toggle('visible',!fullyVisible);
+  };
+  if(body._scrollHandler)body.removeEventListener('scroll',body._scrollHandler);
+  body._scrollHandler=check;
+  body.addEventListener('scroll',check,{passive:true});
+  if(body._resizeHandler)window.removeEventListener('resize',body._resizeHandler);
+  body._resizeHandler=()=>check();
+  window.addEventListener('resize',body._resizeHandler);
+  check();
+}
+
+function _formatLogContextPayload(payload){
+  if(!payload)return '';
+  const lines=(Array.isArray(payload.lines)?payload.lines:[]).map(item=>`${item.no}\t${item.text}`).join('\n');
+  return [
+    `source: ${payload.source}`,
+    payload.host_ip?`host_ip: ${payload.host_ip}`:'',
+    payload.account?`account: ${payload.account}`:'',
+    `path: ${payload.path}`,
+    `line: ${payload.line}`,
+    `context: ${payload.before} before / ${payload.after} after`,
+    '',
+    lines,
+  ].filter(line=>line!=='').join('\n').trim();
+}
+
+function _copyLogContextDialogText(){
+  const text=_formatLogContextPayload(_logContextState&&_logContextState.payload);
+  if(!text)return;
+  _copyText(text).then(()=>showToast(_logContextLabel('copied','Copied'),1400)).catch(()=>showToast(_logContextLabel('copy_failed','Copy failed')));
+}
+
+function _appendLogContextToComposer(){
+  const text=_formatLogContextPayload(_logContextState&&_logContextState.payload);
+  const input=$('msg');
+  if(!text||!input)return;
+  const block=`Please continue the analysis based on this log context:\n\n\`\`\`log\n${text}\n\`\`\``;
+  const current=String(input.value||'');
+  input.value=current.trim()?`${current.replace(/\s+$/,'')}\n\n${block}\n\n`:`${block}\n\n`;
+  input.focus();
+  try{input.setSelectionRange(input.value.length,input.value.length);}catch(_){}
+  input.dispatchEvent(new Event('input',{bubbles:true}));
+  if(typeof autoResize==='function')autoResize();
+  showToast(_logContextLabel('log_context_appended','Log context added to composer'),1600);
+}
+
+function enhanceLogContextRefs(container){
+  const root=container||document;
+  root.querySelectorAll('a[href^="hermes-log://context"]:not([data-log-context-bound])').forEach(anchor=>{
+    const ref=_parseLogContextHref(anchor.getAttribute('href')||anchor.href||'');
+    if(!ref)return;
+    anchor.dataset.logContextBound='1';
+    anchor.dataset.source=ref.source;
+    anchor.dataset.hostIp=ref.host_ip;
+    anchor.dataset.account=ref.account;
+    anchor.dataset.path=ref.path;
+    anchor.dataset.line=String(ref.line);
+    anchor.classList.add('log-context-ref');
+    anchor.removeAttribute('target');
+    anchor.removeAttribute('rel');
+    anchor.setAttribute('role','button');
+    anchor.title=_logContextLabel('log_context_view','View log context');
+    const open=e=>{
+      e.preventDefault();
+      e.stopPropagation();
+      _openLogContextDialog(ref);
+    };
+    anchor.addEventListener('click',open);
+    if(anchor.parentElement&&!anchor.parentElement.classList.contains('log-context-ref-wrap')){
+      const wrap=document.createElement('span');
+      wrap.className='log-context-ref-wrap';
+      anchor.parentNode.insertBefore(wrap,anchor);
+      wrap.appendChild(anchor);
+      const btn=document.createElement('button');
+      btn.type='button';
+      btn.className='log-context-action';
+      btn.textContent=_logContextLabel('log_context_view','View context');
+      btn.addEventListener('click',open);
+      wrap.appendChild(btn);
+    }
+  });
+}
+
 // postProcessRenderedMessages() runs one frame AFTER the render + JS scroll
 // restore (it is scheduled via requestAnimationFrame). It performs syntax
 // highlighting, inline diff/csv/pdf/html/excalidraw hydration, mermaid/katex
@@ -16384,7 +16846,6 @@ function _postProcessWithAnchorSuppression(container){
     }
   }
 }
->>>>>>> f80e641a9a84adf1496247c69aef611116202a4a
 function postProcessRenderedMessages(container) {
   highlightCode(container);
   enhanceLogContextRefs(container);
@@ -16909,10 +17370,6 @@ function loadPdfInline(container){
       loadPdf(window._pdfjsLib);
     } else if(!_pdfjsLoading){
       _pdfjsLoading=true;
-<<<<<<< HEAD
-      showPdfFallback();
-      window.addEventListener('pdfjs-ready',()=>{ _pdfjsReady=true; loadPdf(window._pdfjsLib); },{once:true});
-=======
       const _pdfSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@4.9.155/build/pdf.min.mjs';
       const _pdfWorker='https://cdn.jsdelivr.net/npm/pdfjs-dist@4.9.155/build/pdf.worker.min.mjs';
       const _pdfBlob=new Blob([`import*as p from'${_pdfSrc}';p.GlobalWorkerOptions.workerSrc='${_pdfWorker}';window._pdfjsLib=p;window._pdfjsReady=true;window.dispatchEvent(new Event('pdfjs-ready'));`],{type:'application/javascript'});
@@ -16922,6 +17379,7 @@ function loadPdfInline(container){
       s.src=_pdfBlobUrl;
       s.onload=()=>URL.revokeObjectURL(_pdfBlobUrl);
       document.head.appendChild(s);
+      showPdfFallback();
       window.addEventListener('pdfjs-ready',()=>{ _pdfjsReady=true; loadPdf(window._pdfjsLib); },{once:true});
       setTimeout(()=>{
         if(!_pdfjsReady){
@@ -16931,7 +17389,6 @@ function loadPdfInline(container){
           }
         }
       },15000);
->>>>>>> f80e641a9a84adf1496247c69aef611116202a4a
     } else {
       window.addEventListener('pdfjs-ready',()=>{ loadPdf(window._pdfjsLib); },{once:true});
     }
@@ -17662,14 +18119,6 @@ function renderFileTree(){
   _renderTreeItems(box, visibleEntries, 0, new Set([_workspaceTreePath(S.currentDir||'.')]));
 }
 
-<<<<<<< HEAD
-function _renderTreeItems(container, entries, depth, ancestry){
-  if(depth>WORKSPACE_TREE_MAX_DEPTH){
-    _workspaceTreeBlockedRow(container,null,depth,'Directory nesting is too deep');
-    return;
-  }
-  const parentAncestry=ancestry instanceof Set?ancestry:new Set();
-=======
 let _wsActiveDragPath=null;
 let _wsActiveDragType=null;
 function _setWsDragData(e,item){
@@ -17824,8 +18273,164 @@ function elideMiddle(str, maxLen = 60) {
   return str.slice(0, half) + '...' + str.slice(str.length - half);
 }
 
-function _renderTreeItems(container, entries, depth){
->>>>>>> f80e641a9a84adf1496247c69aef611116202a4a
+function _setWsDragData(e,item){
+  e.dataTransfer.setData('application/ws-path',item.path);
+  e.dataTransfer.setData('application/ws-type',item.type);
+  e.dataTransfer.setData('text/plain',item.path);
+  _wsActiveDragPath=item.path;
+  _wsActiveDragType=item.type;
+}
+function _clearWsDragData(){
+  _wsActiveDragPath=null;
+  _wsActiveDragType=null;
+}
+// Window-level fallback cleanup: if a workspace drag is abandoned without the
+// row's ondragend firing (drag cancelled, dropped outside any target, tab
+// blurred/hidden mid-drag), the active-drag flag must not survive — otherwise a
+// later FOREIGN text/plain drag could be misread as a workspace move.
+if(typeof window!=='undefined'&&!window._wsDragCleanupBound){
+  window._wsDragCleanupBound=true;
+  window.addEventListener('dragend',_clearWsDragData,true);
+  // Defer the drop cleanup a tick: this capture-phase window listener fires
+  // BEFORE the target element's ondrop, so clearing synchronously here would
+  // wipe _wsActiveDragPath before _isWorkspaceTreeMoveDrag()/_wsDragSrcPath()
+  // run in the target handler — re-breaking the macOS stripped-MIME move. The
+  // setTimeout lets the real drop handler complete, then clears the lingering flag.
+  window.addEventListener('drop',()=>setTimeout(_clearWsDragData,0),true);
+  window.addEventListener('pagehide',_clearWsDragData);
+  window.addEventListener('blur',_clearWsDragData);
+}
+function _isWorkspaceTreeMoveDrag(e){
+  if(e.dataTransfer&&e.dataTransfer.types&&e.dataTransfer.types.includes('Files')) return false;
+  if(e.dataTransfer&&e.dataTransfer.types&&e.dataTransfer.types.includes('application/ws-path')) return true;
+  // Stripped-MIME (macOS WebKit) fallback: accept text/plain ONLY while a
+  // workspace drag is genuinely in flight. dragover/drop events can't read the
+  // payload, so gate on the active flag alone here; the drop handler additionally
+  // proves text/plain === _wsActiveDragPath before performing the move.
+  return !!(_wsActiveDragPath&&e.dataTransfer&&e.dataTransfer.types&&e.dataTransfer.types.includes('text/plain'));
+}
+function _wsDragSrcPath(e){
+  const custom=e.dataTransfer.getData('application/ws-path');
+  if(custom) return custom;
+  // Stripped-MIME fallback: only trust the active flag when the drop's own
+  // text/plain matches it. A foreign text/plain drag (different/empty content)
+  // must NOT resolve to our tracked workspace path even if the flag lingered.
+  const plain=e.dataTransfer.getData('text/plain')||'';
+  if(_wsActiveDragPath&&plain===_wsActiveDragPath) return _wsActiveDragPath;
+  return '';
+}
+function _wsDragSrcType(e){
+  const custom=e.dataTransfer.getData('application/ws-type');
+  if(custom) return custom;
+  return _wsActiveDragType||'file';
+}
+
+function _workspaceParentDir(relPath){
+  if(!relPath||relPath==='.')return '.';
+  const idx=relPath.lastIndexOf('/');
+  return idx===-1?'.':relPath.substring(0,idx);
+}
+
+function _clearWorkspaceMoveDragOver(){
+  document.querySelectorAll('.file-item.drag-over,.breadcrumb-seg.drag-over').forEach(el=>el.classList.remove('drag-over'));
+}
+
+function _remapWorkspaceCachesAfterMove(oldPath,newPath,isDir){
+  if(isDir&&S._expandedDirs){
+    if(S._expandedDirs.has(oldPath)){
+      S._expandedDirs.delete(oldPath);
+      S._expandedDirs.add(newPath);
+    }
+    for(const expandedPath of [...S._expandedDirs]){
+      if(expandedPath.startsWith(oldPath+'/')){
+        S._expandedDirs.delete(expandedPath);
+        S._expandedDirs.add(newPath+expandedPath.slice(oldPath.length));
+      }
+    }
+    if(S._dirCache[oldPath]){
+      S._dirCache[newPath]=S._dirCache[oldPath];
+      delete S._dirCache[oldPath];
+    }
+    for(const cachePath of Object.keys(S._dirCache)){
+      if(cachePath.startsWith(oldPath+'/')){
+        const remapped=newPath+cachePath.slice(oldPath.length);
+        S._dirCache[remapped]=S._dirCache[cachePath];
+        delete S._dirCache[cachePath];
+      }
+    }
+    if(typeof _saveExpandedDirs==='function')_saveExpandedDirs();
+  }
+  delete S._dirCache[_workspaceParentDir(oldPath)];
+  delete S._dirCache[_workspaceParentDir(newPath)];
+  if(typeof _previewCurrentPath!=='undefined'&&_previewCurrentPath){
+    if(_previewCurrentPath===oldPath)_previewCurrentPath=newPath;
+    else if(_previewCurrentPath.startsWith(oldPath+'/'))_previewCurrentPath=newPath+_previewCurrentPath.slice(oldPath.length);
+  }
+}
+
+async function _performWorkspaceMove(srcPath,destDir,isDir){
+  if(!S.session||!srcPath)return;
+  const normDest=destDir||'.';
+  if(srcPath===normDest)return;
+  if(normDest.startsWith(srcPath+'/'))return;
+  if(_workspaceParentDir(srcPath)===normDest)return;
+  try{
+    const data=await api('/api/file/move',{method:'POST',body:JSON.stringify({
+      session_id:S.session.session_id,path:srcPath,dest_dir:normDest
+    })});
+    const movedName=data.new_path.includes('/')?data.new_path.slice(data.new_path.lastIndexOf('/')+1):data.new_path;
+    showToast((t('moved_to')||'Moved to ')+movedName);
+    _remapWorkspaceCachesAfterMove(data.old_path||srcPath,data.new_path||srcPath,isDir);
+    await loadDir(S.currentDir);
+    if(typeof refreshOpenPreviewIfMutated==='function')await refreshOpenPreviewIfMutated();
+  }catch(err){
+    showToast((t('move_failed')||'Move failed: ')+err.message,5000,'error');
+  }
+}
+
+function _bindWorkspaceMoveDropTarget(el,destDir){
+  el.ondragenter=(e)=>{
+    if(!_isWorkspaceTreeMoveDrag(e))return;
+    e.preventDefault();e.stopPropagation();
+    el.classList.add('drag-over');
+  };
+  el.ondragover=(e)=>{
+    if(!_isWorkspaceTreeMoveDrag(e))return;
+    e.preventDefault();e.stopPropagation();
+    e.dataTransfer.dropEffect='move';
+    el.classList.add('drag-over');
+  };
+  el.ondragleave=(e)=>{
+    if(el.contains(e.relatedTarget))return;
+    el.classList.remove('drag-over');
+  };
+  el.ondrop=async(e)=>{
+    if(!_isWorkspaceTreeMoveDrag(e))return;
+    e.preventDefault();e.stopPropagation();
+    el.classList.remove('drag-over');
+    try{
+      const srcPath=_wsDragSrcPath(e);
+      if(!srcPath)return;
+      const srcType=_wsDragSrcType(e);
+      await _performWorkspaceMove(srcPath,destDir,srcType==='dir');
+    }finally{
+      _clearWsDragData();
+    }
+  };
+}
+
+function elideMiddle(str, maxLen = 60) {
+  if (str.length <= maxLen) return str;
+  const half = Math.floor((maxLen - 3) / 2);
+  return str.slice(0, half) + '...' + str.slice(str.length - half);
+}
+
+function _renderTreeItems(container, entries, depth, ancestry){
+  if(depth>WORKSPACE_TREE_MAX_DEPTH){
+    _workspaceTreeBlockedRow(container,null,depth,'Directory nesting is too deep');
+    return;
+  }
+  const parentAncestry=ancestry instanceof Set?ancestry:new Set();
   for(const item of entries){
     if(!item) continue;
     const itemPath=_workspaceTreePath(item.path||item.name);
@@ -17922,17 +18527,13 @@ function _renderTreeItems(container, entries, depth){
       e.stopPropagation();
       if(_nameClickTimer){clearTimeout(_nameClickTimer);_nameClickTimer=null;}
       // For directories, double-click navigates (breadcrumb view)
-<<<<<<< HEAD
-      if(item.type==='dir'){loadDir(itemPath);return;}
-=======
-      if(isDirLike){loadDir(item.path);return;}
+      if(isDirLike){loadDir(itemPath);return;}
       // Escape-root rows remain browse-only, nested escape rows stay display-only.
       if(nameIsReadOnlyEscape){
         if(isExternalLink){if(typeof el.onclick==='function')el.onclick(e);return;}
         openFile(item.path);
         return;
       }
->>>>>>> f80e641a9a84adf1496247c69aef611116202a4a
       const inp=document.createElement('input');
       inp.className='file-rename-input';inp.value=item.name;
       inp.onclick=(e2)=>e2.stopPropagation();
@@ -17947,13 +18548,8 @@ function _renderTreeItems(container, entries, depth){
               })});
               showToast(t('renamed_to')+newName);
               // Update expanded dirs cache key if renaming a directory
-<<<<<<< HEAD
-              if(item.type==='dir'&&S._expandedDirs){
-                S._expandedDirs.delete(itemPath);
-=======
               if(isDirLike&&S._expandedDirs){
-                S._expandedDirs.delete(item.path);
->>>>>>> f80e641a9a84adf1496247c69aef611116202a4a
+                S._expandedDirs.delete(itemPath);
                 const parent=item.path.includes('/')?item.path.substring(0,item.path.lastIndexOf('/')):'.';
                 const newPath=parent==='.'?newName:parent+'/'+newName;
                 S._expandedDirs.add(newPath);
@@ -18023,15 +18619,9 @@ function _renderTreeItems(container, entries, depth){
           // Fetch children if not cached
           if(!S._dirCache[itemPath]){
             try{
-<<<<<<< HEAD
-              const data=await api(`/api/list?session_id=${encodeURIComponent(S.session.session_id)}&path=${encodeURIComponent(itemPath)}`);
+              const data=await api(_workspaceRouteForPath(itemPath, 'list'));
               S._dirCache[itemPath]=data.entries||[];
             }catch(e2){S._dirCache[itemPath]=[];}
-=======
-              const data=await api(_workspaceRouteForPath(item.path, 'list'));
-              S._dirCache[item.path]=data.entries||[];
-            }catch(e2){S._dirCache[item.path]=[];}
->>>>>>> f80e641a9a84adf1496247c69aef611116202a4a
           }
           renderFileTree();
         }
@@ -18065,8 +18655,7 @@ function _renderTreeItems(container, entries, depth){
     container.appendChild(el);
 
     // Render children if directory is expanded
-<<<<<<< HEAD
-    if(item.type==='dir'&&S._expandedDirs.has(itemPath)){
+    if(isDirLike&&S._expandedDirs.has(itemPath)){
       if(parentAncestry.has(itemPath)){
         if(S._expandedDirs.delete(itemPath)&&typeof _saveExpandedDirs==='function')_saveExpandedDirs();
         delete S._dirCache[itemPath];
@@ -18076,10 +18665,6 @@ function _renderTreeItems(container, entries, depth){
       const nextAncestry=new Set(parentAncestry);
       nextAncestry.add(itemPath);
       const children=_visibleWorkspaceEntries(S._dirCache[itemPath]||[]);
-=======
-    if(isDirLike&&S._expandedDirs.has(item.path)){
-      const children=_visibleWorkspaceEntries(S._dirCache[item.path]||[]);
->>>>>>> f80e641a9a84adf1496247c69aef611116202a4a
       if(children.length){
         _renderTreeItems(container, children, depth+1, nextAncestry);
       }else{

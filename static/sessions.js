@@ -1426,7 +1426,14 @@ async function loadSession(sid){
   // Guard against network/server failures to prevent a permanently stuck loading state.
   let data;
   try {
-    data = await api(`/api/session?session_id=${encodeURIComponent(sid)}&messages=0&resolve_model=0`);
+    data = await api(`/api/session?session_id=${encodeURIComponent(sid)}&messages=0&resolve_model=0`, {
+      // Phase-1 metadata is ~1KB on paper but cold disk reads + active-profile
+      // env resolution on slow internal networks can push past api()'s 30s
+      // default. Bump to 60s so the request doesn't trip a generic "Request
+      // timed out" toast on first-load while the user is still waiting for
+      // real disk I/O (#WebUI internal-network repro).
+      timeoutMs: 60000,
+    });
   } catch(e) {
     const _msgInner = $('msgInner');
     // Stale-load guard (Codex): a newer loadSession() may have started while this
@@ -1470,7 +1477,26 @@ async function loadSession(sid){
         // When currentSid is set, a 500/network error may be transient — the
         // session might still exist on the server (#4028 follow-up).
         _clearStuckSessionOnBoot(sid, currentSid);
-        _msgInner.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:14px;padding:40px;text-align:center;">Failed to load session. Try refreshing or switching sessions.</div>';
+        // Add a Retry button so users on slow / internal networks can recover
+        // without a full page refresh — the previous plain text was "frozen"
+        // UX once the api() 30s timeout tripped (#WebUI internal-network repro).
+        if (_msgInner) {
+          _msgInner.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:14px;padding:40px;text-align:center;gap:14px;">'
+            + '<div>Failed to load session. Try refreshing or switching sessions.</div>'
+            + '<button type="button" class="btn-secondary" data-load-retry="1" '
+            + 'style="padding:6px 14px;font-size:12px;border-radius:6px;">'
+            + (typeof t === 'function' ? (t('retry') || 'Retry') : 'Retry')
+            + '</button>'
+            + '</div>';
+          const _retryBtn = _msgInner.querySelector('[data-load-retry]');
+          if (_retryBtn) {
+            _retryBtn.addEventListener('click', () => {
+              if (typeof loadSession === 'function') {
+                loadSession(sid, { force: true }).catch(() => {});
+              }
+            });
+          }
+        }
         if(typeof showToast==='function') showToast('Failed to load session',3000,'error');
       }
     }
@@ -4120,6 +4146,23 @@ function _openSessionActionMenu(session, anchorEl){
       _showProjectPicker(session, anchorEl);
     }
   ));
+  // RBAC 分享：仅 owner/admin 显示。canShareSession 是
+  // 异步判定（缓存 currentUser），先渲染占位，不可分享时异步移除。
+  if(typeof canShareSession==='function'&&typeof openShareDialog==='function'){
+    const shareItem=_buildSessionAction(
+      t('share_session')||'分享会话',
+      t('share_session_desc')||'分享给其他用户或生成只读链接',
+      li('share-2',15),
+      async()=>{
+        closeSessionActionMenu();
+        openShareDialog(session);
+      }
+    );
+    menu.appendChild(shareItem);
+    canShareSession(session).then(ok=>{
+      if(!ok&&shareItem.isConnected) shareItem.remove();
+    }).catch(()=>{});
+  }
   menu.appendChild(_buildSessionAction(
     session.archived?t('session_restore'):t('session_archive'),
     session.archived?t('session_restore_desc'):_sessionArchiveDescription(session),
@@ -4261,6 +4304,7 @@ let _renderSessionListQueuedRequest = null;
 let _sessionListRefreshAnimationPending = false;
 let _sessionListFirstRenderAnimated = false;
 let _sessionListEnterAllAnimationPending = false;
+let _sessionListAuthScopeSyncPromise = null;
 
 // #4671: invalidate any session-list render that is in flight or queued. Called at
 // profile-switch start (with showSessionListSkeleton) so a pre-switch /api/sessions
@@ -4286,6 +4330,21 @@ function _invalidateSessionListRenders(){
   }
 }
 if(typeof window!=='undefined') window._invalidateSessionListRenders = _invalidateSessionListRenders;
+
+async function _syncAuthScopeBeforeSessionListRefresh(){
+  if(typeof syncAuthIdentityScope!=='function') return;
+  if(_sessionListAuthScopeSyncPromise) return _sessionListAuthScopeSyncPromise;
+  _sessionListAuthScopeSyncPromise=(async()=>{
+    try{
+      await syncAuthIdentityScope({clearOnChange:true});
+    }catch(e){
+      console.warn('syncAuthIdentityScope before session list',e);
+    }finally{
+      _sessionListAuthScopeSyncPromise=null;
+    }
+  })();
+  return _sessionListAuthScopeSyncPromise;
+}
 
 // #4671: profile-switch session-list EMBARGO. Point-in-time invalidation isn't enough —
 // a renderSessionList() can START after the skeleton is shown but BEFORE /api/profile/switch
@@ -4326,6 +4385,8 @@ const _SESSION_SKELETON_GROUPS = [
 function showSessionListSkeleton(targetProfile){
   const list = $('sessionList');
   if(!list) return;
+  list.setAttribute('aria-busy', 'true');
+  list.dataset.sessionLoading = '1';
   // Tear down any active virtual-scroll state up front so a pending scroll-driven
   // render can't repaint the previous profile's cached rows over the skeleton
   // (#4662 Codex gate). Cancel the queued RAF and drop the data-session-virtual-*
@@ -4392,6 +4453,7 @@ function showSessionListSkeleton(targetProfile){
       }
     }
   }
+  wrap.classList.add('session-list-loading');
   list.innerHTML = '';
   list.appendChild(wrap);
   list.scrollTop = 0;
@@ -4439,11 +4501,30 @@ function _dropStaleOptimisticSessionRow(sid){
   if(typeof _forgetObservedStreamingSession==='function') _forgetObservedStreamingSession(sid);
 }
 
+function _rbacScopeFromSessionPayload(sessData){
+  const userId = String((sessData&&sessData.rbac_user_id) || (typeof window!=='undefined'&&window._currentAuthUserId) || '').trim();
+  const role = String((sessData&&sessData.rbac_role) || (typeof window!=='undefined'&&window._currentAuthRole) || '').trim().toLowerCase();
+  return {userId, role};
+}
+
+function _sessionRowVisibleForRbacScope(row, scope=null){
+  if(!row) return false;
+  const effectiveScope = scope || _rbacScopeFromSessionPayload(null);
+  const userId = String(effectiveScope.userId || '').trim();
+  const role = String(effectiveScope.role || '').trim().toLowerCase();
+  if(!userId) return true;
+  if(role === 'admin') return true;
+  const owner = String(row.rbac_user_id || '').trim();
+  if(owner && owner === userId) return true;
+  return !!(row.viewer === 'shared' || row.read_only || row.is_read_only);
+}
+
 function _mergeOptimisticFirstTurnSessions(fetchedSessions){
   const merged=Array.isArray(fetchedSessions)?[...fetchedSessions]:[];
   const bySid=new Map();
   merged.forEach((s,idx)=>{if(s&&s.session_id) bySid.set(s.session_id,idx);});
   for(const local of Array.isArray(_allSessions)?_allSessions:[]){
+    if(!_sessionRowVisibleForRbacScope(local)) continue;
     if(!_isOptimisticFirstTurnSessionRow(local)) continue;
     const sid=local.session_id;
     const idx=bySid.has(sid)?bySid.get(sid):-1;
@@ -4598,14 +4679,18 @@ function _applySessionListPayload(sessData, projData){
   if (typeof sessData.server_tz === 'string') {
     _serverTz = sessData.server_tz;
   }
+  const rbacScope = _rbacScopeFromSessionPayload(sessData);
+  const responseSessions = Array.isArray(sessData.sessions) ? sessData.sessions : [];
   const serverSessions=_optimisticallyRemovedSessionIds.size
-    ? (sessData.sessions||[]).filter(s=>s&&!_optimisticallyRemovedSessionIds.has(s.session_id))
-    : (sessData.sessions||[]);
-  _sidebarReferenceSessions = Array.isArray(sessData.sidebar_reference_sessions)
+    ? responseSessions.filter(s=>s&&!_optimisticallyRemovedSessionIds.has(s.session_id))
+    : responseSessions;
+  const scopedServerSessions = serverSessions.filter(s=>_sessionRowVisibleForRbacScope(s, rbacScope));
+  _sidebarReferenceSessions = (Array.isArray(sessData.sidebar_reference_sessions)
     ? sessData.sidebar_reference_sessions
-    : [];
-  _reconcileActiveSessionIdleStateFromList(serverSessions);
-  _allSessions = _mergeOptimisticFirstTurnSessions(serverSessions);
+    : []
+  ).filter(s=>_sessionRowVisibleForRbacScope(s, rbacScope));
+  _reconcileActiveSessionIdleStateFromList(scopedServerSessions);
+  _allSessions = _mergeOptimisticFirstTurnSessions(scopedServerSessions);
   // Tag the cache with the scope it was loaded under (active profile +
   // all-profiles flag). If a later /api/sessions fails right after a profile
   // switch, the catch path checks this so it won't re-render the PRIOR
@@ -4614,6 +4699,7 @@ function _applySessionListPayload(sessData, projData){
     profile: (typeof sessData.active_profile === 'string' && sessData.active_profile)
       ? sessData.active_profile
       : (S.activeProfile || 'default'),
+    rbacUserId: rbacScope.userId,
     allProfiles: !!_showAllProfiles,
     sidebarSource: _requestedSessionSidebarSource(),
     excludeHidden: _sessionListExcludeHiddenEnabled(),
@@ -4661,6 +4747,11 @@ function _applySessionListPayload(sessData, projData){
   // fire before this point stay blocked by the guard in renderSessionListFromCache().
   const _hadSessionListSkeleton = _sessionListSkeletonActive;
   _sessionListSkeletonActive = false;
+  const _listBusyEl = $('sessionList');
+  if(_listBusyEl){
+    _listBusyEl.removeAttribute('aria-busy');
+    delete _listBusyEl.dataset.sessionLoading;
+  }
   // No-op fast path: if this payload renders identically to what is already on
   // screen (the common case for idle polls) and no entrance animation is
   // pending, skip the full DOM rebuild. Only applies here in the fetch/apply
@@ -4780,8 +4871,23 @@ async function _runRenderSessionListRefresh(opts, _gen){
   const deferWhileInteracting=Boolean(opts&&opts.deferWhileInteracting);
   if(!deferWhileInteracting) _pendingSessionListPayload=null;
   try{
+    await _syncAuthScopeBeforeSessionListRefresh();
+    if (_gen !== _renderSessionListGen) {
+      if(!_renderSessionListQueuedRequest){
+        _renderSessionListQueuedRequest={opts:opts||{},gen:++_renderSessionListGen};
+      }
+      return;
+    }
+    if(!deferWhileInteracting && !_sessionListHasLoadedOnce && !_sessionListSkeletonActive){
+      showSessionListSkeleton(S.activeProfile || 'default');
+    }
     if(!($('sessionSearch').value||'').trim()) _contentSearchResults = [];
-    const sessionListQS = _sessionListQueryString();
+    let sessionListQS = _sessionListQueryString();
+    const _isAdminInitialSessionList = String((typeof window!=='undefined'&&window._currentAuthRole) || '').toLowerCase() === 'admin'
+      && !_sessionListHasLoadedOnce;
+    if(_isAdminInitialSessionList && sessionListQS.indexOf('limit=')===-1){
+      sessionListQS += (sessionListQS.indexOf('?')===-1 ? '?' : '&') + 'limit=120';
+    }
     // #5394: the sidebar session-list GET is idempotent, so 502/503/504 retry
     // must be unconditional. Previously retries/retryStatuses were boot-gated, so
     // a transient 502 during an nginx->backend restart on a warm refresh (profile
@@ -4827,12 +4933,14 @@ async function _runRenderSessionListRefresh(opts, _gen){
     // (#4167 review item 3).
     const _curScope = {
       profile: S.activeProfile || 'default',
+      rbacUserId: String(window._currentAuthUserId || ''),
       allProfiles: !!_showAllProfiles,
       sidebarSource: _requestedSessionSidebarSource(),
       excludeHidden: _sessionListExcludeHiddenEnabled(),
     };
     const _scopeMatches = _allSessionsScope
       && _allSessionsScope.profile === _curScope.profile
+      && String(_allSessionsScope.rbacUserId || '') === String(_curScope.rbacUserId || '')
       && _allSessionsScope.allProfiles === _curScope.allProfiles
       && _allSessionsScope.sidebarSource === _curScope.sidebarSource
       && _allSessionsScope.excludeHidden === _curScope.excludeHidden;
@@ -4840,6 +4948,11 @@ async function _runRenderSessionListRefresh(opts, _gen){
     // render (matched cache, or empty rows for a mismatched scope) replaces the
     // up-front profile-switch skeleton instead of stranding it.
     _sessionListSkeletonActive = false;
+    const _listBusyEl = $('sessionList');
+    if(_listBusyEl){
+      _listBusyEl.removeAttribute('aria-busy');
+      delete _listBusyEl.dataset.sessionLoading;
+    }
     if (_scopeMatches) {
       renderSessionListFromCache();
     } else {
@@ -4864,7 +4977,18 @@ async function _loadSidebarSessionListPayload(sessionListQS, sessionRequestOpts)
   })();
 
   const sessData = await api('/api/sessions' + sessionListQS,sessionRequestOpts);
-  const projData = await projectPromise;
+  let projData = await Promise.race([
+    projectPromise,
+    new Promise(resolve=>setTimeout(()=>resolve(null), _sessionListHasLoadedOnce ? 500 : 700)),
+  ]);
+  if(!projData){
+    projData = {projects:_allProjects||[]};
+    projectPromise.then((lateProjData)=>{
+      if(!lateProjData||!Array.isArray(lateProjData.projects)) return;
+      _allProjects = lateProjData.projects;
+      try{ renderSessionListFromCache(); }catch(_){}
+    });
+  }
 
   return {sessData,projData};
 }
@@ -6363,6 +6487,7 @@ function upsertActiveSessionForLocalTurn({title='', messageCount=0, timestampMs=
     last_message_at:nowSec,
     updated_at:nowSec,
     profile:S.session.profile||S.activeProfile||'default',
+    rbac_user_id:S.session.rbac_user_id||(typeof window!=='undefined'&&window._currentAuthUserId)||null,
     is_streaming:true,
   };
   if(existingIdx>=0) _allSessions[existingIdx]={..._allSessions[existingIdx],...row};
@@ -6385,6 +6510,7 @@ function _sessionRowsWithActiveEphemeralSession(rows){
     last_message_at:S.session.last_message_at||S.session.updated_at||nowSec,
     updated_at:S.session.updated_at||S.session.last_message_at||nowSec,
     profile:S.session.profile||S.activeProfile||'default',
+    rbac_user_id:S.session.rbac_user_id||(typeof window!=='undefined'&&window._currentAuthUserId)||null,
     is_streaming:false,
   };
   return [activeRow,...rows];
@@ -6585,6 +6711,10 @@ function _sidebarRowHasVisibleMessages(s, activeSidForSidebar){
     !!s.active_stream_id ||
     !!s.pending_user_message ||
     !!s.has_pending_user_message ||
+    // Server-side RBAC scoping already limits these rows to the owner/admin
+    // or an allowed share. An owned empty chat is a real user-created row, not
+    // an anonymous ghost session, so keep it visible in the sidebar.
+    !!s.rbac_user_id ||
     (activeSidForSidebar&&s.session_id===activeSidForSidebar) ||
     // #5306: a linked delegate child of the currently-active/streaming parent
     // must stay rendered for the duration of the parent's turn. A subagent child
@@ -6733,6 +6863,28 @@ function renderSessionListFromCache(){
   // _applySessionListPayload — once _allSessions is fresh — so only a render backed by
   // up-to-date data replaces the skeleton. The failure-restore path clears it too.
   if(_sessionListSkeletonActive) return;
+  let _storedRbacUserId = '';
+  try{ _storedRbacUserId = localStorage.getItem('hermes-webui-auth-user-id') || ''; }catch(_){}
+  const _currentRbacUserId = String(_storedRbacUserId || (typeof window!=='undefined'&&window._currentAuthUserId) || '');
+  const _cachedRbacUserId = _allSessionsScope ? String(_allSessionsScope.rbacUserId || '') : _currentRbacUserId;
+  if(_cachedRbacUserId !== _currentRbacUserId){
+    _allSessions = [];
+    _sidebarReferenceSessions = [];
+    _contentSearchResults = [];
+    _lastSessionListRenderSig = null;
+    _allSessionsScope = {
+      profile: S.activeProfile || 'default',
+      rbacUserId: _currentRbacUserId,
+      allProfiles: !!_showAllProfiles,
+      sidebarSource: _requestedSessionSidebarSource(),
+      excludeHidden: _sessionListExcludeHiddenEnabled(),
+    };
+    _clearSessionSourceTabCounts();
+    if(_renderSessionListInFlight || _renderSessionListQueuedRequest){
+      showSessionListSkeleton(S.activeProfile || 'default');
+      return;
+    }
+  }
   // Don't re-render while user is actively renaming a session (would destroy the input)
   if(_renamingSid) return;
   // Keep the per-conversation actions menu stable while the user is trying to
@@ -8093,7 +8245,247 @@ async function _handleShowAllProfilesStorageEvent(e){
   if(typeof renderSessionList==='function') await renderSessionList({deferWhileInteracting:false});
 }
 
+function _installRatingSubmitEnableFallback(){
+  if(typeof window==='undefined'||typeof document==='undefined') return;
+  if(window._hermesRatingSubmitEnableFallbackInstalled) return;
+  window._hermesRatingSubmitEnableFallbackInstalled = true;
+  const rootSelector = '.feedback-modal,.feedback-dialog,.rating-modal,.rating-dialog,.feedback-panel,.rating-panel,.modal,.dialog,[role="dialog"],form';
+  const starSelector = '[data-rating],[data-score],[data-star],[data-value],[aria-label*="star"],[aria-label*="Star"],[aria-label*="星"],[title*="star"],[title*="Star"],[title*="星"],.rating-star,.star-rating button,.rating-stars button,.star-btn,.feedback-star,input[type="radio"][name*="rating"],input[type="radio"][name*="Rating"],input[type="radio"][name*="score"],input[type="radio"][name*="Score"]';
+  const buttonSelector = 'button[type="submit"],button[data-submit],button[data-action="submit"],.feedback-submit,.rating-submit,.submit-feedback';
+  const eventInit = {bubbles:true,cancelable:true};
+  const dispatchStateEvents = (el)=>{
+    if(!el||typeof el.dispatchEvent!=='function') return;
+    try{ el.dispatchEvent(new Event('input',eventInit)); }catch(_){}
+    try{ el.dispatchEvent(new Event('change',eventInit)); }catch(_){}
+  };
+  const selectedRatingIn = (root)=>{
+    if(!root||typeof root.querySelector!=='function') return false;
+    try{
+      return !!root.querySelector(
+        'input[type="radio"][name*="rating"]:checked,input[type="radio"][name*="Rating"]:checked,input[type="radio"][name*="score"]:checked,input[type="radio"][name*="Score"]:checked,[aria-pressed="true"][data-rating],[aria-pressed="true"][data-score],[aria-selected="true"][data-rating],[aria-selected="true"][data-score],.rating-star.active,.rating-star.selected,.star-btn.active,.star-btn.selected,.feedback-star.active,.feedback-star.selected'
+      );
+    }catch(_){ return false; }
+  };
+  const buttonLooksLikeRatingSubmit = (btn)=>{
+    if(!btn||btn.tagName!=='BUTTON') return false;
+    const txt = String(btn.textContent||btn.getAttribute('aria-label')||btn.title||'').trim().toLowerCase();
+    if(btn.matches(buttonSelector)) return true;
+    return txt==='提交'||txt==='完成'||txt==='submit'||txt==='send'||txt.indexOf('评分')!==-1||txt.indexOf('feedback')!==-1;
+  };
+  const enableSubmitButtons = (root)=>{
+    if(!root||typeof root.querySelectorAll!=='function') return;
+    const rootData = root.dataset || {};
+    const hasRating = selectedRatingIn(root) || rootData.rating || rootData.score || root._hermesRatingSelected;
+    if(!hasRating) return;
+    const buttons = Array.from(root.querySelectorAll('button'));
+    buttons.forEach((btn)=>{
+      if(!buttonLooksLikeRatingSubmit(btn)) return;
+      btn.disabled = false;
+      btn.removeAttribute('disabled');
+      btn.removeAttribute('aria-disabled');
+      if(btn.classList){
+        btn.classList.remove('disabled');
+        btn.classList.remove('is-disabled');
+      }
+    });
+  };
+  document.addEventListener('click',(e)=>{
+    let star=null;
+    try{ star=e.target&&e.target.closest?e.target.closest(starSelector):null; }catch(_){ star=null; }
+    if(!star) return;
+    const root = (star.closest&&star.closest(rootSelector)) || document;
+    const value = star.value || star.dataset.rating || star.dataset.score || star.dataset.star || star.dataset.value || '';
+    if(value){
+      try{ root.dataset.rating = String(value); }catch(_){}
+    }
+    try{ root._hermesRatingSelected = true; }catch(_){}
+    dispatchStateEvents(star);
+    if(star.control) dispatchStateEvents(star.control);
+    setTimeout(()=>enableSubmitButtons(root),0);
+    setTimeout(()=>enableSubmitButtons(root),80);
+    setTimeout(()=>enableSubmitButtons(root),200);
+  },true);
+  document.addEventListener('change',(e)=>{
+    let star=null;
+    try{ star=e.target&&e.target.closest?e.target.closest(starSelector):null; }catch(_){ star=null; }
+    if(!star) return;
+    const root = (star.closest&&star.closest(rootSelector)) || document;
+    const value = star.value || star.dataset.rating || star.dataset.score || star.dataset.star || star.dataset.value || '';
+    if(value){
+      try{ root.dataset.rating = String(value); }catch(_){}
+    }
+    try{ root._hermesRatingSelected = true; }catch(_){}
+    setTimeout(()=>enableSubmitButtons(root),0);
+  },true);
+}
+_installRatingSubmitEnableFallback();
+
+function _installSettingsLocalizationAndLicenseFallback(){
+  if(typeof window==='undefined'||typeof document==='undefined') return;
+  if(window._hermesSettingsLocalizationFallbackInstalled) return;
+  window._hermesSettingsLocalizationFallbackInstalled = true;
+  const textMap = new Map([
+    ['Users','用户'],
+    ['Manage user accounts and review audit log. Admin only.','管理用户账号并查看审计日志。仅管理员可用。'],
+    ['Current account','当前账号'],
+    ['Add user','添加用户'],
+    ['All users','所有用户'],
+    ['USERNAME','用户名'],
+    ['ROLE','角色'],
+    ['LAST LOGIN','最后登录'],
+    ['ACTIONS','操作'],
+    ['Create','创建'],
+    ['Delete','删除'],
+  ]);
+  const placeholderMap = new Map([
+    ['username','用户名'],
+    ['password (>=8 chars)','密码（至少 8 位）'],
+  ]);
+  const normalizeLicensePayload = (payload)=>{
+    const data = payload && typeof payload === 'object'
+      ? (payload.license || payload.status || payload.data || payload)
+      : {};
+    const read = (...keys)=>{
+      for(const key of keys){
+        if(data && Object.prototype.hasOwnProperty.call(data,key) && data[key] !== null && data[key] !== undefined && data[key] !== '') return data[key];
+        if(payload && Object.prototype.hasOwnProperty.call(payload,key) && payload[key] !== null && payload[key] !== undefined && payload[key] !== '') return payload[key];
+      }
+      return '';
+    };
+    const statusRaw = read('status','license_status','state','valid');
+    let status = statusRaw;
+    if(statusRaw === true) status = '有效';
+    else if(statusRaw === false) status = '无效';
+    else if(String(statusRaw).toLowerCase() === 'active') status = '有效';
+    else if(String(statusRaw).toLowerCase() === 'expired') status = '已过期';
+    else if(String(statusRaw).toLowerCase() === 'not_activated') status = '未激活';
+    return {
+      '状态': status,
+      '平台 ID': read('platform_id','platformId','platform','machine_id','machineId'),
+      'MAC 地址': read('mac_address','macAddress','mac','machine_mac','machineMac'),
+      '过期时间': read('expires_at','expiresAt','expire_at','expireAt','expired_at','expiredAt','expiration','expire_time'),
+      '剩余天数': read('days_remaining','remaining_days','remainingDays','remain_days','remainDays'),
+      '导入时间': read('imported_at','importedAt','import_time','importTime','created_at','createdAt'),
+    };
+  };
+  const findLicenseValueNode = (labelText)=>{
+    const wanted = String(labelText||'').replace(/[:：]\s*$/,'');
+    const all = Array.from(document.querySelectorAll('div,span,dt,td,th,label,p'));
+    for(const el of all){
+      const text = String(el.textContent||'').trim().replace(/[:：]\s*$/,'');
+      if(text !== wanted) continue;
+      const parent = el.parentElement;
+      if(!parent) continue;
+      const candidates = Array.from(parent.children).filter(child=>child!==el);
+      const value = candidates.find(child=>String(child.textContent||'').trim()==='-' || !String(child.textContent||'').trim());
+      if(value) return value;
+      if(el.nextElementSibling) return el.nextElementSibling;
+    }
+    return null;
+  };
+  let licenseFetchInFlight = false;
+  const hydrateLicensePanel = async()=>{
+    if(licenseFetchInFlight) return;
+    const bodyText = String(document.body&&document.body.textContent||'');
+    if(bodyText.indexOf('License 管理')===-1 && bodyText.indexOf('License')===-1) return;
+    const hasEmptyLicenseRows = ['状态','平台 ID','MAC 地址','过期时间','剩余天数','导入时间'].some(label=>{
+      const node = findLicenseValueNode(label);
+      return node && String(node.textContent||'').trim()==='-';
+    });
+    if(!hasEmptyLicenseRows) return;
+    licenseFetchInFlight = true;
+    const endpoints = ['/api/license/status','/api/admin/license/status','/api/license'];
+    try{
+      let payload = null;
+      for(const endpoint of endpoints){
+        try{
+          payload = typeof api === 'function'
+            ? await api(endpoint,{redirect401:false,timeoutToast:false})
+            : await fetch(endpoint,{credentials:'include'}).then(r=>r.ok?r.json():null);
+          if(payload) break;
+        }catch(_){}
+      }
+      if(!payload) return;
+      const values = normalizeLicensePayload(payload);
+      Object.keys(values).forEach(label=>{
+        const value = values[label];
+        if(value === null || value === undefined || value === '') return;
+        const node = findLicenseValueNode(label);
+        if(node) node.textContent = String(value);
+      });
+    }finally{
+      licenseFetchInFlight = false;
+    }
+  };
+  const localizeSettings = ()=>{
+    try{
+      document.querySelectorAll('input,textarea').forEach(el=>{
+        const ph = el.getAttribute('placeholder');
+        if(placeholderMap.has(ph)) el.setAttribute('placeholder', placeholderMap.get(ph));
+      });
+      document.querySelectorAll('button,span,div,h1,h2,h3,h4,th,td,label,option').forEach(el=>{
+        if(el.children&&el.children.length) return;
+        const text = String(el.textContent||'').trim();
+        if(textMap.has(text)) el.textContent = textMap.get(text);
+      });
+      hydrateLicensePanel();
+    }catch(_){}
+  };
+  localizeSettings();
+  const observer = new MutationObserver(()=>localizeSettings());
+  observer.observe(document.documentElement,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['placeholder']});
+}
+_installSettingsLocalizationAndLicenseFallback();
+
+function resetSessionStateForAuthChange(nextUserId=''){
+  _invalidateSessionListRenders();
+  _allSessions = [];
+  _sidebarReferenceSessions = [];
+  _contentSearchResults = [];
+  _pendingSessionListPayload = null;
+  _renderSessionListQueuedRequest = null;
+  _lastSessionListRenderSig = null;
+  _sessionListLoadError = null;
+  _sessionListSkeletonActive = false;
+  _sessionListHasLoadedOnce = false;
+  const list=$('sessionList');
+  if(list){
+    list.removeAttribute('aria-busy');
+    delete list.dataset.sessionLoading;
+  }
+  _sessionListSnapshotById.clear();
+  _sessionListSourceById.clear();
+  if(typeof _sessionStreamingById !== 'undefined' && _sessionStreamingById.clear) _sessionStreamingById.clear();
+  if(typeof _clearSessionSourceTabCounts === 'function') _clearSessionSourceTabCounts();
+  _allSessionsScope = {
+    profile: S.activeProfile || 'default',
+    rbacUserId: String(nextUserId || ''),
+    allProfiles: !!_showAllProfiles,
+    sidebarSource: _requestedSessionSidebarSource(),
+    excludeHidden: _sessionListExcludeHiddenEnabled(),
+  };
+  S.session = null;
+  S.messages = [];
+  S.entries = [];
+  S.toolCalls = [];
+  S.activeStreamId = null;
+  S.busy = false;
+  try{ localStorage.removeItem('hermes-webui-session'); }catch(_){}
+  try{ if(typeof _setActiveSessionUrl === 'function') _setActiveSessionUrl(null); }catch(_){}
+  const empty=$('emptyState');
+  if(empty) empty.style.display='';
+  if(typeof syncTopbar === 'function') syncTopbar();
+  if(typeof updateSendBtn === 'function') updateSendBtn();
+  if(typeof renderMessages === 'function') renderMessages();
+  if(nextUserId){
+    showSessionListSkeleton(S.activeProfile || 'default');
+  }else if(typeof renderSessionListFromCache === 'function') {
+    renderSessionListFromCache();
+  }
+}
+
 if(typeof window!=='undefined'){
+  window.resetSessionStateForAuthChange = resetSessionStateForAuthChange;
   window.addEventListener('storage', (e) => {
     void _handleActiveSessionStorageEvent(e);
     void _handleShowAllProfilesStorageEvent(e);

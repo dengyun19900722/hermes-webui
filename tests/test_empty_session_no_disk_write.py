@@ -86,6 +86,26 @@ def test_unsaved_empty_session_hidden_from_sidebar(_isolate):
     )
 
 
+def test_saved_rbac_owned_empty_session_visible_after_refresh(_isolate):
+    s = new_session(rbac_user_id="u-alice")
+    s.save()
+
+    ids = {row["session_id"] for row in all_sessions()}
+
+    assert s.session_id in ids
+
+
+def test_saved_rbac_owned_empty_session_visible_after_full_scan(_isolate):
+    s = new_session(rbac_user_id="u-alice")
+    s.save()
+    models.SESSION_INDEX_FILE.unlink(missing_ok=True)
+    SESSIONS.clear()
+
+    ids = {row["session_id"] for row in all_sessions()}
+
+    assert s.session_id in ids
+
+
 # ── 3. save() materialises the file when state is real ─────────────────────
 
 

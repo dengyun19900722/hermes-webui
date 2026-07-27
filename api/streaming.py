@@ -7086,6 +7086,14 @@ def _run_agent_streaming(
                 question=msg_text,
                 metadata={'reason': 'pre-flight', 'stream_id': stream_id},
             )
+            # Unregister before the cancel event (same race as the done/apperror
+            # fixes at lines 9805-9811 / 10167-10175) so a queue-drain
+            # /api/chat/start arriving right after 'cancel' does not hit a
+            # false 409 from ACTIVE_RUNS.
+            try:
+                unregister_active_run(stream_id)
+            except Exception:
+                pass
             put('cancel', _cancel_event_payload('Cancelled before start'))
             return
 
@@ -8303,6 +8311,14 @@ def _run_agent_streaming(
                         question=msg_text,
                         metadata={'reason': 'init-cancelled', 'stream_id': stream_id},
                     )
+                    # Unregister before the cancel event (same race as the done/apperror
+                    # fixes at lines 9805-9811 / 10167-10175) so a queue-drain
+                    # /api/chat/start arriving right after 'cancel' does not hit a
+                    # false 409 from ACTIVE_RUNS.
+                    try:
+                        unregister_active_run(stream_id)
+                    except Exception:
+                        pass
                     put('cancel', _cancel_event_payload('Cancelled by user'))
                     return
 
@@ -8474,6 +8490,14 @@ def _run_agent_streaming(
                             )
                         except Exception:
                             logger.debug("Failed to append cancelled turn journal event", exc_info=True)
+                # Unregister before the cancel event (same race as the done/apperror
+                # fixes at lines 9805-9811 / 10167-10175) so a queue-drain
+                # /api/chat/start arriving right after 'cancel' does not hit a
+                # false 409 from ACTIVE_RUNS.
+                try:
+                    unregister_active_run(stream_id)
+                except Exception:
+                    pass
                 put('cancel', _cancel_event_payload('Cancelled by user'))
                 return
             # ── Ephemeral mode (/btw): deliver answer, skip persistence, cleanup ──
@@ -8532,6 +8556,14 @@ def _run_agent_streaming(
                         )
                     except Exception:
                         logger.debug("Failed to append cancelled turn journal event", exc_info=True)
+                # Unregister before the cancel event (same race as the done/apperror
+                # fixes at lines 9805-9811 / 10167-10175) so a queue-drain
+                # /api/chat/start arriving right after 'cancel' does not hit a
+                # false 409 from ACTIVE_RUNS.
+                try:
+                    unregister_active_run(stream_id)
+                except Exception:
+                    pass
                 put('cancel', _cancel_event_payload('Cancelled by user'))
                 return
             _writeback_timings = []
@@ -8573,6 +8605,14 @@ def _run_agent_streaming(
                             )
                         except Exception:
                             logger.debug("Failed to append cancelled turn journal event", exc_info=True)
+                        # Unregister before the cancel event (same race as the done/apperror
+                        # fixes at lines 9805-9811 / 10167-10175) so a queue-drain
+                        # /api/chat/start arriving right after 'cancel' does not hit a
+                        # false 409 from ACTIVE_RUNS.
+                        try:
+                            unregister_active_run(stream_id)
+                        except Exception:
+                            pass
                         put('cancel', _cancel_event_payload('Cancelled by user'))
                         return
                     _next_context_messages = _restore_reasoning_metadata(
@@ -8824,6 +8864,14 @@ def _run_agent_streaming(
                                 )
                             except Exception:
                                 logger.debug("Failed to append cancelled turn journal event", exc_info=True)
+                        # Unregister before the cancel event (same race as the done/apperror
+                        # fixes at lines 9805-9811 / 10167-10175) so a queue-drain
+                        # /api/chat/start arriving right after 'cancel' does not hit a
+                        # false 409 from ACTIVE_RUNS.
+                        try:
+                            unregister_active_run(stream_id)
+                        except Exception:
+                            pass
                         put('cancel', _cancel_event_payload('Cancelled by user'))
                         return
                     _err_str = str(_last_err) if _last_err else ''
@@ -9455,6 +9503,14 @@ def _run_agent_streaming(
                         )
                     except Exception:
                         logger.debug("Failed to append cancelled turn journal event", exc_info=True)
+                    # Unregister before the cancel event (same race as the done/apperror
+                    # fixes at lines 9805-9811 / 10167-10175) so a queue-drain
+                    # /api/chat/start arriving right after 'cancel' does not hit a
+                    # false 409 from ACTIVE_RUNS.
+                    try:
+                        unregister_active_run(stream_id)
+                    except Exception:
+                        pass
                     put('cancel', _cancel_event_payload('Cancelled by user'))
                     return
                 with _stream_writeback_stage(_writeback_timings, "session_save"):
@@ -9473,6 +9529,14 @@ def _run_agent_streaming(
                         )
                     except Exception:
                         logger.debug("Failed to append cancelled turn journal event", exc_info=True)
+                    # Unregister before the cancel event (same race as the done/apperror
+                    # fixes at lines 9805-9811 / 10167-10175) so a queue-drain
+                    # /api/chat/start arriving right after 'cancel' does not hit a
+                    # false 409 from ACTIVE_RUNS.
+                    try:
+                        unregister_active_run(stream_id)
+                    except Exception:
+                        pass
                     put('cancel', _cancel_event_payload('Cancelled by user'))
                     return
                 if not ephemeral:
@@ -9798,17 +9862,24 @@ def _run_agent_streaming(
                     'timing': _timing,
                 },
             )
-                _done_payload = {'session': redact_session_data(raw_session), 'usage': usage}
-                if _tool_limit_reached:
-                    _done_payload['terminal_state'] = 'tool_limit_reached'
-                    _done_payload['terminal_reason'] = 'max_iterations'
-                put('done', _done_payload)
-                # Emit one last metering packet for the live message-header TPS label.
-                meter_stats = meter().get_stats()
-                meter_stats['session_id'] = session_id
-                meter_stats.setdefault('tps_available', False)
-                meter_stats.setdefault('estimated', False)
-                put('metering', meter_stats)
+            _done_payload = {'session': redact_session_data(raw_session), 'usage': usage}
+            if _tool_limit_reached:
+                _done_payload['terminal_state'] = 'tool_limit_reached'
+                _done_payload['terminal_reason'] = 'max_iterations'
+            # Unregister the active run BEFORE notifying the client (the outer
+            # finally block also calls unregister_active_run, which is safe as a
+            # no-op when the key is already gone).  Without this early unregister,
+            # a queue-drain /api/chat/start arriving immediately after 'done' /
+            # 'stream_end' can hit a false 409 because _active_run_stream_for_session
+            # still sees the old stream_id in ACTIVE_RUNS.
+            unregister_active_run(stream_id)
+            put('done', _done_payload)
+            # Emit one last metering packet for the live message-header TPS label.
+            meter_stats = meter().get_stats()
+            meter_stats['session_id'] = session_id
+            meter_stats.setdefault('tps_available', False)
+            meter_stats.setdefault('estimated', False)
+            put('metering', meter_stats)
             try:
                 _log_stream_writeback_timings(
                     getattr(s, 'session_id', session_id),
@@ -9919,6 +9990,14 @@ def _run_agent_streaming(
                             )
                         except Exception:
                             logger.debug("Failed to append cancelled turn journal event", exc_info=True)
+            # Unregister before the cancel event (same race as the done/apperror
+            # fixes at lines 9805-9811 / 10167-10175) so a queue-drain
+            # /api/chat/start arriving right after 'cancel' does not hit a
+            # false 409 from ACTIVE_RUNS.
+            try:
+                unregister_active_run(stream_id)
+            except Exception:
+                pass
             put('cancel', _cancel_event_payload('Cancelled by user'))
             return
         _exc_is_quota = _classification['type'] == 'quota_exhausted'
@@ -10160,6 +10239,13 @@ def _run_agent_streaming(
                 'timing': _timing_err,
             },
         )
+        # Unregister the active run before sending apperror (same race as the
+        # success-path fix — a client draining the queue immediately after
+        # apperror would hit a false 409 from ACTIVE_RUNS).
+        try:
+            unregister_active_run(stream_id)
+        except Exception:
+            pass
         put('apperror', _error_payload)
     finally:
         # Stop the periodic checkpoint thread before the final recovery path.
@@ -10339,12 +10425,20 @@ def cancel_stream(stream_id: str) -> bool:
     """Signal an in-flight stream to cancel. Returns True if work was found.
 
     Eagerly releases the session lock (pops STREAMS/CANCEL_FLAGS/AGENT_INSTANCES
-    and clears session.active_stream_id) so new /api/chat/start requests succeed
-    immediately after cancel, even if the agent thread is still blocked.
+    *and* unregisters ACTIVE_RUNS, plus clears session.active_stream_id) so new
+    /api/chat/start requests succeed immediately after cancel, even if the agent
+    thread is still blocked in a long-running tool call.
 
-    The worker thread's finally block uses .pop(key, None), so the double-pop is
-    a safe no-op. Session cleanup runs outside STREAMS_LOCK to preserve lock
-    ordering (streaming thread does LOCK → STREAMS_LOCK; inverting would deadlock).
+    Without the eager ACTIVE_RUNS unregister the worker registry entry would
+    linger until the worker's `finally` block runs, which only happens after
+    agent.interrupt()'d blocking tool returns — often minutes for wedged
+    providers. That gap produced permanent 409s on a follow-up /api/chat/start
+    after a refresh + Stop (Codex bug review, #5345 / #5198 follow-up).
+
+    The worker thread's finally block also calls unregister_active_run; both
+    use .pop(key, None) so the double-pop is a safe no-op. Session cleanup runs
+    outside STREAMS_LOCK to preserve lock ordering (streaming thread does LOCK
+    → STREAMS_LOCK; inverting would deadlock).
     """
     from api import config as _live_config
 
@@ -10431,6 +10525,15 @@ def cancel_stream(stream_id: str) -> bool:
     # below while the worker is still unwinding; ACTIVE_RUNS is what recovery /
     # health polling sees during that detached window.
     update_active_run(stream_id, phase="cancelling")
+    # Fulfill the eager-release promise: drop the ACTIVE_RUNS entry NOW so a
+    # follow-up /api/chat/start does not block on a worker that is still
+    # unwinding in agent.interrupt() / tool-cancel C land. The worker's
+    # `finally` block also calls unregister_active_run; both .pop(key, None)
+    # so this is a safe no-op race-wise.
+    try:
+        unregister_active_run(stream_id)
+    except Exception:
+        logger.debug("cancel_stream: eager unregister_active_run failed for %s", stream_id, exc_info=True)
 
     # Set WebUI layer cancel flag. Prefer the snapshot captured under the lock;
     # fall back to a fresh lookup for the ACTIVE_RUNS-only path (stream absent).

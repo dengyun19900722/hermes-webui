@@ -210,6 +210,14 @@ def _cleanup_stale_tmp_files() -> None:
 _PERSISTED_SESSION_IDS_CACHE: tuple[Path | None, int | None, frozenset[str]] = (None, None, frozenset())
 
 
+def _invalidate_persisted_session_ids_cache(session_dir: Path | None = None) -> None:
+    """Drop the cached persisted-session id snapshot for the active session dir."""
+    global _PERSISTED_SESSION_IDS_CACHE
+    cached_dir, _cached_mtime_ns, _cached_ids = _PERSISTED_SESSION_IDS_CACHE
+    if session_dir is None or cached_dir is None or cached_dir == session_dir:
+        _PERSISTED_SESSION_IDS_CACHE = (None, None, frozenset())
+
+
 def _persisted_session_ids_snapshot() -> frozenset[str]:
     """Return persisted session ids, caching the directory snapshot by mtime.
 
@@ -1031,6 +1039,7 @@ class Session:
                  messages=None, created_at=None, updated_at=None,
                  tool_calls=None, pinned: bool=False, archived: bool=False,
                  project_id: str=None, profile=None,
+                 rbac_user_id: str=None,
                  input_tokens: int=0, output_tokens: int=0, estimated_cost=None,
                  cache_read_tokens: int=0, cache_write_tokens: int=0,
                  personality=None,
@@ -1084,6 +1093,7 @@ class Session:
         self.archived = bool(archived)
         self.project_id = project_id or None
         self.profile = profile
+        self.rbac_user_id = str(rbac_user_id).strip() if rbac_user_id else None
         self.input_tokens = input_tokens or 0
         self.output_tokens = output_tokens or 0
         self.estimated_cost = estimated_cost
@@ -1182,7 +1192,7 @@ class Session:
         # Fields are listed in the order they should appear in the JSON file.
         METADATA_FIELDS = [
             'session_id', 'title', 'workspace', 'model', 'model_provider', 'created_at', 'updated_at',
-            'pinned', 'archived', 'project_id', 'profile',
+            'pinned', 'archived', 'project_id', 'profile', 'rbac_user_id',
             'input_tokens', 'output_tokens', 'estimated_cost',
             'cache_read_tokens', 'cache_write_tokens',
             'personality', 'active_stream_id',
@@ -1290,6 +1300,7 @@ class Session:
             except Exception:
                 pass
             raise
+        _invalidate_persisted_session_ids_cache(SESSION_DIR)
         if not skip_index:
             _write_session_index(updates=[self])
 
@@ -1424,6 +1435,7 @@ class Session:
             'archived': self.archived,
             'project_id': self.project_id,
             'profile': self.profile,
+            'rbac_user_id': self.rbac_user_id,
             'input_tokens': self.input_tokens,
             'output_tokens': self.output_tokens,
             'estimated_cost': self.estimated_cost,
@@ -3411,7 +3423,7 @@ def _profile_default_model_state(profile=None):
     return default_model or get_effective_default_model(), default_provider
 
 
-def new_session(workspace=None, model=None, profile=None, model_provider=None, project_id=None, worktree_info=None, enabled_toolsets=None):
+def new_session(workspace=None, model=None, profile=None, model_provider=None, project_id=None, worktree_info=None, enabled_toolsets=None, rbac_user_id=None):
     """Create a new in-memory session.
 
     The session lives in the SESSIONS dict only — no disk write happens until
@@ -3458,6 +3470,7 @@ def new_session(workspace=None, model=None, profile=None, model_provider=None, p
         model=effective_model,
         model_provider=effective_model_provider,
         profile=profile,
+        rbac_user_id=rbac_user_id,
         project_id=project_id,
         personality=None,
         worktree_path=wt.get('path') if wt else None,
@@ -3919,7 +3932,7 @@ def _refresh_index_rows_from_sidecar_metadata(
         for key in (
             'message_count', 'updated_at', 'last_message_at', 'title', 'workspace',
             'model', 'model_provider', 'created_at', 'pinned', 'archived', 'project_id',
-            'profile', 'pre_compression_snapshot', 'parent_session_id', 'source_tag',
+            'profile', 'rbac_user_id', 'pre_compression_snapshot', 'parent_session_id', 'source_tag',
             'raw_source', 'session_source', 'source_label', 'active_stream_id',
             'has_pending_user_message', 'pending_user_message', 'pending_started_at',
         ):
@@ -4600,11 +4613,16 @@ def all_sessions(diag=None, *, include_lineage_metadata: bool = True):
             # initial streaming turn the session still looks like Untitled+0-messages.
             # Without this exemption, navigating away during a long first turn causes
             # the session to vanish from the sidebar.
+            #
+            # RBAC-owned empty sessions are also durable user-created rows. The
+            # route layer still filters them to their owner/admin, but all_sessions()
+            # must keep them so a freshly-created conversation survives refresh.
             result = [s for s in result if not (
                 s.get('title', 'Untitled') == 'Untitled'
                 and s.get('message_count', 0) == 0
                 and not s.get('active_stream_id')
                 and not s.get('has_pending_user_message')
+                and not s.get('rbac_user_id')
                 and not s.get('worktree_path')
             )]
             if include_lineage_metadata:
@@ -4660,6 +4678,7 @@ def all_sessions(diag=None, *, include_lineage_metadata: bool = True):
         and len(s.messages) == 0
         and not s.active_stream_id
         and not s.pending_user_message
+        and not getattr(s, 'rbac_user_id', None)
         and not getattr(s, 'worktree_path', None)
     )]  # fmt: skip
     if include_lineage_metadata:

@@ -9,6 +9,16 @@ document.addEventListener('DOMContentLoaded', function () {
 
   if (!form || !input) return;
 
+  // RBAC bootstrap: check init_status to decide whether to redirect to /setup
+  fetch('/api/auth/init_status', { credentials: 'same-origin' })
+    .then(function (r) { return r.json(); })
+    .then(function (s) {
+      if (s && s.initialized === false) {
+        window.location.href = '/setup';
+      }
+    })
+    .catch(function () { /* fail open — show login form */ });
+
   var invalidPw = form.getAttribute('data-invalid-pw') || 'Invalid password';
   var connFailed = form.getAttribute('data-conn-failed') || 'Connection failed';
 
@@ -22,16 +32,16 @@ document.addEventListener('DOMContentLoaded', function () {
     if (err) { err.style.display = 'none'; }
   }
 
-  // Return the ?next= redirect path if present and safe, otherwise './'
+  // Return the ?next= redirect path if present and safe, otherwise '/'.
   // Guards against open-redirect: rejects protocol-relative (//evil.com),
   // absolute URLs, backslash variants, and control characters.
   function _safeNextPath() {
     try {
       var raw = new URL(window.location.href).searchParams.get('next');
-      if (!raw) return './';
-      if (raw.charAt(0) !== '/') return './';             // must be path-absolute
-      if (raw.charAt(1) === '/' || raw.charAt(1) === '\\') return './'; // reject // and \\
-      if (/[\x00-\x1f\x7f\s]/.test(raw)) return './';  // reject control chars / whitespace
+      if (!raw) return '/';
+      if (raw.charAt(0) !== '/') return '/';             // must be path-absolute
+      if (raw.charAt(1) === '/' || raw.charAt(1) === '\\') return '/'; // reject // and \\
+      if (/[\x00-\x1f\x7f\s]/.test(raw)) return '/';  // reject control chars / whitespace
       // #5578: never redirect back to the login page — that self-referential
       // chain is what grows the URL exponentially on repeated expired-auth
       // bounces. Detect the login route even through nested percent-encoding
@@ -40,37 +50,162 @@ document.addEventListener('DOMContentLoaded', function () {
       // few levels and check the leading PATH. Only collapse login-route chains
       // — a legitimate non-login path that merely carries its own `next=` query
       // key must still round-trip.
-      if (raw.length > 2048) return './';
+      if (raw.length > 2048) return '/';
       var probe = raw;
       var stabilized = false;
       for (var i = 0; i < 8; i++) {
         var pathOnly = probe.split('?')[0].split('#')[0].split('&')[0].replace(/\/+$/, '');
-        if (pathOnly === '/login' || /\/login$/.test(pathOnly)) return './';
+        if (pathOnly === '/login' || /\/login$/.test(pathOnly)) return '/';
         var decoded;
         try { decoded = decodeURIComponent(probe); } catch (_) { stabilized = true; break; }
         if (decoded === probe) { stabilized = true; break; }
         probe = decoded;
       }
       // If still decoding at the cap (pathologically deep encoding), fail closed.
-      if (!stabilized) return './';
+      if (!stabilized) return '/';
       return raw;
-    } catch (_) { return './'; }
+    } catch (_) { return '/'; }
   }
+
+  var AUTH_SCOPE_STORAGE_KEY = 'hermes-webui-auth-user-id';
+
+  function _authIdentityFromUser(user) {
+    if (!user) return '';
+    if (user.id) return String(user.id);
+    if (user.username) return 'user:' + String(user.username);
+    return '';
+  }
+
+  function _rememberLoggedInUser(user) {
+    var identity = _authIdentityFromUser(user);
+    try {
+      var previous = localStorage.getItem(AUTH_SCOPE_STORAGE_KEY) || '';
+      if (identity && previous && previous !== identity) {
+        localStorage.removeItem('hermes-webui-session');
+      }
+      if (identity) localStorage.setItem(AUTH_SCOPE_STORAGE_KEY, identity);
+    } catch (_) {}
+  }
+
+  function _installLicenseActivationMachineInfoFallback() {
+    var bodyText = '';
+    try { bodyText = document.body ? document.body.textContent || '' : ''; } catch (_) {}
+    if (bodyText.indexOf('License 激活') === -1 && bodyText.indexOf('License') === -1) return;
+
+    function _licenseText(v) {
+      if (v === null || v === undefined || v === '') return '';
+      return String(v);
+    }
+
+    function _licenseRead(obj, keys) {
+      if (!obj || typeof obj !== 'object') return '';
+      for (var i = 0; i < keys.length; i += 1) {
+        var key = keys[i];
+        if (Object.prototype.hasOwnProperty.call(obj, key)) {
+          var value = _licenseText(obj[key]);
+          if (value) return value;
+        }
+      }
+      return '';
+    }
+
+    function _licenseNormalize(payload) {
+      var data = payload && typeof payload === 'object'
+        ? (payload.license || payload.machine || payload.data || payload.status || payload)
+        : {};
+      return {
+        platformId: _licenseRead(data, ['platform_id', 'platformId', 'platform', 'machine_id', 'machineId', 'fingerprint'])
+          || _licenseRead(payload, ['platform_id', 'platformId', 'platform', 'machine_id', 'machineId', 'fingerprint']),
+        macAddress: _licenseRead(data, ['mac_address', 'macAddress', 'mac', 'machine_mac', 'machineMac', 'primary_mac'])
+          || _licenseRead(payload, ['mac_address', 'macAddress', 'mac', 'machine_mac', 'machineMac', 'primary_mac'])
+      };
+    }
+
+    function _findLicenseValue(labelText) {
+      var wanted = String(labelText || '').replace(/[:：]\s*$/, '');
+      var nodes = Array.prototype.slice.call(document.querySelectorAll('div,span,dt,dd,td,th,label,p'));
+      for (var i = 0; i < nodes.length; i += 1) {
+        var el = nodes[i];
+        var text = String(el.textContent || '').trim().replace(/[:：]\s*$/, '');
+        if (text !== wanted) continue;
+        var parent = el.parentElement;
+        if (!parent) continue;
+        var children = Array.prototype.slice.call(parent.children || []);
+        for (var j = 0; j < children.length; j += 1) {
+          var child = children[j];
+          if (child !== el && String(child.textContent || '').trim()) return child;
+        }
+        if (el.nextElementSibling) return el.nextElementSibling;
+      }
+      return null;
+    }
+
+    function _setLicenseValue(label, value) {
+      if (!value || value === 'N/A') return false;
+      var node = _findLicenseValue(label);
+      if (!node) return false;
+      node.textContent = String(value);
+      return true;
+    }
+
+    function _showLicenseMachineInfoError() {
+      var card = document.querySelector('form') || document.querySelector('[role="main"]') || document.body;
+      if (!card || document.getElementById('license-machine-info-error')) return;
+      var note = document.createElement('div');
+      note.id = 'license-machine-info-error';
+      note.style.cssText = 'margin-top:12px;color:#fca5a5;font-size:13px;line-height:1.5;text-align:center;';
+      note.textContent = '未能读取平台 ID / MAC 地址，请确认服务端机器标识接口可用后刷新页面。';
+      card.appendChild(note);
+    }
+
+    async function _hydrateLicenseMachineInfo() {
+      var platformNode = _findLicenseValue('平台 ID');
+      var macNode = _findLicenseValue('MAC 地址');
+      var platformEmpty = !platformNode || ['N/A', '-', ''].indexOf(String(platformNode.textContent || '').trim()) !== -1;
+      var macEmpty = !macNode || ['N/A', '-', ''].indexOf(String(macNode.textContent || '').trim()) !== -1;
+      if (!platformEmpty && !macEmpty) return;
+      var endpoints = [
+        '/api/license/machine',
+        '/api/license/status',
+        '/api/admin/license/status',
+        '/api/license'
+      ];
+      for (var i = 0; i < endpoints.length; i += 1) {
+        try {
+          var res = await fetch(endpoints[i], {credentials: 'include'});
+          if (!res.ok) continue;
+          var data = await res.json();
+          var info = _licenseNormalize(data);
+          var ok = false;
+          ok = _setLicenseValue('平台 ID', info.platformId) || ok;
+          ok = _setLicenseValue('MAC 地址', info.macAddress) || ok;
+          if (ok) return;
+        } catch (_) {}
+      }
+      _showLicenseMachineInfoError();
+    }
+
+    setTimeout(_hydrateLicenseMachineInfo, 0);
+  }
+  _installLicenseActivationMachineInfoFallback();
 
   async function doLogin(e) {
     e.preventDefault();
     var pw = input.value;
+    var usernameEl = document.getElementById('username');
+    var username = usernameEl ? usernameEl.value.trim() : '';
     hideErr();
     try {
-      var res = await fetch('api/auth/login', {
+      var res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: pw }),
+        body: JSON.stringify({ username: username, password: pw }),
         credentials: 'include',
       });
       var data = {};
       try { data = await res.json(); } catch (_) {}
-      if (res.ok && data.ok) {
+      if (res.ok && data.user) {
+        _rememberLoggedInUser(data.user);
         window.location.href = _safeNextPath();
       } else {
         showErr(data.error || invalidPw);
@@ -103,7 +238,7 @@ document.addEventListener('DOMContentLoaded', function () {
     hideErr();
     try {
       passkeyBtn.disabled = true;
-      var optRes = await fetch('api/auth/passkey/options', { method: 'POST', body: '{}', credentials: 'include' });
+      var optRes = await fetch('/api/auth/passkey/options', { method: 'POST', body: '{}', credentials: 'include' });
       var optData = await optRes.json();
       if (!optRes.ok || !optData.publicKey) throw new Error(optData.error || 'Passkey unavailable');
       var pk = optData.publicKey;
@@ -124,13 +259,16 @@ document.addEventListener('DOMContentLoaded', function () {
           userHandle: cred.response.userHandle ? bytesToB64u(cred.response.userHandle) : null,
         },
       };
-      var res = await fetch('api/auth/passkey/login', {
+      var res = await fetch('/api/auth/passkey/login', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload), credentials: 'include',
       });
       var data = {};
       try { data = await res.json(); } catch (_) {}
-      if (res.ok && data.ok) window.location.href = _safeNextPath();
+      if (res.ok && data.ok) {
+        _rememberLoggedInUser(data.user);
+        window.location.href = _safeNextPath();
+      }
       else showErr(data.error || invalidPw);
     } catch (ex) {
       showErr(ex && ex.message ? ex.message : connFailed);
@@ -140,7 +278,7 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   if (passkeyBtn && window.PublicKeyCredential && navigator.credentials) {
-    fetch('api/auth/status', { credentials: 'include' })
+    fetch('/api/auth/status', { credentials: 'include' })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (s) { if (s && s.passkeys_enabled) passkeyBtn.style.display = 'block'; })
       .catch(function () {});
@@ -169,7 +307,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function probe() {
-      fetch('health', { method: 'GET', credentials: 'same-origin' })
+      fetch('/health', { method: 'GET', credentials: 'same-origin' })
         .then(function (r) {
           if (r.ok) {
             // Server is reachable — if we were in retry mode, reload so the

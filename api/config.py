@@ -4250,10 +4250,10 @@ _cache_build_in_progress = False  # True while a cold path is actively building
 # (unbounded) behaviour.
 try:
     _LIVE_REBUILD_BUDGET_SECONDS: float = float(
-        os.getenv("HERMES_WEBUI_MODELS_REBUILD_BUDGET", "4") or "4"
+        os.getenv("HERMES_WEBUI_MODELS_REBUILD_BUDGET", "1.5") or "1.5"
     )
 except (TypeError, ValueError):
-    _LIVE_REBUILD_BUDGET_SECONDS = 4.0
+    _LIVE_REBUILD_BUDGET_SECONDS = 1.5
 
 
 # ── Budget-exceeded warning rate-limit ───────────────────────────────────────
@@ -8189,9 +8189,9 @@ _SETTINGS_DEFAULTS = {
     "hidden_tabs": [],  # sidebar tab panel names hidden by user (e.g. ["tasks","kanban"]); chat and settings are always visible
     "tab_order": [],  # user-defined sidebar/rail tab order for reorderable tabs; chat/settings stay fixed
     "composer_control_order": [],  # user-defined composer footer control order; invalid/duplicate keys are ignored
-    "language": "en",  # UI locale code; must match a key in static/i18n.js LOCALES
+    "language": "zh",  # UI locale code; must match a key in static/i18n.js LOCALES
     "bot_name": os.getenv(
-        "HERMES_WEBUI_BOT_NAME", "Hermes"
+        "HERMES_WEBUI_BOT_NAME", "ZK运维智能体"
     ),  # display name for the assistant
     "sound_enabled": False,  # play notification sound when assistant finishes
     "rtl": False,  # right-to-left chat layout (chat messages + composer only)
@@ -8360,6 +8360,24 @@ def load_settings() -> dict:
                 and k != _SETTINGS_PERSISTED_SPEECH_KEYS_FIELD
             }
         )
+        # Migrate old defaults to ZK defaults.
+        # If a stored value matches the OLD default the user never explicitly
+        # changed, upgrade silently.  Users who actively choose an option later
+        # persist their choice and won't be migrated again.
+        _old_defaults = {"language": "en", "bot_name": "Hermes"}
+        _migrated = False
+        for _key, _old_val in _old_defaults.items():
+            if stored.get(_key) == _old_val and settings.get(_key) == _old_val:
+                settings[_key] = _SETTINGS_DEFAULTS[_key]
+                stored.pop(_key, None)  # drop the stale old-default so next
+                _migrated = True         # load_settings won't re-migrate
+        if _migrated:
+            import json
+            SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            SETTINGS_FILE.write_text(
+                json.dumps(stored, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
         if (
             "default_message_mode" not in stored
             and "busy_input_mode" in stored

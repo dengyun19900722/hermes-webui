@@ -1604,7 +1604,15 @@ async function send(){
   let optimisticMessages;
   try{
     S.messages.push(userMsg);renderMessages();setBusy(true);
-    if(S.session&&!S.session.pending_started_at) S.session.pending_started_at=Date.now()/1000;
+    // Always reset pending_started_at for a NEW user turn. The previous
+    // conditional `if(!S.session.pending_started_at)` would reuse the
+    // previous turn's timestamp if the server hadn't cleared it (offline
+    // / reconnect / stale local state), making the new turn's elapsed
+    // timer start at the previous turn's age — e.g. "7m43s" on a fresh
+    // Q&A in a long-lived session (#WebUI internal-network repro).
+    // The server's pending_started_at returned by /api/chat/start (below)
+    // still wins as the authoritative value when present.
+    if(S.session) S.session.pending_started_at=Date.now()/1000;
     if(typeof ensureLiveWorklogShell==='function') ensureLiveWorklogShell();
     else appendThinking('',{pending:true});
     // First optimistic pass: make the local user turn visible before /api/chat/start
@@ -1665,7 +1673,10 @@ async function send(){
     optimisticMessages=[...S.messages];
     INFLIGHT[activeSid]={messages:optimisticMessages,uploaded:uploadedNames,toolCalls:[]};
     try{setBusy(true);}catch(_){S.busy=true;}
-    if(S.session&&!S.session.pending_started_at) S.session.pending_started_at=Date.now()/1000;
+    // Same fix as the optimistic pre-start pass above — always reset for a
+    // NEW turn (see comment there). The previous conditional would leak the
+    // previous turn's timestamp into the new turn's elapsed timer.
+    if(S.session) S.session.pending_started_at=Date.now()/1000;
     S.activeStreamId=null;
     if(typeof ensureLiveWorklogShell==='function') ensureLiveWorklogShell();
   }
@@ -6022,7 +6033,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
                 ? _isMessageReaderUnpinned()
                 : (typeof _messageUserUnpinned!=='undefined' && _messageUserUnpinned));
             clearLiveToolCards();if(!assistantText)removeThinking();
-            const cancelAgentName=(assistantDisplayName()+'').trim()||'Hermes';
+            const cancelAgentName=(assistantDisplayName()+'').trim()||'ZK运维智能体';
             S.messages.push({role:'assistant',content:`**Task cancelled:** Task cancelled.\n\n*The run was cancelled by the user before ${cancelAgentName} finished. No provider failure occurred.*`,provider_details:'Task cancelled.',provider_details_label:'Cancellation details',_error:true});
             _attachProjectedAnchorSceneToLastAssistant(S.messages);
             renderMessages({preserveScroll:true});

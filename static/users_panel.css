@@ -1,0 +1,245 @@
+/* Users admin panel — section spacing + role badge colors.
+ *
+ * Uses existing CSS variables (--border, --bg-elev, --accent, --danger)
+ * so all skins continue to apply. No new design tokens.
+ */
+
+#settingsPaneUsers .users-section {
+  margin-bottom: 18px;
+  padding: 16px;
+}
+
+#settingsPaneUsers .users-section > label {
+  margin-bottom: 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text, var(--fg, #222));
+}
+
+#settingsPaneUsers .users-account-section {
+  padding: 14px 16px;
+}
+
+#settingsPaneUsers .users-account-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+#settingsPaneUsers .users-account-main label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text, var(--fg, #222));
+}
+
+#settingsPaneUsers .users-current-account {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+  color: var(--muted, #888);
+  font-size: 13px;
+}
+
+#settingsPaneUsers .users-current-account strong {
+  color: var(--text, var(--fg, #222));
+  font-weight: 650;
+}
+
+#settingsPaneUsers .users-current-role {
+  padding: 2px 7px;
+  border: 1px solid var(--border, #333);
+  border-radius: 999px;
+  color: var(--muted, #888);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+/* ── Create-user row: align inputs in one row, give each breathing room */
+#settingsPaneUsers .users-create-row {
+  display: grid;
+  grid-template-columns: 1.2fr 1.2fr 0.8fr auto;
+  gap: 10px;
+  align-items: center;
+}
+#settingsPaneUsers .users-create-row input,
+#settingsPaneUsers .users-create-row select {
+  height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--border, #444);
+  border-radius: 8px;
+  background: var(--bg, var(--bg-elev, transparent));
+  color: var(--text, var(--fg, #222));
+  font-size: 13px;
+}
+#settingsPaneUsers .users-create-row input:focus,
+#settingsPaneUsers .users-create-row select:focus {
+  outline: 2px solid var(--accent, #4a90e2);
+  outline-offset: -1px;
+}
+
+/* ── Tables: tighter rows, clear column widths */
+#settingsPaneUsers .settings-table.users-table,
+#settingsPaneUsers .settings-table.users-audit-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 4px;
+}
+#settingsPaneUsers .settings-table th,
+#settingsPaneUsers .settings-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border, #333);
+  font-size: 13px;
+  vertical-align: middle;
+}
+#settingsPaneUsers .settings-table th {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted, #888);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+#settingsPaneUsers .settings-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+#settingsPaneUsers .settings-table tbody tr:hover {
+  background: var(--hover, rgba(255, 255, 255, 0.03));
+}
+
+/* ── Role badge (use existing --accent + --muted) */
+#settingsPaneUsers .badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+}
+#settingsPaneUsers .badge-admin {
+  background: color-mix(in srgb, var(--accent, #4a90e2) 18%, transparent);
+  color: var(--accent, #4a90e2);
+  border: 1px solid color-mix(in srgb, var(--accent, #4a90e2) 40%, transparent);
+}
+#settingsPaneUsers .badge-user {
+  background: var(--hover, rgba(255, 255, 255, 0.05));
+  color: var(--muted, #888);
+  border: 1px solid var(--border, #333);
+}
+
+/* ── Actions cell: stack buttons horizontally with gap */
+#settingsPaneUsers .users-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+/* ── Audit table: monospace for time + dim cells */
+#settingsPaneUsers .users-audit-row .users-audit-time,
+#settingsPaneUsers .users-audit-row td:first-child {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  color: var(--muted, #888);
+}
+#settingsPaneUsers .users-audit-row td {
+  padding: 8px 10px;
+}
+
+/* ── Error block: red text aligned to the section */
+#settingsPaneUsers .settings-error {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger, #e25c5c) 10%, transparent);
+  color: var(--danger, #e25c5c);
+  font-size: 12px;
+}
+
+/* ── Responsive: on narrow screens, stack the create row */
+@media (max-width: 640px) {
+  #settingsPaneUsers .users-account-main {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  #settingsPaneUsers .users-create-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Panel editor modal ─────────────────────────────────────────────── */
+.users-panels-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,0.45);
+}
+.users-panels-modal-content {
+  background: var(--bg-elev, var(--surface, #1e1e2e));
+  border: 1px solid var(--border, #333);
+  border-radius: 12px;
+  min-width: 320px;
+  max-width: 480px;
+  width: 90vw;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.35);
+}
+.users-panels-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border, #333);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text, #eee);
+}
+.users-panels-modal-body {
+  padding: 12px 16px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.users-panels-hint {
+  font-size: 11px;
+  color: var(--muted, #888);
+  margin-bottom: 10px;
+}
+.users-panels-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.users-panels-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text, #eee);
+  transition: background 0.1s;
+}
+.users-panels-item:hover {
+  background: var(--hover, rgba(255,255,255,0.05));
+}
+.users-panels-item input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent, #4a90e2);
+  cursor: pointer;
+}
+.users-panels-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border, #333);
+}

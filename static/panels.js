@@ -44,7 +44,7 @@ const APP_TITLEBAR_KEYS = {
   memory: 'tab_memory', workspaces: 'tab_workspaces',
   profiles: 'tab_profiles', todos: 'tab_todos', insights: 'tab_insights', logs: 'tab_logs', settings: 'tab_settings',
 };
-const MAIN_VIEW_PANELS = ['settings','skills','memory','tasks','kanban','workspaces','profiles','insights','logs','plugin'];
+const MAIN_VIEW_PANELS = ['settings','skills','knowledge','memory','tasks','kanban','workspaces','profiles','insights','logs','plugin'];
 const MAIN_VIEW_SIDEBAR_PANEL_FALLBACKS = { plugin: 'settings' };
 
 /**
@@ -440,7 +440,6 @@ async function switchPanel(name, opts = {}) {
   // showing-<name> class on <main>; no class means chat (the default).
   const mainEl = document.querySelector('main.main');
   if (mainEl) {
-    MAIN_VIEW_PANELS.forEach(p => {
     ['settings','skills','knowledge','memory','tasks','kanban','workspaces','profiles','insights','logs'].forEach(p => {
       mainEl.classList.toggle('showing-' + p, nextPanel === p);
     });
@@ -7522,13 +7521,24 @@ function _applyTabOrder(order){
 function _applyTabVisibility(hidden){
   hidden=_sanitizeTabPanelList(hidden);
   _applyTabOrder(_getTabOrder());
-  // Hide/unhide all [data-panel] elements (sidebar-nav buttons + rail buttons)
+  // Compute effective user panels (admin sees all)
+  var userPanels=window._currentUserPanels;
+  var userRole=window._currentAuthRole||'';
   document.querySelectorAll('[data-panel]').forEach(function(el){
     var panel=el.dataset.panel;
     if(!panel)return;
     var shouldHide=hidden.indexOf(panel)!==-1;
-    // Never hide always-visible panels (chat, settings) even if present in hidden_tabs
-    if(_ALWAYS_VISIBLE_TABS.has(panel)) shouldHide=false;
+    // Respect per-user panel permissions (non-admin only)
+    if(userRole!=='admin' && Array.isArray(userPanels)){
+      // Non-admin users should not see Settings (admin-only section)
+      if(panel==='settings'){
+        shouldHide=true;
+      } else if(!_ALWAYS_VISIBLE_TABS.has(panel)){
+        shouldHide=shouldHide || userPanels.indexOf(panel)===-1;
+      }
+    }
+    // Never hide always-visible panels (chat, settings) — unless non-admin
+    if(_ALWAYS_VISIBLE_TABS.has(panel) && (panel!=='settings' || userRole==='admin')) shouldHide=false;
     el.classList.toggle('nav-tab-hidden',shouldHide);
   });
   // If the currently active tab is hidden, switch to chat
@@ -7843,7 +7853,7 @@ function switchSettingsSection(name,opts){
     _settingsSection = name;
     return;
   }
-  let section=(name==='appearance'||name==='preferences'||name==='providers'||name==='plugins'||name==='extensions'||name==='system'||name==='help')?name:'conversation';
+  let section=(name==='appearance'||name==='preferences'||name==='users'||name==='providers'||name==='plugins'||name==='extensions'||name==='system'||name==='help')?name:'conversation';
   // Deep-linking to the Plugins pane when the tab is hidden (no plugins
   // installed, #3457) falls back to Conversation. Resolve this BEFORE toggling
   // panes/sidebar/dropdown below so every downstream selection uses the
@@ -7855,13 +7865,13 @@ function switchSettingsSection(name,opts){
   }
   _settingsSection=section;
   _currentSettingsSection=section;
-  const map={conversation:'Conversation',appearance:'Appearance',preferences:'Preferences',providers:'Providers',plugins:'Plugins',extensions:'Extensions',system:'System',help:'Help'};
+  const map={conversation:'Conversation',appearance:'Appearance',preferences:'Preferences',users:'Users',providers:'Providers',plugins:'Plugins',extensions:'Extensions',system:'System',help:'Help'};
   // Sidebar menu items
   document.querySelectorAll('#settingsMenu .side-menu-item').forEach(it=>{
     it.classList.toggle('active', it.dataset.settingsSection===section);
   });
   // Panes in main
-  ['conversation','appearance','preferences','providers','plugins','extensions','system','help'].forEach(key=>{
+  ['conversation','appearance','preferences','users','providers','plugins','extensions','system','help'].forEach(key=>{
     const pane=$('settingsPane'+map[key]);
     if(pane) pane.classList.toggle('active', key===section);
   });
@@ -7875,6 +7885,7 @@ function switchSettingsSection(name,opts){
     if(section==='providers') loadProvidersPanel();
     if(section==='plugins') loadPluginsPanel();
     if(section==='extensions') loadExtensionsPanel();
+    if(section==='users') loadUsersPanel();
   }
   if(opts&&opts.fromSidebarItem)_closeMobileSidebarAfterPanelSelection();
 }
@@ -8966,6 +8977,24 @@ async function loadSettingsPanel(){
       setLocale(resolvedLanguage);
       if(typeof applyLocaleToDOM==='function') applyLocaleToDOM();
     }
+    // Language preference — populate from LOCALES bundle (do this before the
+    // potentially-slow /api/models call so the language picker appears quickly).
+    const langSel=$('settingsLanguage');
+    if(langSel){
+      langSel.innerHTML='';
+      if(typeof LOCALES!=='undefined'){
+        for(const [code,bundle] of Object.entries(LOCALES)){
+          const opt=document.createElement('option');
+          opt.value=code;opt.textContent=bundle._label||code;
+          langSel.appendChild(opt);
+        }
+      }
+      langSel.value=resolvedLanguage;
+      langSel.addEventListener('change',function(){
+        if(typeof setLocale==='function'){setLocale(this.value);if(typeof applyLocaleToDOM==='function')applyLocaleToDOM();}
+        _schedulePreferencesAutosave();
+      },{once:false});
+    }
     // Populate model dropdown from /api/models + live model fetch (#872)
     const modelSel=$('settingsModel');
     if(modelSel){
@@ -9016,23 +9045,6 @@ async function loadSettingsPanel(){
     // Send key preference
     const sendKeySel=$('settingsSendKey');
     if(sendKeySel){sendKeySel.value=settings.send_key||'enter';sendKeySel.addEventListener('change',_schedulePreferencesAutosave,{once:false});}
-    // Language preference — populate from LOCALES bundle
-    const langSel=$('settingsLanguage');
-    if(langSel){
-      langSel.innerHTML='';
-      if(typeof LOCALES!=='undefined'){
-        for(const [code,bundle] of Object.entries(LOCALES)){
-          const opt=document.createElement('option');
-          opt.value=code;opt.textContent=bundle._label||code;
-          langSel.appendChild(opt);
-        }
-      }
-      langSel.value=resolvedLanguage;
-      langSel.addEventListener('change',function(){
-        if(typeof setLocale==='function'){setLocale(this.value);if(typeof applyLocaleToDOM==='function')applyLocaleToDOM();}
-        _schedulePreferencesAutosave();
-      },{once:false});
-    }
     const showUsageCb=$('settingsShowTokenUsage');
     if(showUsageCb){showUsageCb.checked=!!settings.show_token_usage;showUsageCb.addEventListener('change',_schedulePreferencesAutosave,{once:false});}
     const maxTokensField=$('settingsMaxTokens');
@@ -9370,7 +9382,7 @@ async function loadSettingsPanel(){
     // Bot name — debounced autosave (text input)
     const botNameField=$('settingsBotName');
     if(botNameField){
-      botNameField.value=settings.bot_name||'Hermes';
+      botNameField.value=settings.bot_name||'ZK运维智能体';
       let botNameTimer=null;
       botNameField.addEventListener('input',()=>{
         if(botNameTimer) clearTimeout(botNameTimer);
@@ -10548,6 +10560,73 @@ async function _fetchProviderQuotaStatus(force=false){
   return status;
 }
 
+// === Custom providers section (see spec §2.2 + §2.8) ===
+let _customProviders = [];
+let _customProvidersLoaded = false;
+
+async function _loadCustomProviders() {
+  try {
+    const data = await api('/api/custom_providers');
+    _customProviders = (data && data.providers) || [];
+  } catch (e) {
+    console.warn('Failed to load custom providers:', e);
+    _customProviders = [];
+  }
+  _customProvidersLoaded = true;
+}
+
+function _renderCustomProvidersSection(container) {
+  const section = document.createElement('div');
+  section.className = 'custom-providers-section';
+
+  const header = document.createElement('div');
+  header.className = 'cp-section-header';
+  header.innerHTML = `
+    <span class="cp-section-title">⭐ ${esc(t('custom_providers_title'))}</span>
+    <button class="cp-add-btn" data-action="add-custom-provider">${esc(t('custom_providers_add_btn'))}</button>
+  `;
+  section.appendChild(header);
+
+  if (_customProviders.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'cp-section-empty';
+    empty.textContent = t('custom_providers_empty');
+    section.appendChild(empty);
+  } else {
+    for (const p of _customProviders) {
+      section.appendChild(_buildCustomProviderCard(p));
+    }
+  }
+
+  // Wire up the add button (modal handler added in Task 10)
+  const addBtn = section.querySelector('[data-action="add-custom-provider"]');
+  if (addBtn) addBtn.addEventListener('click', () => {
+    if (typeof _openCustomProviderModal === 'function') _openCustomProviderModal(null);
+  });
+  container.appendChild(section);
+}
+
+function _renderBuiltInProvidersSection(container) {
+  // Wrap Built-in section in <details> so it collapses by default (per plan §2.2).
+  const details = document.createElement('details');
+  details.className = 'builtin-providers-details';
+  details.open = false;
+
+  const summary = document.createElement('summary');
+  summary.innerHTML = `
+    <span class="cp-builtin-title">Built-in providers</span>
+    <span class="cp-builtin-sub">${esc(t('custom_providers_subtitle'))}</span>
+  `;
+  details.appendChild(summary);
+
+  const body = document.createElement('div');
+  body.className = 'builtin-providers-section';
+  details.appendChild(body);
+
+  container.appendChild(details);
+  return body;  // caller appends quota card + built-in cards into this
+}
+
 async function loadProvidersPanel(){
   const list=$('providersList');
   const empty=$('providersEmpty');
@@ -10555,12 +10634,21 @@ async function loadProvidersPanel(){
   try{
     const data=await api('/api/providers');
     const quota=await _fetchProviderQuotaStatus(false).catch(e=>({ok:false,status:'unavailable',quota:null,message:e.message||t('provider_quota_unavailable'),client_fetched_at:new Date().toISOString()}));
-    const providers=(data.providers||[]).filter(p=>p.configurable||p.is_oauth||p.is_custom||p.is_plugin_provider||p.is_self_hosted);
+    // Filter out is_custom from built-in list — they now live in the Custom section above
+    const providers=(data.providers||[]).filter(p=>!p.is_custom&&(p.configurable||p.is_oauth||p.is_plugin_provider||p.is_self_hosted));
     list.innerHTML='';
     _providerCardEls.clear();
+
+    // Load custom providers, then render Custom section first (highlighted yellow box)
+    await _loadCustomProviders();
+    _renderCustomProvidersSection(list);
+
+    // Render Built-in section (collapsed by default), then existing built-in cards into it
+    const builtIn = _renderBuiltInProvidersSection(list);
+
     const quotaCard=_buildProviderQuotaCard(quota);
     if(quotaCard){
-      list.appendChild(quotaCard);
+      builtIn.appendChild(quotaCard);
       renderProviderCostChart(quotaCard); // async, fire-and-forget
     }
     if(providers.length===0){
@@ -10571,7 +10659,7 @@ async function loadProvidersPanel(){
     if(empty) empty.style.display='none';
     list.style.display='';
     for(const p of providers){
-      list.appendChild(_buildProviderCard(p));
+      builtIn.appendChild(_buildProviderCard(p));
     }
   }catch(e){
     list.innerHTML='<div style="color:var(--error);padding:12px;font-size:13px">Failed to load providers: '+esc(e.message||String(e))+'</div>';
@@ -11284,6 +11372,472 @@ function _buildProviderCard(p){
   return card;
 }
 
+// === Custom provider card (per-card edit/delete/probe/set-default actions) ===
+// Renders a Custom provider card with metadata (slug, base_url, key status,
+// model count) and inline action links. The four action handlers
+// (_openCustomProviderModal / _deleteCustomProvider / _probeCustomProvider /
+// _setDefaultCustomProvider) arrive in Tasks 10/11, so each is guarded with
+// a typeof check so the card still renders cleanly if any handler is missing.
+function _buildCustomProviderCard(p) {
+  const card = document.createElement('div');
+  card.className = 'custom-provider-card';
+  card.setAttribute('data-slug', p.slug);
+
+  const header = document.createElement('div');
+  header.className = 'cp-card-header';
+
+  const title = document.createElement('div');
+  title.className = 'cp-card-title';
+  title.innerHTML = `<span>${esc(p.name || '')}</span><span class="cp-slug-hint">custom:${esc(p.slug || '')}</span>`;
+  header.appendChild(title);
+
+  const actions = document.createElement('span');
+  actions.className = 'cp-card-actions';
+  actions.innerHTML = `
+    <a href="#" data-action="probe">${esc(t('custom_provider_card_probe'))}</a>
+    <a href="#" data-action="edit">${esc(t('custom_provider_card_edit'))}</a>
+    <a href="#" data-action="delete">${esc(t('custom_provider_card_delete'))}</a>
+  `;
+  header.appendChild(actions);
+  card.appendChild(header);
+
+  const meta = document.createElement('div');
+  meta.className = 'cp-card-meta';
+  const keyLabel = p.has_key
+    ? t('providers_status_configured') || t('custom_provider_field_api_key_hint')
+    : t('providers_status_not_configured_label') || '';
+  const modelCount = Array.isArray(p.models) ? p.models.length : 0;
+  meta.innerHTML = `<code>${esc(p.base_url || '')}</code> · key ${p.has_key ? '✓' : '✗'} ${esc(keyLabel)} · ${modelCount} models`;
+  card.appendChild(meta);
+
+  // Set as default link
+  const setDefault = document.createElement('a');
+  setDefault.href = '#';
+  setDefault.className = 'cp-set-default';
+  setDefault.setAttribute('data-action', 'set-default');
+  setDefault.textContent = '⭐ ' + t('custom_provider_card_set_default');
+  card.appendChild(setDefault);
+
+  // Wire actions — each handler is guarded because they arrive in Tasks 10/11.
+  card.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    const action = ev.target.getAttribute && ev.target.getAttribute('data-action');
+    if (!action) return;
+    if (action === 'edit' && typeof _openCustomProviderModal === 'function') {
+      _openCustomProviderModal(p);
+    }
+    if (action === 'delete' && typeof _deleteCustomProvider === 'function') {
+      await _deleteCustomProvider(p);
+    }
+    if (action === 'probe' && typeof _probeCustomProvider === 'function') {
+      await _probeCustomProvider(p);
+    }
+    if (action === 'set-default' && typeof _setDefaultCustomProvider === 'function') {
+      await _setDefaultCustomProvider(p);
+    }
+  });
+
+  return card;
+}
+
+// === Custom provider modal (see spec §2.3-§2.4) ===
+let _customProviderModal = null;
+let _customProviderModalState = { editingSlug: null, probedModelsCache: null, probedKey: null };
+
+function _openCustomProviderModal(existing) {
+  _customProviderModalState = {
+    editingSlug: existing ? existing.slug : null,
+    probedModelsCache: null,
+    probedKey: null,
+  };
+  const overlay = document.createElement('div');
+  overlay.className = 'custom-provider-modal-overlay';
+
+  const card = document.createElement('div');
+  card.className = 'custom-provider-modal';
+  const titleText = existing
+    ? (t('edit_title') || 'Edit') + ': ' + esc(existing.name || existing.slug || '')
+    : t('custom_providers_add_btn');
+  card.innerHTML = `
+    <h3>${titleText}</h3>
+    <div class="form-row">
+      <label>${esc(t('custom_provider_field_name'))}</label>
+      <input id="cpName" type="text" value="${esc(existing && existing.name || '')}" />
+      <p class="form-row-help">${esc(t('custom_provider_field_name_help'))}</p>
+    </div>
+    <div class="form-row">
+      <label>${esc(t('custom_provider_field_slug'))}</label>
+      <input id="cpSlug" type="text" value="${esc(existing && existing.slug || '')}" ${existing ? 'disabled' : ''} placeholder="my-openai" />
+      <p class="form-row-help">${esc(t('custom_provider_field_slug_help'))}</p>
+    </div>
+    <div class="form-row">
+      <label>${esc(t('custom_provider_field_base_url'))}<span class="required">*</span></label>
+      <input id="cpBaseUrl" type="text" value="${esc(existing && existing.base_url || '')}" placeholder="https://relay.example.com/v1" />
+      <p class="form-row-help">${esc(t('custom_provider_field_base_url_help'))}</p>
+    </div>
+    <div class="form-row">
+      <label>${esc(t('custom_provider_field_api_key'))}</label>
+      <input id="cpApiKey" type="password" placeholder="${existing && existing.has_key ? esc(t('custom_provider_field_api_key_hint')) : ''}" autocomplete="off" />
+      <p class="form-row-help">${esc(t('custom_provider_field_api_key_help'))}</p>
+    </div>
+    <div class="form-row">
+      <label>${esc(t('custom_provider_field_models'))}</label>
+      <div class="models-list" id="cpModelsList"></div>
+      <p class="form-row-help">${esc(t('custom_provider_field_models_help'))}</p>
+    </div>
+    <div id="cpProbeBanner" class="probe-banner" style="display:none"></div>
+    <div class="actions">
+      <button type="button" class="btn-ghost" data-action="cancel">${esc(t('cancel'))}</button>
+      <button type="button" class="btn-secondary" data-action="probe-save">${esc(t('custom_provider_btn_probe_save'))}</button>
+      <button type="button" class="btn-primary" data-action="save">${esc(t('custom_provider_btn_save_direct'))}</button>
+    </div>
+  `;
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  _customProviderModal = overlay;
+
+  const modelsList = card.querySelector('#cpModelsList');
+  const initialModels = (existing && existing.models) || [];
+  for (const m of initialModels) _addModelChip(modelsList, m);
+  _addModelAddButton(modelsList);
+
+  // Live re-probe when base_url changes (debounced)
+  let probeTimer = null;
+  card.querySelector('#cpBaseUrl').addEventListener('input', () => {
+    clearTimeout(probeTimer);
+    probeTimer = setTimeout(() => _autoProbeModels(card), 300);
+  });
+
+  card.addEventListener('click', async (ev) => {
+    const action = ev.target.getAttribute && ev.target.getAttribute('data-action');
+    if (!action) return;
+    if (action === 'cancel') _closeCustomProviderModal();
+    if (action === 'save') await _submitCustomProvider(card, false);
+    if (action === 'probe-save') await _submitCustomProvider(card, true);
+  });
+
+  // Close on Escape key
+  overlay.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') _closeCustomProviderModal();
+  });
+  // Close on overlay click (outside card)
+  overlay.addEventListener('click', (ev) => {
+    if (ev.target === overlay) _closeCustomProviderModal();
+  });
+}
+
+function _closeCustomProviderModal() {
+  if (_customProviderModal) {
+    _customProviderModal.remove();
+    _customProviderModal = null;
+  }
+  _customProviderModalState = { editingSlug: null, probedModelsCache: null, probedKey: null };
+}
+
+function _addModelChip(container, value) {
+  const row = document.createElement('div');
+  row.className = 'model-row';
+  row.innerHTML = `
+    <input type="text" value="${esc(value)}" />
+    <button type="button" class="remove-btn" data-remove aria-label="remove">×</button>
+  `;
+  row.querySelector('[data-remove]').addEventListener('click', () => row.remove());
+  container.appendChild(row);
+}
+
+function _addModelAddButton(container) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn-secondary';
+  btn.textContent = '+ ' + t('custom_provider_btn_add_model');
+  btn.addEventListener('click', () => {
+    const row = document.createElement('div');
+    row.className = 'model-row';
+    row.innerHTML = '<input type="text" placeholder="model id" /><button type="button" class="remove-btn" data-remove aria-label="remove">×</button>';
+    row.querySelector('[data-remove]').addEventListener('click', () => row.remove());
+    container.insertBefore(row, btn);
+  });
+  container.appendChild(btn);
+
+  const fetchBtn = document.createElement('button');
+  fetchBtn.type = 'button';
+  fetchBtn.className = 'btn-secondary';
+  fetchBtn.textContent = '⟳ ' + t('custom_provider_btn_fetch_models');
+  fetchBtn.addEventListener('click', async () => {
+    const card = container.closest('.custom-provider-modal');
+    if (card) await _autoProbeModels(card, true);
+  });
+  container.appendChild(fetchBtn);
+}
+
+async function _autoProbeModels(card, force) {
+  if (force === undefined) force = false;
+  const banner = card.querySelector('#cpProbeBanner');
+  const baseUrl = card.querySelector('#cpBaseUrl').value.trim();
+  if (!baseUrl) return;
+  const apiKeyVal = card.querySelector('#cpApiKey').value.trim();
+  const key = baseUrl + '|' + (apiKeyVal || '');
+  if (!force && _customProviderModalState.probedKey === key) return;
+  _customProviderModalState.probedKey = key;
+  banner.style.display = 'block';
+  banner.className = 'probe-banner info';
+  banner.textContent = '… ' + (t('custom_provider_btn_probe_save') || 'Probing');
+  try {
+    const probe = await api('/api/custom_providers/probe_models', {
+      method: 'POST',
+      body: JSON.stringify({ base_url: baseUrl, api_key: apiKeyVal || null }),
+    });
+    if (probe && probe.ok) {
+      const probedModels = probe.models || [];
+      _customProviderModalState.probedModelsCache = probedModels;
+      _customProviderModalState.probedKey = key;
+      banner.className = 'probe-banner success';
+      banner.textContent = `Found ${probedModels.length} models (${probe.latency_ms || 0}ms)`;
+      // Auto-populate the chips when the chip list is currently empty so the
+      // user can see what they're saving. Skip when the user has manually
+      // entered any chip — we don't want to clobber their input (#WebUI
+      // custom-model-config, "models_empty" regression after successful probe).
+      const modelsList = card.querySelector('#cpModelsList');
+      if (modelsList && !modelsList.querySelector('.model-row input')) {
+        for (const mid of probedModels) _addModelChip(modelsList, mid);
+      }
+    } else {
+      banner.className = 'probe-banner error';
+      const errKey = probe && probe.error ? 'custom_provider_probe_' + probe.error : null;
+      banner.textContent = (errKey && t(errKey)) || (probe && probe.error) || 'Probe failed';
+    }
+  } catch (e) {
+    banner.className = 'probe-banner error';
+    banner.textContent = String(e && e.message || e);
+  }
+}
+
+async function _submitCustomProvider(card, probeFirst) {
+  const submitBtn = card.querySelector('[data-action="save"]');
+  const probeBtn = card.querySelector('[data-action="probe-save"]');
+  if (submitBtn) submitBtn.disabled = true;
+  if (probeBtn) probeBtn.disabled = true;
+
+  const models = [];
+  const modelInputs = card.querySelectorAll('#cpModelsList input[type="text"]');
+  for (const inp of modelInputs) {
+    const v = inp.value.trim();
+    if (v) models.push(v);
+  }
+  // Safety net: if the user has no chips but the probe already populated the
+  // cache for the current base_url+api_key, fall back to the cached probe
+  // results. The probe banner says "Found N models" so users reasonably expect
+  // those to be saved when they click "直接保存" (#WebUI custom-model-config,
+  // "models_empty" 400 regression). Key check prevents using a stale cache
+  // from a previous base_url after the user has typed a new one.
+  if (!models.length && Array.isArray(_customProviderModalState.probedModelsCache)) {
+    const currentKey = (card.querySelector('#cpBaseUrl').value || '').trim() + '|' + ((card.querySelector('#cpApiKey').value || '').trim() || '');
+    if (_customProviderModalState.probedKey === currentKey) {
+      models.push(..._customProviderModalState.probedModelsCache);
+    }
+  }
+
+  const body = {
+    name: (card.querySelector('#cpName').value || '').trim(),
+    slug: (card.querySelector('#cpSlug').value || '').trim().toLowerCase(),
+    base_url: (card.querySelector('#cpBaseUrl').value || '').trim(),
+    api_key: card.querySelector('#cpApiKey').value || null,
+    models: models,
+  };
+
+  try {
+    if (probeFirst && body.api_key) {
+      const probe = await api('/api/custom_providers/probe_models', {
+        method: 'POST',
+        body: JSON.stringify({ base_url: body.base_url, api_key: body.api_key }),
+      });
+      if (!probe || !probe.ok) {
+        const errKey = probe && probe.error ? 'custom_provider_probe_' + probe.error : null;
+        _showModalError(card, (errKey && t(errKey)) || (probe && probe.error) || 'Probe failed');
+        if (submitBtn) submitBtn.disabled = false;
+        if (probeBtn) probeBtn.disabled = false;
+        return;
+      }
+    }
+
+    const result = await api('/api/custom_providers', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'upsert', provider: body, skip_probe: !probeFirst }),
+    });
+    if (!result || !result.ok) {
+      const failed = (result && result.failed_profiles) || [];
+      const msg = failed.length
+        ? `${t('custom_provider_save_partial')}: ${result.succeeded_count || 0}/${result.total_count || 0}`
+        : (result && result.error) || t('custom_provider_save_failed');
+      _showModalError(card, msg, failed);
+      if (submitBtn) submitBtn.disabled = false;
+      if (probeBtn) probeBtn.disabled = false;
+      return;
+    }
+    _closeCustomProviderModal();
+    if (typeof showToast === 'function') {
+      showToast(t('custom_provider_save_ok')(result.succeeded_count || 0, result.total_count || 0), 3000);
+    }
+    await loadProvidersPanel();
+    // Refresh the chat composer dropdown so the new provider appears without
+    // requiring a page reload (server cache is already invalidated by the
+    // upsert handler in api/routes.py).
+    _refreshComposerModelCatalog();
+  } catch (e) {
+    _showModalError(card, String(e && e.message || e));
+    if (submitBtn) submitBtn.disabled = false;
+    if (probeBtn) probeBtn.disabled = false;
+  }
+}
+
+// Trigger a fresh fetch of /api/models so the chat composer dropdown shows
+// newly added / deleted custom providers without a page reload. No-op if the
+// helper isn't on window yet (older boot order).
+function _refreshComposerModelCatalog() {
+  try {
+    // Force a fresh fetch — _ensureModelDropdownReady caches the boot-time
+    // promise on window._modelDropdownReady, so a subsequent upsert/delete
+    // would otherwise reuse the stale response and the picker would still
+    // miss the new provider (#WebUI custom-model-config).
+    window._modelDropdownReady = null;
+    if (typeof window._ensureModelDropdownReady === 'function') {
+      Promise.resolve(window._ensureModelDropdownReady()).catch(() => {});
+    }
+  } catch (_) { /* swallow — the dropdown will refresh on next open */ }
+}
+
+function _showModalError(card, msg, failed) {
+  let banner = card.querySelector('#cpErrorBanner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'cpErrorBanner';
+    banner.style.cssText = 'margin-top:12px;padding:8px;background:#fde7e9;color:#a00;border-radius:4px;font-size:12px';
+    card.appendChild(banner);
+  }
+  banner.textContent = msg;
+  if (failed && failed.length) {
+    const details = document.createElement('pre');
+    details.style.cssText = 'font-size:11px;margin-top:6px;white-space:pre-wrap';
+    details.textContent = JSON.stringify(failed, null, 2);
+    banner.appendChild(details);
+  }
+}
+
+// === Custom provider action handlers (probe/delete/set-default) ===
+
+async function _probeCustomProvider(p) {
+  const overlay = document.createElement('div');
+  overlay.textContent = `Probing ${esc(p.name || p.slug || '')} (${esc(p.base_url || '')})…`;
+  overlay.style.cssText = 'position:fixed;top:20px;right:20px;background:#333;color:#fff;padding:10px;border-radius:4px;z-index:9999;font-size:12px';
+  document.body.appendChild(overlay);
+  try {
+    // Send `slug` so the server uses the stored api_key for the upstream auth
+    // header (the client doesn't hold the raw key in memory). Sending
+    // `api_key: null` previously caused `auth_failed` on every authenticated
+    // upstream (#WebUI custom-model-config).
+    const probe = await api('/api/custom_providers/probe_models', {
+      method: 'POST',
+      body: JSON.stringify({ base_url: p.base_url, slug: p.slug }),
+    });
+    if (probe && probe.ok) {
+      overlay.textContent = `✓ ${esc(p.name || p.slug || '')}: ${(probe.models || []).length} models`;
+      overlay.style.background = '#3a6';
+    } else {
+      overlay.textContent = `✗ ${(probe && probe.error) || 'Probe failed'}`;
+      overlay.style.background = '#a00';
+    }
+  } catch (e) {
+    overlay.textContent = `✗ ${String(e && e.message || e)}`;
+    overlay.style.background = '#a00';
+  }
+  setTimeout(() => overlay.remove(), 3000);
+}
+
+async function _deleteCustomProvider(p) {
+  // Use project modal helper (not native confirm) per Task 10 spec fix
+  const confirmMsg = t('custom_provider_delete_confirm')(p.name || p.slug || '');
+  let confirmed = false;
+  if (typeof showConfirmDialog === 'function') {
+    const r = await showConfirmDialog({
+      title: t('delete_title') || 'Delete',
+      message: confirmMsg,
+      confirmLabel: t('delete_title') || 'Delete',
+      danger: true,
+      focusCancel: true,
+    });
+    confirmed = !!r;
+  } else {
+    confirmed = confirm(confirmMsg);  // Fallback if helper unavailable
+  }
+  if (!confirmed) return;
+  try {
+    const result = await api('/api/custom_providers', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'delete', slug: p.slug }),
+    });
+    if (result && result.ok) {
+      if (typeof showToast === 'function') {
+        showToast(`${esc(p.name || p.slug || '')} deleted`, 3000);
+      }
+      await loadProvidersPanel();
+      _refreshComposerModelCatalog();
+    } else {
+      const failed = (result && result.failed_profiles) || [];
+      const msg = (result && result.error) || t('custom_provider_save_failed');
+      if (typeof showToast === 'function') {
+        showToast(`${msg}${failed.length ? '\n' + JSON.stringify(failed, null, 2) : ''}`, 6000, 'error');
+      } else {
+        alert(msg);
+      }
+    }
+  } catch (e) {
+    if (typeof showToast === 'function') {
+      showToast(String(e && e.message || e), 4000, 'error');
+    } else {
+      alert(String(e));
+    }
+  }
+}
+
+async function _setDefaultCustomProvider(p) {
+  const model = p.models && p.models[0];
+  if (!model) {
+    if (typeof showToast === 'function') {
+      showToast(t('custom_provider_models_empty'), 4000, 'error');
+    } else {
+      alert(t('custom_provider_models_empty'));
+    }
+    return;
+  }
+  try {
+    const result = await api('/api/custom_providers/set_default', {
+      method: 'POST',
+      body: JSON.stringify({ slug: p.slug, model: model }),
+    });
+    if (result && result.ok) {
+      if (typeof showToast === 'function') {
+        showToast(t('custom_provider_set_default_ok')(model), 3000);
+      }
+      if (typeof loadProfileActive === 'function') await loadProfileActive();
+      await loadProvidersPanel();
+      _refreshComposerModelCatalog();
+    } else {
+      const msg = (result && result.error) || t('custom_provider_save_failed');
+      if (typeof showToast === 'function') {
+        showToast(msg, 4000, 'error');
+      } else {
+        alert(msg);
+      }
+    }
+  } catch (e) {
+    if (typeof showToast === 'function') {
+      showToast(String(e && e.message || e), 4000, 'error');
+    } else {
+      alert(String(e));
+    }
+  }
+}
+
 async function _saveProviderKey(providerId){
   const els=_providerCardEls.get(providerId);
   if(!els) return;
@@ -11691,7 +12245,7 @@ function _applySavedSettingsUi(saved, body, opts){
   if(Object.prototype.hasOwnProperty.call(body,'structured_code_default_view')){
     _applyStructuredCodeViewSettings(body.structured_code_default_view,body.structured_code_auto_tree_lines,false);
   }
-  window._botName=body.bot_name||'Hermes';
+  window._botName=body.bot_name||'ZK运维智能体';
   if(typeof applyBotName==='function') applyBotName();
   else if(typeof _applyBusyComposerPlaceholder==='function') _applyBusyComposerPlaceholder();
   if(typeof setLocale==='function') setLocale(language);
@@ -12314,7 +12868,7 @@ async function saveSettings(andClose){
   body.default_message_mode=defaultMessageMode;
   body.auto_title_refresh_every=(($('settingsAutoTitleRefresh')||{}).value||'0');
   const botName=(($('settingsBotName')||{}).value||'').trim();
-  body.bot_name=botName||'Hermes';
+  body.bot_name=botName||'ZK运维智能体';
   // Password: only act if the field has content; blank = leave auth unchanged
   if(pw && pw.trim()){
     const currentPwField=$('settingsCurrentPassword');
@@ -12381,6 +12935,10 @@ async function saveSettings(andClose){
 async function signOut(){
   try{
     await api('/api/auth/logout',{method:'POST',body:'{}'});
+    try{localStorage.removeItem('hermes-webui-auth-user-id');}catch(_){}
+    try{localStorage.removeItem('hermes-webui-session');}catch(_){}
+    try{if(typeof resetSessionStateForAuthChange==='function')resetSessionStateForAuthChange('');}catch(_){}
+    try{if(typeof _resetShareCurrentUser==='function')_resetShareCurrentUser();}catch(_){}
     window.location.href='login';
   }catch(e){
     showToast(t('sign_out_failed')+e.message);
