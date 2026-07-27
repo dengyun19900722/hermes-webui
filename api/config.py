@@ -8360,6 +8360,24 @@ def load_settings() -> dict:
                 and k != _SETTINGS_PERSISTED_SPEECH_KEYS_FIELD
             }
         )
+        # Migrate old defaults to ZK defaults.
+        # If a stored value matches the OLD default the user never explicitly
+        # changed, upgrade silently.  Users who actively choose an option later
+        # persist their choice and won't be migrated again.
+        _old_defaults = {"language": "en", "bot_name": "Hermes"}
+        _migrated = False
+        for _key, _old_val in _old_defaults.items():
+            if stored.get(_key) == _old_val and settings.get(_key) == _old_val:
+                settings[_key] = _SETTINGS_DEFAULTS[_key]
+                stored.pop(_key, None)  # drop the stale old-default so next
+                _migrated = True         # load_settings won't re-migrate
+        if _migrated:
+            import json
+            SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            SETTINGS_FILE.write_text(
+                json.dumps(stored, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
         if (
             "default_message_mode" not in stored
             and "busy_input_mode" in stored
