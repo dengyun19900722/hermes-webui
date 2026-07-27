@@ -8,7 +8,40 @@
  *   - clear spacing,
  *   - restrained accent use (one accent at a time),
  *   - existing spacing/radius tokens, no bespoke values.
+ *
+ * These pages load ONLY this stylesheet (no main style.css), so the design
+ * tokens are inlined here as :root fallbacks. Values mirror the dark-theme
+ * palette baked into _LOGIN_PAGE_HTML in api/routes.py so setup and login
+ * stay visually identical without a dependency on the main app bundle.
  */
+:root {
+  --bg:           #1a1a2e;
+  --surface:      #16213e;
+  --border:       rgba(255,255,255,.08);
+  --border-strong:rgba(124,185,255,.3);
+  --input-bg:     rgba(255,255,255,.04);
+  --input-border: rgba(255,255,255,.1);
+  --text:         #e8e8f0;
+  --muted:        #8888aa;
+  --accent:       #7cb9ff;
+  --accent-bg:    rgba(124,185,255,.15);
+  --accent-hover: rgba(124,185,255,.25);
+  --focus-glow:   rgba(124,185,255,.15);
+  --error:        #e94560;
+  --warning:      #e8a030;
+  --info:         #7cb9ff;
+  --success:      #6fd6a4;
+  --strong:       #f8f8ff;
+  --font-ui:      -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --space-4:      16px;
+  --font-size-md: 14px;
+  --font-size-sm: 12px;
+  --font-size-xs: 11px;
+  --radius-sm:    4px;
+  --radius-md:    8px;
+  --radius-lg:    12px;
+  --radius-pill:  999px;
+}
 
 body.login-page {
   margin: 0;

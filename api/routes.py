@@ -11952,9 +11952,7 @@ def _render_index_shell_base() -> str:
             return cached[1]
     from urllib.parse import quote
 
-    version_token = quote(WEBUI_VERSION, safe="")
-    base = (
-        _INDEX_HTML_PATH.read_text(encoding="utf-8")
+    version_token = quote(WEBad_text(encoding="utf-8")
         .replace("__WEBUI_VERSION__", version_token)
         .replace("__MAX_UPLOAD_BYTES__", str(MAX_UPLOAD_BYTES))
     )
@@ -12182,7 +12180,18 @@ def handle_get(handler, parsed) -> bool:
                 lw = Path(DEFAULT_WORKSPACE)
                 lconf = init_license_config(lw)
                 lstatus = check_license_status(lw)
-            except Exception:
+            except Exception as _lic_exc:
+                # lw may not be assigned (import/property error before it),
+                # so build the log payload without referencing it directly.
+                try:
+                    _lic_ws = str(Path(DEFAULT_WORKSPACE))
+                except Exception:
+                    _lic_ws = "?"
+                logger.exception(
+                    "[license] init/check failed: workspace=%s status=%s",
+                    _lic_ws,
+                    type(_lic_exc).__name__,
+                )
                 lconf = {}
                 lstatus = {"status": "not_initialized", "activated": False}
 
@@ -12215,11 +12224,19 @@ def handle_get(handler, parsed) -> bool:
         # page doesn't 404 with `{"error":"not found"}`.
         try:
             from api.license import check_license_status, init_license_config
-            from api.config import DEFAULT_WORKSPACE
             _lws = Path(DEFAULT_WORKSPACE)
             _lconf = init_license_config(_lws)
             _lstatus = check_license_status(_lws)
-        except Exception:
+        except Exception as _lic_exc:
+            try:
+                _lic_ws2 = str(Path(DEFAULT_WORKSPACE))
+            except Exception:
+                _lic_ws2 = "?"
+            logger.exception(
+                "[license] /license/activate init/check failed: workspace=%s",
+                _lic_ws2,
+            )
+            _lconf = {}
             _lstatus = {"status": "not_initialized"}
         if _lstatus.get("status") == "valid":
             handler.send_response(302)

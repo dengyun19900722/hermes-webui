@@ -87,6 +87,108 @@ document.addEventListener('DOMContentLoaded', function () {
     } catch (_) {}
   }
 
+  function _installLicenseActivationMachineInfoFallback() {
+    var bodyText = '';
+    try { bodyText = document.body ? document.body.textContent || '' : ''; } catch (_) {}
+    if (bodyText.indexOf('License 激活') === -1 && bodyText.indexOf('License') === -1) return;
+
+    function _licenseText(v) {
+      if (v === null || v === undefined || v === '') return '';
+      return String(v);
+    }
+
+    function _licenseRead(obj, keys) {
+      if (!obj || typeof obj !== 'object') return '';
+      for (var i = 0; i < keys.length; i += 1) {
+        var key = keys[i];
+        if (Object.prototype.hasOwnProperty.call(obj, key)) {
+          var value = _licenseText(obj[key]);
+          if (value) return value;
+        }
+      }
+      return '';
+    }
+
+    function _licenseNormalize(payload) {
+      var data = payload && typeof payload === 'object'
+        ? (payload.license || payload.machine || payload.data || payload.status || payload)
+        : {};
+      return {
+        platformId: _licenseRead(data, ['platform_id', 'platformId', 'platform', 'machine_id', 'machineId', 'fingerprint'])
+          || _licenseRead(payload, ['platform_id', 'platformId', 'platform', 'machine_id', 'machineId', 'fingerprint']),
+        macAddress: _licenseRead(data, ['mac_address', 'macAddress', 'mac', 'machine_mac', 'machineMac', 'primary_mac'])
+          || _licenseRead(payload, ['mac_address', 'macAddress', 'mac', 'machine_mac', 'machineMac', 'primary_mac'])
+      };
+    }
+
+    function _findLicenseValue(labelText) {
+      var wanted = String(labelText || '').replace(/[:：]\s*$/, '');
+      var nodes = Array.prototype.slice.call(document.querySelectorAll('div,span,dt,dd,td,th,label,p'));
+      for (var i = 0; i < nodes.length; i += 1) {
+        var el = nodes[i];
+        var text = String(el.textContent || '').trim().replace(/[:：]\s*$/, '');
+        if (text !== wanted) continue;
+        var parent = el.parentElement;
+        if (!parent) continue;
+        var children = Array.prototype.slice.call(parent.children || []);
+        for (var j = 0; j < children.length; j += 1) {
+          var child = children[j];
+          if (child !== el && String(child.textContent || '').trim()) return child;
+        }
+        if (el.nextElementSibling) return el.nextElementSibling;
+      }
+      return null;
+    }
+
+    function _setLicenseValue(label, value) {
+      if (!value || value === 'N/A') return false;
+      var node = _findLicenseValue(label);
+      if (!node) return false;
+      node.textContent = String(value);
+      return true;
+    }
+
+    function _showLicenseMachineInfoError() {
+      var card = document.querySelector('form') || document.querySelector('[role="main"]') || document.body;
+      if (!card || document.getElementById('license-machine-info-error')) return;
+      var note = document.createElement('div');
+      note.id = 'license-machine-info-error';
+      note.style.cssText = 'margin-top:12px;color:#fca5a5;font-size:13px;line-height:1.5;text-align:center;';
+      note.textContent = '未能读取平台 ID / MAC 地址，请确认服务端机器标识接口可用后刷新页面。';
+      card.appendChild(note);
+    }
+
+    async function _hydrateLicenseMachineInfo() {
+      var platformNode = _findLicenseValue('平台 ID');
+      var macNode = _findLicenseValue('MAC 地址');
+      var platformEmpty = !platformNode || ['N/A', '-', ''].indexOf(String(platformNode.textContent || '').trim()) !== -1;
+      var macEmpty = !macNode || ['N/A', '-', ''].indexOf(String(macNode.textContent || '').trim()) !== -1;
+      if (!platformEmpty && !macEmpty) return;
+      var endpoints = [
+        '/api/license/machine',
+        '/api/license/status',
+        '/api/admin/license/status',
+        '/api/license'
+      ];
+      for (var i = 0; i < endpoints.length; i += 1) {
+        try {
+          var res = await fetch(endpoints[i], {credentials: 'include'});
+          if (!res.ok) continue;
+          var data = await res.json();
+          var info = _licenseNormalize(data);
+          var ok = false;
+          ok = _setLicenseValue('平台 ID', info.platformId) || ok;
+          ok = _setLicenseValue('MAC 地址', info.macAddress) || ok;
+          if (ok) return;
+        } catch (_) {}
+      }
+      _showLicenseMachineInfoError();
+    }
+
+    setTimeout(_hydrateLicenseMachineInfo, 0);
+  }
+  _installLicenseActivationMachineInfoFallback();
+
   async function doLogin(e) {
     e.preventDefault();
     var pw = input.value;

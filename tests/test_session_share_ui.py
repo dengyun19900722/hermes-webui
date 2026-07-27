@@ -122,3 +122,21 @@ def test_settings_user_panel_localization_and_license_fallback():
     assert "'/api/license/status'" in src
     assert "'/api/admin/license/status'" in src
     assert "findLicenseValueNode('状态')" not in src
+
+
+def test_license_activation_page_refetches_machine_info_when_na():
+    src = Path("static/login.js").read_text(encoding="utf-8")
+    assert "_installLicenseActivationMachineInfoFallback" in src
+    assert "'/api/license/machine'" in src
+    assert "'/api/license/status'" in src
+    assert "_setLicenseValue('平台 ID', info.platformId)" in src
+    assert "_setLicenseValue('MAC 地址', info.macAddress)" in src
+    assert "未能读取平台 ID / MAC 地址" in src
+
+
+def test_license_machine_identity_runtime_fallback_exists():
+    src = Path("sitecustomize.py").read_text(encoding="utf-8")
+    assert "_patched_uuid_getnode" in src
+    assert "HERMES_WEBUI_PLATFORM_ID" in src
+    assert "HERMES_WEBUI_MACHINE_MAC" in src
+    assert "_fallback_mac" in src

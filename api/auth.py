@@ -67,6 +67,11 @@ PUBLIC_PATHS = frozenset({
     # URL, producing `/license/login?next=/license/activate` — a non-public
     # path that is whitelisted by license_middleware → relative-redirect
     # loop (ERR_TOO_MANY_REDIRECTS).
+    # First-time admin registration (POST /api/auth/register) and the
+    # setup-or-login decision endpoint (GET /api/auth/init_status) are also
+    # pre-auth — the admin account does not exist yet.
+    '/api/auth/register',
+    '/api/auth/init_status',
     '/api/license/import',
     '/api/license/apply',
     # Token share links are public by design (anyone holding the token).
