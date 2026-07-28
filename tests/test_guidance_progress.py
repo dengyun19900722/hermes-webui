@@ -142,3 +142,65 @@ def test_load_progress_applies_defaults_to_partial_yaml(tmp_home):
     assert result["schema_version"] == 1
     assert result["implementation"] == {}
     assert result["other_key"] == 42  # 未触及的数据保留
+
+
+def test_validate_task_id_accepts_whitelisted():
+    assert gp.validate_task_id("1.1_view_doc") is True
+    assert gp.validate_task_id("3.4_record_result") is True
+
+
+def test_validate_task_id_rejects_unknown():
+    with pytest.raises(ValueError, match="unknown_task"):
+        gp.validate_task_id("99.99_invalid")
+    with pytest.raises(ValueError, match="unknown_task"):
+        gp.validate_task_id("DROP TABLE")
+
+
+def test_get_task_metadata_returns_12_tasks():
+    """Static metadata for the 12-step checklist, grouped by 3 subtasks."""
+    tasks = gp.get_task_metadata()
+
+    assert len(tasks) == 12
+    groups = {t["group"] for t in tasks}
+    assert groups == {1, 2, 3}
+
+    by_group = {}
+    for t in tasks:
+        by_group.setdefault(t["group"], []).append(t)
+    assert len(by_group[1]) == 5  # 业务线：1.1, 1.2, 1.3a, 1.3b, 1.3c
+    assert len(by_group[2]) == 3  # 知识库
+    assert len(by_group[3]) == 4  # 验证
+
+    assert by_group[1][0]["group_title"] == "业务线实体关系表整理"
+    assert by_group[2][0]["group_title"] == "知识库整理（故障FAQ）"
+    assert by_group[3][0]["group_title"] == "巡检+诊断技能验证"
+
+
+def test_merge_with_metadata_includes_default_done_false():
+    """Tasks never marked should default to done=False, by=None, ts=None, note=''."""
+    progress = {"schema_version": 1, "implementation": {}}
+    merged = gp.merge_with_metadata(progress)
+
+    assert len(merged) == 12
+    for task in merged:
+        assert task["done"] is False
+        assert task["by"] is None
+        assert task["ts"] is None
+        assert task["note"] == ""
+
+
+def test_merge_with_metadata_preserves_done_state():
+    """Already-done tasks keep their by/ts/note."""
+    progress = {
+        "schema_version": 1,
+        "implementation": {
+            "1.1_view_doc": {"done": True, "by": "alice", "ts": 100, "note": "ok"},
+        },
+    }
+    merged = gp.merge_with_metadata(progress)
+
+    task_1_1 = next(t for t in merged if t["id"] == "1.1_view_doc")
+    assert task_1_1["done"] is True
+    assert task_1_1["by"] == "alice"
+    assert task_1_1["ts"] == 100
+    assert task_1_1["note"] == "ok"
