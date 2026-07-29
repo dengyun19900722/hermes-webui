@@ -9,6 +9,17 @@
 - 聊天输入框的模型下拉中新增 `➕ 添加自定义模型…` 入口，弹出 mini modal 可快速配置 relay / proxy。
 - 自定义 Provider 写入 `config.yaml` 的 `custom_providers[]` 后会自动广播到所有 profile，一次添加全局生效。
 - 自定义 Provider 卡片支持 `探测`（拉取 `/v1/models` 自动回填）、`设为默认`（写入 `model.{provider, default}`）、`编辑`、`删除` 操作；删除前会弹中文确认。
+- **实施助手引导页（2.1）**：从部署完成到具备使用条件的 12 项 step-by-step 清单（业务线实体关系表整理 5 步 + 知识库整理 3 步 + 巡检诊断验证 4 步）。
+  - 全屏覆盖页 + 进度条 + 3 大子任务分组
+  - CSV 业务实体表导入（含必填列/IP 格式/行数上限校验，错误聚合表格展示）
+  - Markdown 进度报告导出（含每步负责人/时间戳/备注）
+  - 重置进度功能（二次确认）
+  - 后端 RBAC 限定：admin/ops 可见
+  - 触发器：部署完成 / license 激活后首次自动展开；同会话 10 分钟去重
+  - 后端模块 `api/guidance_progress.py`：UUID tmp + 原子 os.replace + mkdir parents + yaml.YAMLError 捕获 + get_active_hermes_home 路由（避免跨 profile 泄漏）
+  - 6 个 API 端点（GET / PATCH / POST note / GET report / POST import / DELETE reset）
+  - 13 个 i18n key（`guidance_2_1_*` 中英双语）+ 前端模块 `static/guidance.js` + `static/guidance.css`（移动端 < 768px 折叠子任务）
+  - 33 个 pytest 单元测试 + 10 个 Flask 路由测试（Flask 不可用时自动跳过）
 
 ### Security
 

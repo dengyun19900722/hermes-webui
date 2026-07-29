@@ -69,6 +69,7 @@
   }
 })()</script>
 <link rel="stylesheet" href="static/style.css?v=__WEBUI_VERSION__">
+<link rel="stylesheet" href="static/guidance.css?v=__WEBUI_VERSION__">
 <link rel="stylesheet" href="static/users_panel.css?v=__WEBUI_VERSION__">
   <!-- KaTeX math rendering CSS (loaded eagerly from vendored assets to prevent font CSP noise) -->
   <link rel="stylesheet" href="static/vendor/katex/0.16.22/katex.min.css">
@@ -1859,6 +1860,7 @@
 <script src="static/users_panel.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/onboarding.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/boot.js?v=__WEBUI_VERSION__" defer></script>
+<script src="static/guidance.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/outline.js?v=__WEBUI_VERSION__" defer></script>
 
 <!-- Kanban: create/rename board modal — used for both flows. -->
@@ -2028,6 +2030,55 @@
     <p id="licenseError" class="license-error" style="display:none;"></p>
   </div>
 </div>
+
+<!-- 2.1 实施助手引导页模板 -->
+<template id="tpl-guidance-2-1">
+  <div class="guidance-overlay-21" id="guidanceOverlay21">
+    <div class="guidance-page-21" role="dialog" aria-labelledby="gp21-title">
+      <header class="gp21-header">
+        <h1 id="gp21-title">📋 实施助手</h1>
+        <div class="gp21-progress-bar">
+          <div class="gp21-progress-fill" id="gp21ProgressFill" style="width:0%"></div>
+        </div>
+        <span class="gp21-progress-label" id="gp21ProgressLabel">0/12</span>
+        <div class="gp21-actions">
+          <button class="gp21-btn" id="gp21ExportBtn">导出报告</button>
+          <button class="gp21-btn" id="gp21ResetBtn">重置进度</button>
+          <button class="gp21-btn" id="gp21CloseBtn">关闭</button>
+        </div>
+      </header>
+      <div class="gp21-tasks" id="gp21Tasks"></div>
+      <footer class="gp21-footer">
+        <span id="gp21CurrentUser"></span>
+        <input type="file" id="gp21ImportFile" accept=".csv" style="display:none">
+        <button class="gp21-btn gp21-btn-primary" id="gp21ImportBtn">📤 上传 CSV</button>
+      </footer>
+    </div>
+  </div>
+</template>
+
+<template id="tpl-guidance-2-1-errors">
+  <div class="guidance-overlay-21" id="guidanceErrors21">
+    <div class="guidance-page-21" style="max-width:720px">
+      <header class="gp21-header">
+        <h1>导入错误</h1>
+        <button class="gp21-btn" id="gp21ErrorsClose">关闭</button>
+      </header>
+      <div class="gp21-tasks">
+        <p id="gp21ErrorsSummary"></p>
+        <div style="max-height:400px;overflow:auto">
+          <table id="gp21ErrorsTable" style="width:100%;font-size:13px">
+            <thead><tr><th>行号</th><th>字段</th><th>原因</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <footer class="gp21-footer">
+        <button class="gp21-btn gp21-btn-primary" id="gp21ErrorsDownload">下载错误报告</button>
+      </footer>
+    </div>
+  </div>
+</template>
 
 </body>
 </html>

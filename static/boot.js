@@ -3718,3 +3718,19 @@ function _showServerStopped() {
     window.addEventListener('load',_runLicenseCheck);
   }
 })();
+
+// 引导中心初始化（实施助手 2.1）
+(function() {
+  if (typeof window.GuidanceManager === 'undefined') return;
+  // 等待 currentUser 就绪
+  function _initGuidance() {
+    if (window.GuidanceManager && !window.__guidanceMgr) {
+      window.GuidanceManager.init();
+    }
+  }
+  if (document.readyState === 'complete') {
+    _initGuidance();
+  } else {
+    window.addEventListener('load', _initGuidance);
+  }
+})();

@@ -1,0 +1,169 @@
+/* ── Implementation Assistant (2.1) ────────────────────────────────────── */
+.guidance-overlay-21 {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 9000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.guidance-page-21 {
+  background: var(--bg-primary, #fff);
+  width: min(960px, 95vw);
+  max-height: 92vh;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.gp21-header {
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border-color, #e5e7eb);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.gp21-header h1 {
+  margin: 0;
+  font-size: 20px;
+  flex: 1;
+}
+
+.gp21-progress-bar {
+  height: 8px;
+  background: var(--bg-tertiary, #f3f4f6);
+  border-radius: 4px;
+  overflow: hidden;
+  flex: 1;
+  min-width: 200px;
+}
+
+.gp21-progress-fill {
+  height: 100%;
+  background: var(--accent-color, #10b981);
+  transition: width 0.3s ease;
+}
+
+.gp21-progress-label {
+  font-size: 14px;
+  color: var(--text-secondary, #6b7280);
+}
+
+.gp21-tasks {
+  padding: 16px 24px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.gp21-group {
+  margin-bottom: 16px;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 8px;
+}
+
+.gp21-group-header {
+  padding: 12px 16px;
+  background: var(--bg-secondary, #f9fafb);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-weight: 600;
+}
+
+.gp21-group-header:hover {
+  background: var(--bg-tertiary, #f3f4f6);
+}
+
+.gp21-group-body {
+  padding: 8px 16px;
+}
+
+.gp21-task {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-color-light, #f3f4f6);
+}
+
+.gp21-task:last-child {
+  border-bottom: none;
+}
+
+.gp21-task input[type="checkbox"] {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+}
+
+.gp21-task-title {
+  flex: 1;
+}
+
+.gp21-task-meta {
+  font-size: 12px;
+  color: var(--text-secondary, #6b7280);
+}
+
+.gp21-task-note {
+  font-size: 12px;
+  color: var(--text-tertiary, #9ca3af);
+  font-style: italic;
+  margin-left: 12px;
+}
+
+.gp21-footer {
+  padding: 16px 24px;
+  border-top: 1px solid var(--border-color, #e5e7eb);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.gp21-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.gp21-btn {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color, #d1d5db);
+  background: var(--bg-primary, #fff);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.gp21-btn:hover {
+  background: var(--bg-secondary, #f9fafb);
+}
+
+.gp21-btn-primary {
+  background: var(--accent-color, #10b981);
+  color: white;
+  border-color: var(--accent-color, #10b981);
+}
+
+/* 移动端 */
+@media (max-width: 768px) {
+  .guidance-page-21 {
+    width: 100vw;
+    height: 100vh;
+    max-height: 100vh;
+    border-radius: 0;
+  }
+
+  .gp21-header {
+    padding: 12px 16px;
+  }
+
+  .gp21-tasks {
+    padding: 8px 16px;
+  }
+}
