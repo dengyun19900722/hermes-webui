@@ -26417,3 +26417,104 @@ def _handle_mcp_server_update(handler, name, body):
     _save_yaml_config_file(_get_config_path(), cfg)
     reload_config()
     return j(handler, {"ok": True, "server": _server_summary(name, server_cfg)})
+
+
+# ── 引导中心（实施助手 2.1）路由注册 ──────────────────────────────────────────
+# 调用方式：在 server.py 中执行 register_guidance_routes(app)
+
+
+def register_guidance_routes(app):
+    """Register 5 endpoints for 2.1 implementation assistant.
+
+    Endpoints:
+      GET    /api/guidance/implementation
+      PATCH  /api/guidance/implementation/<task_id>
+      POST   /api/guidance/implementation/<task_id>/note
+      GET    /api/guidance/implementation/report
+      POST   /api/guidance/implementation/import-business-entities
+      DELETE /api/guidance/implementation
+
+    All endpoints require role ∈ {admin, ops}. 403 otherwise.
+    """
+    from flask import jsonify, request, send_file, session, abort
+    import io
+    from datetime import datetime
+
+    from api import guidance_progress as _gp
+
+    def _require_admin_or_ops():
+        user = session.get("user") or {}
+        if user.get("role") not in ("admin", "ops"):
+            abort(403)
+
+    def _current_username():
+        return (session.get("user") or {}).get("username", "unknown")
+
+    @app.route("/api/guidance/implementation", methods=["GET"])
+    def _get_implementation():
+        _require_admin_or_ops()
+        return jsonify(_gp.get_full_state())
+
+    @app.route("/api/guidance/implementation", methods=["DELETE"])
+    def _delete_implementation():
+        _require_admin_or_ops()
+        _gp.reset_progress()
+        return jsonify({"ok": True})
+
+    @app.route("/api/guidance/implementation/<task_id>", methods=["PATCH"])
+    def _patch_implementation(task_id):
+        _require_admin_or_ops()
+        body = request.get_json() or {}
+        try:
+            task = _gp.mark_task(
+                task_id,
+                done=bool(body.get("done", False)),
+                by=_current_username(),
+                note=body.get("note"),
+            )
+        except ValueError as e:
+            return jsonify({"error": "unknown_task", "task_id": task_id, "detail": str(e)}), 400
+        return jsonify({"ok": True, "task": task})
+
+    @app.route("/api/guidance/implementation/<task_id>/note", methods=["POST"])
+    def _post_note(task_id):
+        _require_admin_or_ops()
+        body = request.get_json() or {}
+        note = body.get("note", "")
+        try:
+            task = _gp.update_note(task_id, note=note)
+        except ValueError as e:
+            return jsonify({"error": "unknown_task", "task_id": task_id, "detail": str(e)}), 400
+        return jsonify({"ok": True, "task": task})
+
+    @app.route("/api/guidance/implementation/report", methods=["GET"])
+    def _get_report():
+        _require_admin_or_ops()
+        md = _gp.render_report()
+        buf = io.BytesIO(md.encode("utf-8"))
+        filename = f"implementation-report-{datetime.now().strftime('%Y%m%d')}.md"
+        return send_file(
+            buf,
+            mimetype="text/markdown",
+            as_attachment=True,
+            download_name=filename,
+        )
+
+    @app.route(
+        "/api/guidance/implementation/import-business-entities",
+        methods=["POST"],
+    )
+    def _post_import():
+        _require_admin_or_ops()
+        upload = request.files.get("file")
+        if not upload:
+            return jsonify({"error": "no_file"}), 400
+        content = upload.read().decode("utf-8")
+        result = _gp.import_business_entities(
+            content,
+            filename=upload.filename or "upload.csv",
+            by=_current_username(),
+        )
+        if not result["ok"]:
+            return jsonify(result), 400
+        return jsonify(result)
