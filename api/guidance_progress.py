@@ -5,11 +5,16 @@ YAML 写采用原子替换（UUID tmp + os.replace）避免半写损坏 + 并发
 """
 from __future__ import annotations
 
+import csv
+import io
 import os
+import re
+import time
 import uuid
+import datetime
 import yaml
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from api.profiles import get_active_hermes_home
 
@@ -154,3 +159,215 @@ def compute_summary(tasks: list[dict[str, Any]]) -> dict[str, Any]:
             done += 1
             by_group[g] += 1
     return {"total": len(tasks), "done": done, "by_group": by_group}
+
+
+# ── Task 4: mark_task + update_note ─────────────────────────────────────────
+
+
+def mark_task(task_id: str, *, done: bool, by: str, note: Optional[str] = None) -> dict[str, Any]:
+    """Mark task done/undone; record by and ts. Returns updated task dict."""
+    validate_task_id(task_id)
+    data = load_progress()
+    existing = data["implementation"].get(task_id, {})
+
+    # 保留 note（除非显式传入）
+    note_value = note if note is not None else existing.get("note", "")
+
+    if done:
+        data["implementation"][task_id] = {
+            "done": True,
+            "by": by,
+            "ts": int(time.time()),
+            "note": note_value,
+        }
+    else:
+        # 取消：清空 by/ts，保留 note
+        data["implementation"][task_id] = {
+            "done": False,
+            "by": None,
+            "ts": None,
+            "note": note_value,
+        }
+
+    save_progress(data)
+
+    # 返回完整的 task dict（含 metadata）
+    all_tasks = merge_with_metadata(data)
+    return next(t for t in all_tasks if t["id"] == task_id)
+
+
+def update_note(task_id: str, *, note: str) -> dict[str, Any]:
+    """Update only the note field. Done state unchanged."""
+    validate_task_id(task_id)
+    data = load_progress()
+    existing = data["implementation"].get(task_id, {"done": False, "by": None, "ts": None})
+    existing["note"] = note
+    data["implementation"][task_id] = existing
+    save_progress(data)
+
+    all_tasks = merge_with_metadata(data)
+    return next(t for t in all_tasks if t["id"] == task_id)
+
+
+# ── Task 5: reset_progress ──────────────────────────────────────────────────
+
+
+def reset_progress() -> None:
+    """Clear all progress. Used by 'Reset Progress' button."""
+    save_progress({"schema_version": SCHEMA_VERSION, "implementation": {}})
+
+
+# ── Task 6: get_full_state ──────────────────────────────────────────────────
+
+
+def _ensure_first_seen(data: dict[str, Any]) -> dict[str, Any]:
+    """Populate deployment_id and first_seen_at on first access; persist."""
+    changed = False
+    if "deployment_id" not in data:
+        data["deployment_id"] = f"dep-{uuid.uuid4().hex[:12]}"
+        changed = True
+    if "first_seen_at" not in data:
+        data["first_seen_at"] = int(time.time())
+        changed = True
+    if changed:
+        save_progress(data)
+    return data
+
+
+def get_full_state() -> dict[str, Any]:
+    """Return full state for GET endpoint: schema, tasks, summary."""
+    data = _ensure_first_seen(load_progress())
+    tasks = merge_with_metadata(data)
+    return {
+        "schema_version": data["schema_version"],
+        "deployment_id": data["deployment_id"],
+        "first_seen_at": data["first_seen_at"],
+        "tasks": tasks,
+        "summary": compute_summary(tasks),
+    }
+
+
+# ── Task 7: CSV validation ──────────────────────────────────────────────────
+
+
+_REQUIRED_COLUMNS = ["业务线名称", "主机IP", "主机角色"]
+_MAX_ROWS = 10000
+_IPV4_RE = re.compile(r"^(\d{1,3}\.){3}\d{1,3}$")
+
+
+def _is_valid_ipv4(ip: str) -> bool:
+    if not _IPV4_RE.match(ip):
+        return False
+    return all(0 <= int(octet) <= 255 for octet in ip.split("."))
+
+
+def validate_business_entity_csv(content: str, filename: str = "test.csv") -> dict[str, Any]:
+    """Validate CSV content. Returns ok=True on success or detailed errors."""
+    if not filename.lower().endswith(".csv"):
+        return {"ok": False, "error": "unsupported_format", "format": filename.split(".")[-1]}
+
+    reader = csv.DictReader(io.StringIO(content))
+    headers = reader.fieldnames or []
+
+    missing = [c for c in _REQUIRED_COLUMNS if c not in headers]
+    if missing:
+        return {"ok": False, "error": "missing_columns", "missing": missing}
+
+    failed_rows = []
+    total = 0
+    for line_no, row in enumerate(reader, start=2):
+        total += 1
+        if total > _MAX_ROWS:
+            return {
+                "ok": False,
+                "error": "size_limit",
+                "detail": f"超过 {_MAX_ROWS} 行上限",
+                "rows_seen": total,
+            }
+        # 必填校验
+        if not (row.get("业务线名称") or "").strip():
+            failed_rows.append({"line": line_no, "field": "业务线名称", "reason": "必填"})
+        ip = (row.get("主机IP") or "").strip()
+        if not _is_valid_ipv4(ip):
+            failed_rows.append({"line": line_no, "field": "主机IP", "reason": f"格式不合法（{ip}）"})
+
+    if failed_rows:
+        return {
+            "ok": False,
+            "error": "validation",
+            "failed_rows": failed_rows[:100],
+            "total_failed": len(failed_rows),
+            "total_rows": total,
+        }
+
+    return {"ok": True, "total_rows": total, "failed_rows": []}
+
+
+# ── Task 8: import_business_entities ────────────────────────────────────────
+
+
+def import_business_entities(content: str, *, filename: str, by: str) -> dict[str, Any]:
+    """Validate + import business entities CSV. Auto-mark 1.3_import on success."""
+    validation = validate_business_entity_csv(content, filename=filename)
+    if not validation["ok"]:
+        return validation
+
+    # TODO(后续版本): 实际写入业务实体存储（api/asset_inventory.py）
+    # 当前仅做校验 + 标记任务，实体存储层在后续版本集成
+
+    # 自动勾选 1.3_import
+    mark_task("1.3_import", done=True, by=by)
+
+    return {
+        "ok": True,
+        "imported_rows": validation["total_rows"],
+        "failed_rows": [],
+        "task_updated": "1.3_import",
+    }
+
+
+# ── Task 9: render_report ───────────────────────────────────────────────────
+
+
+def _format_ts(ts: Optional[int]) -> str:
+    if ts is None:
+        return ""
+    return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+
+
+def render_report() -> str:
+    """Generate Markdown progress report."""
+    state = get_full_state()
+    tasks = state["tasks"]
+    summary = state["summary"]
+    pct = int(round(summary["done"] / summary["total"] * 100)) if summary["total"] else 0
+
+    lines = [
+        "# 实施助手进度报告",
+        "",
+        f"**部署 ID**：{state['deployment_id']}",
+        f"**生成时间**：{time.strftime('%Y-%m-%d %H:%M')}",
+        f"**总进度**：{summary['done']}/{summary['total']}（{pct}%）",
+        "",
+    ]
+
+    # 按 group 渲染
+    for group_num in (1, 2, 3):
+        group_tasks = [t for t in tasks if t["group"] == group_num]
+        group_done = sum(1 for t in group_tasks if t["done"])
+        icon = "✅" if group_done == len(group_tasks) else "⬜"
+        title = _GROUP_TITLES[group_num]
+        lines.append(f"## {group_num}. {title} {icon} {group_done}/{len(group_tasks)}")
+        lines.append("")
+
+        for t in group_tasks:
+            checkbox = "- [x]" if t["done"] else "- [ ]"
+            base = f"{checkbox} {t['id']} {t['title']}"
+            if t["done"]:
+                base += f" (by {t['by']}, {_format_ts(t['ts'])})"
+            if t["note"]:
+                base += f" — {t['note']}"
+            lines.append(base)
+        lines.append("")
+
+    return "\n".join(lines)

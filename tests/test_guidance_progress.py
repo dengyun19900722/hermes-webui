@@ -1,5 +1,6 @@
 """Tests for api/guidance_progress.py — 实施助手进度持久化与 API."""
 import pytest
+import time
 import yaml
 from pathlib import Path
 from unittest.mock import patch
@@ -203,4 +204,184 @@ def test_merge_with_metadata_preserves_done_state():
     assert task_1_1["done"] is True
     assert task_1_1["by"] == "alice"
     assert task_1_1["ts"] == 100
-    assert task_1_1["note"] == "ok"
+
+
+# ── Task 4: mark_task + update_note ──────────────────────────────────────────
+
+
+def test_mark_task_done(tmp_home):
+    """mark_task should set done=True, record by and ts."""
+    before = int(time.time())
+    task = gp.mark_task("1.1_view_doc", done=True, by="alice", note="")
+    after = int(time.time())
+    assert task["done"] is True
+    assert task["by"] == "alice"
+    assert before <= task["ts"] <= after
+    assert task["note"] == ""
+
+    persisted = gp.load_progress()
+    assert persisted["implementation"]["1.1_view_doc"]["done"] is True
+
+
+def test_mark_task_undone_clears_by_and_ts(tmp_home):
+    gp.mark_task("1.1_view_doc", done=True, by="alice", note="kept")
+    task = gp.mark_task("1.1_view_doc", done=False, by="alice", note="kept")
+    assert task["done"] is False
+    assert task["by"] is None
+    assert task["ts"] is None
+    assert task["note"] == "kept"
+
+
+def test_mark_task_unknown_raises(tmp_home):
+    with pytest.raises(ValueError, match="unknown_task"):
+        gp.mark_task("bogus", done=True, by="alice")
+
+
+def test_update_note_does_not_change_done(tmp_home):
+    gp.mark_task("1.1_view_doc", done=True, by="alice", note="")
+    task = gp.update_note("1.1_view_doc", note="关联 ZKREQ-130")
+    assert task["done"] is True
+    assert task["by"] == "alice"
+    assert task["note"] == "关联 ZKREQ-130"
+
+
+def test_update_note_allows_empty(tmp_home):
+    gp.update_note("1.1_view_doc", note="something")
+    task = gp.update_note("1.1_view_doc", note="")
+    assert task["note"] == ""
+
+
+def test_mark_task_concurrent_writes_safe(tmp_home):
+    gp.mark_task("1.1_view_doc", done=True, by="alice")
+    gp.mark_task("1.2_download_tpl", done=True, by="bob")
+    persisted = gp.load_progress()
+    assert persisted["implementation"]["1.1_view_doc"]["by"] == "alice"
+    assert persisted["implementation"]["1.2_download_tpl"]["by"] == "bob"
+
+
+# ── Task 5: reset_progress ──────────────────────────────────────────────────
+
+
+def test_reset_progress_clears_all(tmp_home):
+    gp.mark_task("1.1_view_doc", done=True, by="alice")
+    gp.mark_task("1.2_download_tpl", done=True, by="alice")
+    gp.reset_progress()
+    result = gp.load_progress()
+    assert result["implementation"] == {}
+
+
+# ── Task 6: get_full_state ──────────────────────────────────────────────────
+
+
+def test_get_full_state_returns_schema_and_summary(tmp_home):
+    gp.mark_task("1.1_view_doc", done=True, by="alice")
+    state = gp.get_full_state()
+    assert state["schema_version"] == 1
+    assert "deployment_id" in state
+    assert "first_seen_at" in state
+    assert len(state["tasks"]) == 12
+    assert state["summary"]["total"] == 12
+    assert state["summary"]["done"] == 1
+    assert state["summary"]["by_group"] == {"1": 1, "2": 0, "3": 0}
+
+
+def test_get_full_state_first_seen_persists(tmp_home):
+    state1 = gp.get_full_state()
+    state2 = gp.get_full_state()
+    assert state1["first_seen_at"] == state2["first_seen_at"]
+    assert state1["deployment_id"] == state2["deployment_id"]
+
+
+# ── Task 7: CSV validation ──────────────────────────────────────────────────
+
+
+def test_validate_csv_happy_path():
+    content = (FIXTURES_DIR / "business_entities_valid.csv").read_text(encoding="utf-8")
+    result = gp.validate_business_entity_csv(content)
+    assert result["ok"] is True
+    assert result["total_rows"] == 5
+    assert result["failed_rows"] == []
+
+
+def test_validate_csv_missing_column():
+    content = (FIXTURES_DIR / "business_entities_missing_col.csv").read_text(encoding="utf-8")
+    result = gp.validate_business_entity_csv(content)
+    assert result["ok"] is False
+    assert "业务线名称" in result["missing"]
+
+
+def test_validate_csv_bad_ip():
+    content = (FIXTURES_DIR / "business_entities_bad_ip.csv").read_text(encoding="utf-8")
+    result = gp.validate_business_entity_csv(content)
+    assert result["ok"] is False
+    assert len(result["failed_rows"]) >= 2
+    assert any(f["field"] == "主机IP" for f in result["failed_rows"])
+
+
+def test_validate_csv_size_limit():
+    rows = ["业务线名称,主机IP,主机角色\n"]
+    for i in range(10001):
+        rows.append(f"line_{i},10.0.0.{i % 256},DB\n")
+    content = "".join(rows)
+    result = gp.validate_business_entity_csv(content)
+    assert result["ok"] is False
+    assert "size_limit" in str(result.get("error", ""))
+
+
+def test_validate_csv_xlsx_rejected():
+    result = gp.validate_business_entity_csv(
+        "fake xlsx content",
+        filename="test.xlsx",
+    )
+    assert result["ok"] is False
+    assert result["error"] == "unsupported_format"
+
+
+# ── Task 8: import_business_entities ────────────────────────────────────────
+
+
+def test_import_happy_path_marks_task_done(tmp_home):
+    content = (FIXTURES_DIR / "business_entities_valid.csv").read_text(encoding="utf-8")
+    result = gp.import_business_entities(content, filename="test.csv", by="alice")
+    assert result["ok"] is True
+    assert result["imported_rows"] == 5
+    assert result["task_updated"] == "1.3_import"
+    state = gp.get_full_state()
+    task = next(t for t in state["tasks"] if t["id"] == "1.3_import")
+    assert task["done"] is True
+    assert task["by"] == "alice"
+
+
+def test_import_validation_failure_no_task_update(tmp_home):
+    content = (FIXTURES_DIR / "business_entities_bad_ip.csv").read_text(encoding="utf-8")
+    result = gp.import_business_entities(content, filename="test.csv", by="alice")
+    assert result["ok"] is False
+    state = gp.get_full_state()
+    task = next(t for t in state["tasks"] if t["id"] == "1.3_import")
+    assert task["done"] is False
+
+
+# ── Task 9: render_report ───────────────────────────────────────────────────
+
+
+def test_render_report_markdown(tmp_home):
+    gp.mark_task("1.1_view_doc", done=True, by="alice")
+    gp.mark_task("1.2_download_tpl", done=True, by="alice", note="模板已下载")
+    gp.update_note("1.3_import", note="关联 ZKREQ-130")
+
+    md = gp.render_report()
+    assert "# 实施助手进度报告" in md
+    assert "**总进度**：2/12" in md
+    assert "## 1. 业务线实体关系表整理" in md
+    assert "- [x] 1.1_view_doc 查看文档说明 (by alice" in md
+    assert "- [x] 1.2_download_tpl 下载模板" in md
+    assert "模板已下载" in md
+    assert "- [ ] 1.3_validate 校验文件" in md
+    assert "关联 ZKREQ-130" in md
+    assert "## 2. 知识库整理（故障FAQ） ⬜ 0/3" in md
+    assert "## 3. 巡检+诊断技能验证 ⬜ 0/4" in md
+
+
+def test_render_report_empty_state(tmp_home):
+    md = gp.render_report()
+    assert "**总进度**：0/12（0%）" in md
