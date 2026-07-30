@@ -8584,6 +8584,14 @@ html[data-conversation-outline="enabled"] #outlineToggleBtn:not([hidden]){displa
   display: flex;
   overflow: hidden;
 }
+.graph-body-views {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  position: relative;
+  overflow: hidden;
+}
 .graph-view {
   flex: 1 1 auto;
   min-width: 0;
@@ -8593,8 +8601,87 @@ html[data-conversation-outline="enabled"] #outlineToggleBtn:not([hidden]){displa
 }
 /* Critical: HTML hidden attr must beat our display:flex */
 .graph-view[hidden] { display: none !important; }
-.graph-view-graph { position: relative; }
-.graph-canvas { flex: 1; min-height: 0; background: var(--bg); width: 100%; }
+.graph-view-graph {
+  position: relative;
+  display: flex;
+}
+.graph-canvas { flex: 1 1 auto; min-height: 0; min-width: 0; background: var(--bg); }
+
+/* Neo4j Browser 风格：右侧 Results overview 面板 */
+.graph-results-overview {
+  flex: 0 0 260px;
+  width: 260px;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 16px 14px 18px;
+  overflow-y: auto;
+  font-size: 13px;
+  z-index: 4;
+}
+.graph-overview-header {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: 0.01em;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.graph-overview-section { display: flex; flex-direction: column; gap: 8px; }
+.graph-overview-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+}
+.graph-overview-count {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 400;
+}
+.graph-overview-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-content: flex-start;
+}
+.graph-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px 3px 7px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  background: var(--surface);
+  color: var(--text);
+  transition: filter 0.12s ease, transform 0.12s ease, box-shadow 0.12s ease;
+  user-select: none;
+  font-family: inherit;
+}
+.graph-pill:hover { filter: brightness(1.08); transform: translateY(-1px); }
+.graph-pill.active {
+  box-shadow: 0 0 0 2px var(--accent-bg-strong), 0 1px 3px rgba(0,0,0,.18);
+  filter: brightness(1.05);
+}
+.graph-pill-name {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.graph-pill-count {
+  font-size: 11px;
+  opacity: 0.85;
+  font-weight: 500;
+}
+.graph-pill--rel { background: var(--surface-subtle); }
 
 .graph-empty-state {
   position: absolute;
@@ -8609,6 +8696,9 @@ html[data-conversation-outline="enabled"] #outlineToggleBtn:not([hidden]){displa
   z-index: 5;
   overflow: auto;
 }
+/* Critical: .graph-empty-state has higher specificity than the user-agent
+   [hidden] { display: none } rule, so we must explicitly win it back. */
+.graph-empty-state[hidden] { display: none !important; }
 .graph-empty-icon { font-size: 48px; margin-bottom: 12px; flex-shrink: 0; }
 .graph-empty-state h3 {
   margin: 0 0 8px;
@@ -8633,12 +8723,14 @@ html[data-conversation-outline="enabled"] #outlineToggleBtn:not([hidden]){displa
 
 .graph-floating-toolbar {
   position: absolute;
-  top: 12px;
-  right: 12px;
+  /* 移到左下角避开右侧 Results overview；top/right 由下方 .graph-floating-toolbar 块覆盖 */
   display: flex;
   flex-direction: column;
   gap: 4px;
   z-index: 4;
+  left: 12px;
+  top: auto;
+  bottom: 12px;
 }
 .graph-fab {
   width: 32px;
@@ -8821,4 +8913,34 @@ html[data-conversation-outline="enabled"] #outlineToggleBtn:not([hidden]){displa
 .btn-primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
 .btn-secondary { background: var(--surface); color: var(--text); }
 .btn-link { background: none; border: 0; color: var(--accent); cursor: pointer; }
+
+/* ── Graph Panel: fullscreen below topbar ───────────────────────────
+   When the Graph tab is active, the panel currently lives inside the
+   fixed-width sidebar (300px). To make the graph view fill the area
+   below the topbar, we toggle body.graph-fullscreen via graph_main.js.
+   The sidebar expands, main + rightpanel are hidden, and the panel
+   itself detaches as a fixed-position layer so the cytoscape canvas
+   gets the full viewport width without changing DOM order. */
+body.graph-fullscreen main.main,
+body.graph-fullscreen aside.rightpanel {
+  display: none !important;
+}
+body.graph-fullscreen .layout > aside.sidebar {
+  width: auto !important;
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  border-right: none !important;
+}
+body.graph-fullscreen .layout > aside.sidebar .resize-handle {
+  display: none !important;
+}
+body.graph-fullscreen #panelGraph.active {
+  /* 不再用 position: fixed，让 rail 保留可见。
+     sidebar 已经通过 flex: 1 1 auto 扩展到全宽，panel 继承高度。 */
+  margin: 0;
+  z-index: 5;
+  border-right: none;
+}
+/* Mobile (<=768px): rail 隐藏，sidebar 本身就是 100vw，无需特殊处理 */
+body.graph-fullscreen #panelGraph.active { margin-left: 0; }
 

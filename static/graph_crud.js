@@ -77,7 +77,14 @@
   async function openEditNode(nodeId) {
     const res = await fetch("/api/graph/node/" + encodeURIComponent(nodeId));
     const json = await res.json();
-    if (!json.ok) { alert("Load failed"); return; }
+    if (!json.ok) {
+      // 用状态栏而不是 alert，避免阻塞 UI 和破坏使用体验
+      if (window.GraphMain) {
+        window.GraphMain.setStatus(
+          "Load node failed: " + (json.error || res.statusText || "unknown"), "error");
+      }
+      return;
+    }
     const n = json.data;
     const propsText = Object.entries(n.properties || {})
       .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`).join("\n");

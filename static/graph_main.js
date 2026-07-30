@@ -76,12 +76,33 @@
 
     // 兼容性：保留 panel:show 事件监听（其他代码可能派发）
     panel.addEventListener("panel:show", onPanelShow);
+
+    // 同步 body.graph-fullscreen 状态：让 graph 面板在 active 时铺满 topbar 以下区域。
+    // 监听 class 与 hidden 属性变化，确保切回其他面板时立刻收起。
+    const layoutObserver = new MutationObserver(() => syncFullscreenState());
+    layoutObserver.observe(panel, { attributes: true, attributeFilter: ["class", "hidden"] });
+    syncFullscreenState();
+  }
+
+  function syncFullscreenState() {
+    if (!panel) return;
+    // 切到 graph 标签时 switchPanel 只给 panelGraph 加 .active 类，不会移除
+    // 初始的 hidden 属性。.panel-view.active 选择器特异性高于 [hidden]，所以
+    // active 后 panel 仍然可见，因此这里以 .active 类作为唯一判定条件。
+    const isActive = panel.classList.contains("active");
+    document.body.classList.toggle("graph-fullscreen", isActive);
   }
 
   async function onPanelShow() {
     if (!panel.classList.contains("active")) return;
     await checkHealth();
     await loadSchema();
+    // 面板尺寸可能在进入 fullscreen 模式（或切回普通布局）时发生变化，
+    // 主动通知 graph 视图重新计算 cytoscape 画布尺寸，避免初次切到 graph
+    // 标签时画布停留在 0×0。
+    if (window.GraphViewGraph && typeof window.GraphViewGraph.onShow === "function") {
+      window.GraphViewGraph.onShow();
+    }
   }
 
   async function checkHealth() {
@@ -125,8 +146,11 @@
   function checkEmptyState() {
     const emptyEl = $("graphEmptyState");
     if (!emptyEl) return;
+    // schema 还没加载完时（null）默认隐藏空状态，避免加载早期闪现
+    const count = state.schema?.stats?.node_count;
     const isEmpty = state.backend === "mock" &&
-                    state.schema?.stats?.node_count === 0;
+                    typeof count === "number" &&
+                    count === 0;
     emptyEl.hidden = !isEmpty;
   }
 

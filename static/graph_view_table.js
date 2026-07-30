@@ -7,32 +7,53 @@
   let currentSubtab = "nodes";
   let allNodes = [];
   let allRels = [];
+  let loadNodesAbort = null;
+  let loadNodesPromise = null;
+
+  async function fetchWithTimeout(url, opts = {}, timeoutMs = 30000) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...opts, signal: ctrl.signal });
+    } finally {
+      clearTimeout(t);
+    }
+  }
 
   async function onShow(schema) {
     if (!schema) return;
-    await Promise.all([loadNodes(schema), loadRels()]);
+    // 复用 in-flight promise 防止重复加载
+    if (loadNodesPromise) return loadNodesPromise;
+    loadNodesPromise = (async () => {
+      loadNodesAbort = new AbortController();
+      const signal = loadNodesAbort.signal;
+      try {
+        await Promise.all([loadNodes(schema, signal), loadRels(signal)]);
+      } finally {
+        loadNodesPromise = null;
+        loadNodesAbort = null;
+      }
+    })();
+    return loadNodesPromise;
   }
 
-  async function loadNodes(schema) {
+  async function loadNodes(schema, signal) {
     try {
-      let collected = [];
-      if (schema && schema.node_labels && schema.node_labels.length > 0) {
-        for (const label of schema.node_labels) {
-          const res = await fetch("/api/graph/nodes?label=" + encodeURIComponent(label) + "&limit=200");
-          const json = await res.json();
-          if (json.ok && json.data) collected = collected.concat(json.data.results || []);
-        }
-      }
-      allNodes = collected;
+      // 单次全量拉所有节点（不再按 label 发送 N 次 Neo4j round-trip）
+      const res = await fetchWithTimeout(
+        "/api/graph/nodes?limit=500", { signal }, 30000);
+      const json = await res.json();
+      allNodes = (json.ok && json.data) ? (json.data.results || []) : [];
       renderNodesTable();
     } catch (e) {
       console.error("loadNodes failed", e);
     }
   }
 
-  async function loadRels() {
+  async function loadRels(signal) {
     try {
-      const res = await fetch("/api/graph/relationships?limit=500");
+      const res = await fetchWithTimeout(
+        "/api/graph/relationships?limit=500", { signal }, 30000);
       const json = await res.json();
       allRels = (json.ok && json.data) ? (json.data.results || []) : [];
       renderRelsTable();
@@ -48,9 +69,9 @@
         <td>${escHtml((n.labels || []).join(", "))}</td>
         <td>${escHtml((n.properties && (n.properties.name || n.properties.title)) || "")}</td>
         <td class="graph-td-actions">
-          <button class="graph-row-btn" data-action="locate">Locate</button>
-          <button class="graph-row-btn" data-action="edit">Edit</button>
-          <button class="graph-row-btn danger" data-action="delete">Delete</button>
+          <button class="graph-row-btn" data-action="locate">${escHtml(t('graph_btn_locate'))}</button>
+          <button class="graph-row-btn" data-action="edit">${escHtml(t('graph_btn_edit'))}</button>
+          <button class="graph-row-btn danger" data-action="delete">${escHtml(t('graph_btn_delete'))}</button>
         </td>
       </tr>
     `).join("");
@@ -76,7 +97,7 @@
         <td>${escHtml((r.start_node_id || "").slice(0, 12))}…</td>
         <td>${escHtml((r.end_node_id || "").slice(0, 12))}…</td>
         <td class="graph-td-actions">
-          <button class="graph-row-btn danger" data-action="delete">Delete</button>
+          <button class="graph-row-btn danger" data-action="delete">${escHtml(t('graph_btn_delete'))}</button>
         </td>
       </tr>
     `).join("");
@@ -84,7 +105,7 @@
       btn.addEventListener("click", e => {
         const tr = e.target.closest("tr");
         const id = tr.dataset.id;
-        if (confirm(`Delete relationship ${id.slice(0, 12)}…?`)) {
+        if (confirm(t('graph_table_delete_confirm', id.slice(0, 12)))) {
           fetch("/api/graph/relationship/" + encodeURIComponent(id), { method: "DELETE" })
             .then(r => r.json())
             .then(j => {

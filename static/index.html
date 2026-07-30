@@ -330,13 +330,13 @@
         <span data-i18n="tab_graph">Graph</span>
         <div class="panel-head-actions">
           <span class="graph-backend-badge" id="graphBackendBadge" hidden></span>
-          <button class="panel-head-btn has-tooltip" id="graphSeedBtn" data-tooltip="Load sample data" aria-label="Load sample data" type="button">
+          <button class="panel-head-btn has-tooltip" id="graphSeedBtn" data-i18n-tooltip="graph_load_sample" data-tooltip="Load sample data" aria-label="Load sample data" type="button">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
           </button>
-          <button class="panel-head-btn has-tooltip" id="graphRefreshBtn" data-tooltip="Refresh" aria-label="Refresh" type="button">
+          <button class="panel-head-btn has-tooltip" id="graphRefreshBtn" data-i18n-tooltip="graph_refresh" data-tooltip="Refresh" aria-label="Refresh" type="button">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
           </button>
-          <button class="panel-head-btn has-tooltip" id="graphCloseBtn" data-tooltip="Close" aria-label="Close" type="button">
+          <button class="panel-head-btn has-tooltip" id="graphCloseBtn" data-i18n-tooltip="graph_close" data-tooltip="Close" aria-label="Close" type="button">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
@@ -363,48 +363,76 @@
       </div>
 
       <div class="graph-body">
-        <div class="graph-view graph-view-graph active" data-view="graph">
-          <div class="graph-canvas" id="graphCanvas"></div>
-          <div class="graph-empty-state" id="graphEmptyState" hidden>
-            <div class="graph-empty-icon">📊</div>
-            <h3 data-i18n="graph_empty_title">Graph is empty</h3>
-            <p data-i18n="graph_empty_desc">Backend is Mock mode with no data. Load a sample operations graph (Host / Service / Incident / Runbook) to get started.</p>
-            <div class="graph-empty-actions">
-              <button class="btn btn-primary" id="graphEmptySeedBtn" data-i18n="graph_load_sample">Load sample data</button>
-              <button class="btn btn-secondary" id="graphEmptyCreateBtn" data-i18n="graph_create_first">Create first node</button>
+        <div class="graph-body-views">
+          <div class="graph-view graph-view-graph active" data-view="graph">
+            <div class="graph-canvas" id="graphCanvas"></div>
+            <div class="graph-empty-state" id="graphEmptyState" hidden>
+              <div class="graph-empty-icon">📊</div>
+              <h3 data-i18n="graph_empty_title">Graph is empty</h3>
+              <p data-i18n="graph_empty_desc">Backend is Mock mode with no data. Load a sample operations graph (Host / Service / Incident / Runbook) to get started.</p>
+              <div class="graph-empty-actions">
+                <button class="btn btn-primary" id="graphEmptySeedBtn" data-i18n="graph_load_sample">Load sample data</button>
+                <button class="btn btn-secondary" id="graphEmptyCreateBtn" data-i18n="graph_create_first">Create first node</button>
+              </div>
+            </div>
+            <div class="graph-floating-toolbar">
+              <button class="graph-fab" data-action="fit" data-i18n-tooltip="graph_fab_fit" data-tooltip="Fit">⤢</button>
+              <button class="graph-fab" data-action="zoom-in" data-i18n-tooltip="graph_fab_zoom_in" data-tooltip="Zoom in">+</button>
+              <button class="graph-fab" data-action="zoom-out" data-i18n-tooltip="graph_fab_zoom_out" data-tooltip="Zoom out">−</button>
+              <button class="graph-fab" data-action="layout" data-i18n-tooltip="graph_fab_layout" data-tooltip="Layout">⊕</button>
+              <button class="graph-fab" data-action="clear-filter" data-i18n-tooltip="graph_fab_clear" data-tooltip="Clear filter" id="graphFabClearFilter" hidden>×</button>
             </div>
           </div>
-          <div class="graph-floating-toolbar">
-            <button class="graph-fab" data-action="fit" data-tooltip="Fit">⤢</button>
-            <button class="graph-fab" data-action="zoom-in" data-tooltip="Zoom in">+</button>
-            <button class="graph-fab" data-action="zoom-out" data-tooltip="Zoom out">−</button>
-            <button class="graph-fab" data-action="layout" data-tooltip="Layout: COSE">⊕</button>
+          <div class="graph-view graph-view-table" data-view="table" hidden>
+            <div class="graph-subtabs">
+              <button class="graph-subtab active" data-table="nodes" data-i18n="graph_table_nodes">Nodes</button>
+              <button class="graph-subtab" data-table="relationships" data-i18n="graph_table_rels">Relationships</button>
+            </div>
+            <div class="graph-table-wrap">
+              <table class="graph-table" id="graphTableNodes">
+                <thead><tr><th data-i18n="graph_table_headers_id">ID</th><th data-i18n="graph_table_headers_labels">Labels</th><th data-i18n="graph_table_headers_name">Name</th><th data-i18n="graph_table_headers_actions">Actions</th></tr></thead>
+                <tbody></tbody>
+              </table>
+              <table class="graph-table" id="graphTableRels" hidden>
+                <thead><tr><th data-i18n="graph_table_headers_id">ID</th><th data-i18n="graph_table_headers_type">Type</th><th data-i18n="graph_table_headers_start">Start</th><th data-i18n="graph_table_headers_end">End</th><th data-i18n="graph_table_headers_actions">Actions</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="graph-view graph-view-json" data-view="json" hidden>
+            <div class="graph-json-tree" id="graphJsonTree"></div>
+            <div class="graph-json-detail" id="graphJsonDetail">
+              <div class="graph-json-empty" data-i18n="graph_select_node_or_rel">Select a node or relationship</div>
+            </div>
           </div>
         </div>
-
-        <div class="graph-view graph-view-table" data-view="table" hidden>
-          <div class="graph-subtabs">
-            <button class="graph-subtab active" data-table="nodes" data-i18n="graph_table_nodes">Nodes</button>
-            <button class="graph-subtab" data-table="relationships" data-i18n="graph_table_rels">Relationships</button>
-          </div>
-          <div class="graph-table-wrap">
-            <table class="graph-table" id="graphTableNodes">
-              <thead><tr><th>ID</th><th>Labels</th><th>Name</th><th>Actions</th></tr></thead>
-              <tbody></tbody>
-            </table>
-            <table class="graph-table" id="graphTableRels" hidden>
-              <thead><tr><th>ID</th><th>Type</th><th>Start</th><th>End</th><th>Actions</th></tr></thead>
-              <tbody></tbody>
-            </table>
-          </div>
-        </div>
-
-        <div class="graph-view graph-view-json" data-view="json" hidden>
-          <div class="graph-json-tree" id="graphJsonTree"></div>
-          <div class="graph-json-detail" id="graphJsonDetail">
-            <div class="graph-json-empty">Select a node or relationship</div>
-          </div>
-        </div>
+        <aside class="graph-results-overview" id="graphResultsOverview">
+          <header class="graph-overview-header" data-i18n="graph_results_overview">Results overview</header>
+          <section class="graph-overview-section">
+            <div class="graph-overview-title" data-i18n="graph_overview_nodes">
+              Nodes
+              <span class="graph-overview-count" id="graphOverviewNodesCount">0</span>
+            </div>
+            <div class="graph-overview-pills" id="graphLabelPills">
+              <button class="graph-pill" data-label="*" type="button">
+                <span class="graph-pill-name">*</span>
+                <span class="graph-pill-count" id="graphOverviewAllNodes">0</span>
+              </button>
+            </div>
+          </section>
+          <section class="graph-overview-section">
+            <div class="graph-overview-title" data-i18n="graph_overview_rels">
+              Relationships
+              <span class="graph-overview-count" id="graphOverviewRelsCount">0</span>
+            </div>
+            <div class="graph-overview-pills" id="graphRelPills">
+              <button class="graph-pill graph-pill--rel" data-rel="*" type="button">
+                <span class="graph-pill-name">*</span>
+                <span class="graph-pill-count" id="graphOverviewAllRels">0</span>
+              </button>
+            </div>
+          </section>
+        </aside>
       </div>
 
       <div class="graph-status">
