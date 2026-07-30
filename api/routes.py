@@ -12123,9 +12123,15 @@ def handle_get(handler, parsed) -> bool:
 
     # ── Graph Management routes ─────────────────────────────────────────────────
     if parsed.path.startswith("/api/graph"):
-        from api.graph import handle_graph_get
-
-        result = handle_graph_get(handler, parsed)
+        import time as _gt
+        _gt0 = _gt.time()
+        from api.graph import handle_graph_http_get
+        _gt1 = _gt.time()
+        result = handle_graph_http_get(handler, parsed)
+        _gt2 = _gt.time()
+        import logging as _gl
+        _gl.warning("[graph-route] import=%.0fms handle=%.0fms total=%.0fms",
+                     (_gt1-_gt0)*1000, (_gt2-_gt1)*1000, (_gt2-_gt0)*1000)
         if result is False:
             return bad(handler, f"unknown graph endpoint: GET {parsed.path}", status=404)
         return True
@@ -14388,9 +14394,9 @@ def handle_post(handler, parsed) -> bool:
             return _kanban_unknown_endpoint(handler, parsed, "POST")
         return True
     if parsed.path.startswith("/api/graph"):
-        from api.graph import handle_graph_post
+        from api.graph import handle_graph_http_post
 
-        result = handle_graph_post(handler, parsed)
+        result = handle_graph_http_post(handler, parsed)
         if result is False:
             return bad(handler, f"unknown graph endpoint: POST {parsed.path}", status=404)
         return True
@@ -16751,6 +16757,13 @@ def handle_patch(handler, parsed) -> bool:
         if result is False:
             return _kanban_unknown_endpoint(handler, parsed, "PATCH")
         return True
+    if parsed.path.startswith("/api/graph"):
+        from api.graph import handle_graph_http_patch
+
+        result = handle_graph_http_patch(handler, parsed)
+        if result is False:
+            return bad(handler, f"unknown graph endpoint: PATCH {parsed.path}", status=404)
+        return True
     return False
 
 
@@ -16792,9 +16805,9 @@ def handle_delete(handler, parsed) -> bool:
             return _kanban_unknown_endpoint(handler, parsed, "DELETE")
         return True
     if parsed.path.startswith("/api/graph"):
-        from api.graph import handle_graph_delete
+        from api.graph import handle_graph_http_delete
 
-        result = handle_graph_delete(handler, parsed)
+        result = handle_graph_http_delete(handler, parsed)
         if result is False:
             return bad(handler, f"unknown graph endpoint: DELETE {parsed.path}", status=404)
         return True

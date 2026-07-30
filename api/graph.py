@@ -1,654 +1,366 @@
+"""图库路由层（瘦壳）。
+
+所有业务逻辑在 graph_store / graph_neo4j / graph_mock。本模块只做：
+  1. 启动时选 backend（Neo4j 优先，失败降级 Mock）
+  2. 解析 HTTP 请求路径 / 参数
+  3. 分发到 store 实例
+  4. 统一返回 {ok, data} 或 {ok: False, error} 包装层
 """
-Hermes WebUI — Neo4j graph proxy.
-Provides REST endpoints for the Graph panel: schema discovery, node/relationship
-CRUD, topology, and search.
-"""
+from __future__ import annotations
+import datetime
+import json
 import logging
 import os
-import re
-import threading
 from typing import Any
-
-from api.helpers import j, bad
 
 logger = logging.getLogger(__name__)
 
-# ── Neo4j connection ──────────────────────────────────────────────────────────
 
-_driver = None
-_driver_lock = threading.Lock()
-
-# Cypher identifier pattern: must start with letter/underscore, then word chars
-_CYPHER_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
-
-def _validate_identifier(value: str, kind: str) -> str:
-    """Validate that a string is a safe Cypher identifier (label or rel type).
-
-    Returns the value unchanged on success. Raises ``ValueError`` on invalid input.
-    """
-    if not value or not _CYPHER_IDENT_RE.match(value):
-        raise ValueError(f"Invalid {kind}: {value!r}")
-    return value
-
-
-def _get_neo4j_config() -> dict:
-    """Read Neo4j connection config from environment variables."""
-    return {
-        "uri": os.environ.get("NEO4J_URI", "bolt://localhost:7687"),
-        "user": os.environ.get("NEO4J_USER", "neo4j"),
-        "password": os.environ.get("NEO4J_PASSWORD") or "",
-    }
-
-
-def get_driver():
-    """Lazily create and return a Neo4j Driver singleton (thread-safe).
-
-    On first creation, runs ``RETURN 1`` to verify connectivity.
-    Raises ``RuntimeError`` if the verification query fails.
-    """
-    global _driver
-    if _driver is not None:
-        return _driver
-    with _driver_lock:
-        if _driver is not None:
-            return _driver
-        cfg = _get_neo4j_config()
-        if not cfg["password"]:
-            raise ConnectionError("NEO4J_PASSWORD is not set")
+class _GraphEncoder(json.JSONEncoder):
+    """处理 Neo4j 节点里的 datetime / date / time 等非 JSON 原生类型。"""
+    def default(self, obj):
+        if isinstance(obj, (datetime.datetime, datetime.date, datetime.time)):
+            return obj.isoformat()
         try:
-            from neo4j import GraphDatabase
+            import neo4j.time
+            if isinstance(obj, (neo4j.time.DateTime, neo4j.time.Date,
+                                neo4j.time.Time, neo4j.time.Duration)):
+                return obj.isoformat()
         except ImportError:
-            raise ConnectionError(
-                "neo4j driver not installed. Run: pip install neo4j>=5.0"
-            )
-        _driver = GraphDatabase.driver(
-            cfg["uri"],
-            auth=(cfg["user"], cfg["password"]),
-        )
-        # Verify connectivity on first creation
+            pass
+        return super().default(obj)
+
+_store: Any = None
+_store_tried = False
+
+
+def _wrap(payload: Any) -> dict:
+    """统一包装层：{ok, data}。若 handler 已返回包装格式则透传。"""
+    if (
+        isinstance(payload, dict)
+        and "ok" in payload
+        and ("data" in payload or "error" in payload)
+    ):
+        return payload
+    return {"ok": True, "data": payload}
+
+
+def _err(msg: str, status: int = 400) -> tuple[int, dict]:
+    return status, {"ok": False, "error": msg}
+
+
+def get_store():
+    """单例懒加载。优先 Neo4j，失败降级 Mock。"""
+    global _store, _store_tried
+    if _store is not None:
+        return _store
+    if _store_tried and _store is None:
+        return None
+    _store_tried = True
+    try:
+        from api.graph_neo4j import Neo4jStore
+        s = Neo4jStore()
+        h = s.health()
+        if h.get("ok"):
+            logger.info("Graph store: Neo4j (%s)", h.get("detail"))
+            _store = s
+            return _store
+        else:
+            logger.warning("Neo4j not usable (%s), falling back to Mock", h.get("detail"))
+    except Exception as e:
+        logger.warning("Neo4j import/init failed (%s), falling back to Mock", e)
+    from api.graph_mock import MockStore
+    db_path = os.environ.get("GRAPH_MOCK_DB", "data/graph.sqlite")
+    _store = MockStore(db_path=db_path)
+    h = _store.health()
+    logger.warning(
+        "Graph store: MOCK (%s) — set NEO4J_PASSWORD to enable Neo4j backend",
+        h.get("detail"),
+    )
+    return _store
+
+
+# ── HTTP handlers ────────────────────────────────────────────────────────────
+
+
+def _read_body(handler) -> dict:
+    """从 BaseHTTPRequestHandler 读 JSON body。无 body 返回 {}。"""
+    try:
+        length = int(handler.headers.get("Content-Length", 0) or 0)
+    except (TypeError, ValueError):
+        length = 0
+    if length <= 0:
+        return {}
+    try:
+        import json
+        raw = handler.rfile.read(length).decode("utf-8") if hasattr(handler, "rfile") else ""
+        return json.loads(raw) if raw else {}
+    except Exception:
+        return {}
+
+
+def _dispatch_response(handler, status: int, payload: dict) -> bool:
+    """统一写响应。返回 True 让 routes.py 继续。"""
+    import time as _dt
+    _d0 = _dt.time()
+    try:
+        # 先序列化 body 拿到长度，再设 Content-Length 头。
+        # 缺 Content-Length 时 HTTP/1.1 keep-alive 下 curl 不知道
+        # 响应已结束，会在 socket 上 等几十秒直到超时。
+        body = json.dumps(payload, ensure_ascii=False, cls=_GraphEncoder).encode("utf-8")
+        _d1 = _dt.time()
+        handler.send_response(status)
+        handler.send_header("Content-Type", "application/json; charset=utf-8")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
+        _d2 = _dt.time()
+        handler.wfile.write(body)
+        _d3 = _dt.time()
+        logging.getLogger(__name__).warning(
+            "[graph-dispatch] json=%.0fms headers=%.0fms write=%.0fms size=%d",
+            (_d1-_d0)*1000, (_d2-_d1)*1000, (_d3-_d2)*1000, len(body))
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "[graph-dispatch] write failed: %s", exc)
+        # 能发错误响应的尽量发，不要沉默（否则 curl 空等到超时）
         try:
-            with _driver.session() as session:
-                session.run("RETURN 1").single()
-        except Exception as exc:
-            _driver.close()
-            _driver = None
-            raise RuntimeError(f"Neo4j connectivity check failed: {exc}")
-        return _driver
-
-
-def close_driver():
-    """Close the driver singleton. Call on server shutdown."""
-    global _driver
-    with _driver_lock:
-        if _driver is not None:
-            _driver.close()
-            _driver = None
-
-
-def _run_query(cypher: str, params: dict | None = None) -> list[dict]:
-    """Execute a read Cypher query and return a list of result dicts.
-
-    Raises ``RuntimeError`` with a structured message on Neo4j errors.
-    """
-    try:
-        driver = get_driver()
-    except Exception as exc:
-        raise RuntimeError(f"Neo4j driver unavailable: {exc}") from exc
-    try:
-        with driver.session() as session:
-            result = session.run(cypher, params or {})
-            return [dict(record) for record in result]
-    except Exception as exc:
-        logger.warning("Cypher query failed: %s | query=%s", exc, cypher)
-        raise RuntimeError(f"Neo4j query failed: {exc}") from exc
-
-
-def _run_write(cypher: str, params: dict | None = None) -> Any:
-    """Execute a write Cypher query and return the first record, or ``None``.
-
-    Raises ``RuntimeError`` with a structured message on Neo4j errors.
-    """
-    try:
-        driver = get_driver()
-    except Exception as exc:
-        raise RuntimeError(f"Neo4j driver unavailable: {exc}") from exc
-    try:
-        with driver.session() as session:
-            return session.run(cypher, params or {}).single()
-    except Exception as exc:
-        logger.warning("Cypher write failed: %s | query=%s", exc, cypher)
-        raise RuntimeError(f"Neo4j write failed: {exc}") from exc
-
-
-# ── Schema discovery ─────────────────────────────────────────────────────────
-
-def get_schema() -> dict:
-    """Return all node labels, relationship types, and property keys.
-
-    Raises ``ConnectionError`` if the driver cannot be initialized.
-    """
-    driver = get_driver()
-    with driver.session() as session:
-        # All node labels
-        labels_result = session.run("CALL db.labels() YIELD label RETURN label")
-        node_labels = sorted(set(r["label"] for r in labels_result))
-
-        # All relationship types
-        rels_result = session.run(
-            "CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType"
-        )
-        rel_types = sorted(set(r["relationshipType"] for r in rels_result))
-
-        # All property keys
-        props_result = session.run(
-            "CALL db.propertyKeys() YIELD propertyKey RETURN propertyKey"
-        )
-        property_keys = sorted(set(r["propertyKey"] for r in props_result))
-
-    return {
-        "node_labels": node_labels,
-        "relationship_types": rel_types,
-        "property_keys": property_keys,
-    }
-
-
-# ── Node helpers ──────────────────────────────────────────────────────────────
-
-def _node_to_dict(node: Any) -> dict:
-    """Convert a Neo4j Node to a plain dict."""
-    props = dict(node)
-    # Prefer a "name" or "title" property as display name, else first prop key
-    name = props.get("name") or props.get("title") or props.get("id", "")
-    return {
-        "id": node.element_id,
-        "labels": list(node.labels),
-        "name": str(name),
-        "properties": props,
-        "created_at": props.get("created_at"),
-    }
-
-
-def list_nodes(label: str, limit: int = 100) -> list[dict]:
-    """List nodes of a given label, returning a list of ``{'id', 'properties'}``."""
-    if label:
-        _validate_identifier(label, "label")
-    driver = get_driver()
-    label_cypher = f":`{label}`" if label else ""
-    cypher = (
-        f"MATCH (n {label_cypher}) "
-        f"RETURN n LIMIT $limit"
-    )
-    with driver.session() as session:
-        nodes = [_node_to_dict(r["n"]) for r in session.run(cypher, {"limit": limit})]
-    # Normalize to {"id": ..., "properties": ...} per spec
-    return [{"id": n["id"], "properties": n["properties"]} for n in nodes]
-
-
-def get_node(element_id: str) -> dict | None:
-    """Return a single node by its element_id, including its labels list."""
-    cypher = "MATCH (n) WHERE elementId(n) = $element_id RETURN n"
-    with get_driver().session() as session:
-        result = session.run(cypher, {"element_id": element_id})
-        record = result.single()
-        if not record:
-            return None
-        node = record["n"]
-        return {
-            "id": node.element_id,
-            "labels": list(node.labels),
-            "properties": dict(node),
-        }
-
-
-def create_node(label: str, properties: dict) -> dict:
-    """Create a node with a single label and the given properties."""
-    if label:
-        _validate_identifier(label, "label")
-    label_str = f":`{label}`" if label else ""
-    props_keys = list(properties.keys())
-    params = {"props": properties}
-    set_clause = ", ".join(f"n.`{k}` = $props.`{k}`" for k in props_keys)
-    cypher = (
-        f"CREATE (n {label_str} {{}}) "
-        f"SET {set_clause} "
-        "RETURN elementId(n) AS id, n"
-    )
-    with get_driver().session() as session:
-        result = session.run(cypher, params)
-        record = result.single()
-        node_id = record["id"]
-    return get_node(node_id)
-
-
-def update_node(element_id: str, properties: dict) -> dict | None:
-    """Update a node's properties."""
-    props_keys = list(properties.keys())
-    params = {"element_id": element_id, "props": properties}
-    set_clause = ", ".join(f"n.`{k}` = $props.`{k}`" for k in props_keys)
-    cypher = (
-        f"MATCH (n) WHERE elementId(n) = $element_id "
-        f"SET {set_clause} "
-        "RETURN elementId(n) AS id"
-    )
-    with get_driver().session() as session:
-        result = session.run(cypher, params)
-        if result.single() is None:
-            return None
-    return get_node(element_id)
-
-
-def delete_node(element_id: str) -> bool:
-    """Delete a node and all its relationships."""
-    cypher = (
-        "MATCH (n) WHERE elementId(n) = $element_id "
-        "DETACH DELETE n "
-        "RETURN count(n) AS deleted"
-    )
-    with get_driver().session() as session:
-        deleted = session.run(cypher, {"element_id": element_id}).single()["deleted"]
-    return deleted > 0
-
-
-def expand_node(element_id: str, depth: int = 1, direction: str = "both",
-               rel_types: list[str] | None = None, limit: int = 100) -> dict:
-    """Return the center node plus its neighbors and relationships within depth."""
-    if rel_types:
-        for rt in rel_types:
-            _validate_identifier(rt, "relationship_type")
-    driver = get_driver()
-    if direction == "both":
-        dir_pattern = "-[r]-"
-    elif direction == "in":
-        dir_pattern = "<-[r]-"
-    else:
-        dir_pattern = "-[r]->"
-
-    rel_clause = ""
-    if rel_types:
-        rel_patterns = "|".join(f":`{rt}`" for rt in rel_types)
-        rel_clause = f"AND type(r) IN [{rel_patterns}]"
-
-    cypher = (
-        f"MATCH path = (center) WHERE elementId(center) = $element_id "
-        f"CALL {{ "
-        f"  WITH center "
-        f"  MATCH path = (center){dir_pattern}*1..$depth(neighbor) "
-        f"  WHERE true {rel_clause} "
-        f"  RETURN path LIMIT $limit "
-        f"}} "
-        f"RETURN center, nodes(path) AS nodes, rels(path) AS rels"
-    )
-
-    with driver.session() as session:
-        result = session.run(
-            cypher,
-            {"element_id": element_id, "depth": depth, "limit": limit},
-        )
-        records = list(result)
-
-    if not records:
-        center = get_node(element_id)
-        return {"center": center, "nodes": [], "relationships": []}
-
-    rec = records[0]
-    center_node = _node_to_dict(rec["center"]) if rec["center"] else get_node(element_id)
-    all_nodes = {_node_to_dict(n)["id"]: _node_to_dict(n) for n in rec["nodes"]}
-    relationships = []
-    for rel in rec["rels"]:
-        rp = dict(rel)
-        relationships.append({
-            "id": rel.element_id,
-            "type": rel.type,
-            "start_node_id": rel.start_node.element_id,
-            "end_node_id": rel.end_node.element_id,
-            "properties": rp,
-        })
-
-    return {
-        "center": center_node,
-        "nodes": list(all_nodes.values()),
-        "relationships": relationships,
-    }
-
-
-# ── Relationship helpers ──────────────────────────────────────────────────────
-
-def _rel_to_dict(rel: Any, start_name: str = "", end_name: str = "") -> dict:
-    """Convert a Neo4j Relationship to a plain dict."""
-    return {
-        "id": rel.element_id,
-        "type": rel.type,
-        "start_node_id": rel.start_node.element_id,
-        "end_node_id": rel.end_node.element_id,
-        "start_node_name": start_name,
-        "end_node_name": end_name,
-        "properties": dict(rel),
-    }
-
-
-def list_relationships(element_id: str, direction: str = "both") -> list[dict]:
-    """List relationships for a given node element_id, paginated by the node.
-
-    ``direction`` is one of ``'both'``, ``'in'``, ``'out'``.
-    """
-    driver = get_driver()
-    if direction == "out":
-        dir_pattern = "-[r]->"
-    elif direction == "in":
-        dir_pattern = "<-[r]-"
-    else:
-        dir_pattern = "-[r]-"
-
-    cypher = (
-        f"MATCH (n) WHERE elementId(n) = $element_id "
-        f"MATCH (n){dir_pattern}(m) "
-        f"RETURN r, elementId(n) AS sid, n.name AS sname, "
-        f"elementId(m) AS eid, m.name AS ename, "
-        f"elementId(startNode(r)) AS start_id, "
-        f"elementId(endNode(r)) AS end_id"
-    )
-
-    with driver.session() as session:
-        rels = []
-        for rec in session.run(cypher, {"element_id": element_id}):
-            rels.append(_rel_to_dict(
-                rec["r"],
-                start_name=rec["sname"] or "",
-                end_name=rec["ename"] or "",
-            ))
-
-    return rels
-
-
-def create_relationship(start_node_id: str, end_node_id: str, rel_type: str,
-                        properties: dict) -> dict | None:
-    """Create a relationship between two nodes."""
-    _validate_identifier(rel_type, "relationship_type")
-    params = {
-        "rel_type": rel_type,
-        "start_node_id": start_node_id,
-        "end_node_id": end_node_id,
-        "props": properties,
-    }
-    props_set = ", ".join(f"r.`{k}` = $props.`{k}`" for k in properties.keys())
-    cypher = (
-        "MATCH (s) WHERE elementId(s) = $start_node_id "
-        "MATCH (e) WHERE elementId(e) = $end_node_id "
-        f"CREATE (s)-[r:`{rel_type}`]->(e) "
-        f"SET {props_set} "
-        "RETURN elementId(r) AS id, s.name AS sname, e.name AS ename, r"
-    )
-    with get_driver().session() as session:
-        result = session.run(cypher, params)
-        rec = result.single()
-        if rec is None:
-            return None
-        return _rel_to_dict(
-            rec["r"],
-            start_name=rec["sname"] or "",
-            end_name=rec["ename"] or "",
-        )
-
-
-def update_relationship(element_id: str, properties: dict) -> dict | None:
-    """Update a relationship's properties."""
-    params = {"element_id": element_id, "props": properties}
-    props_set = ", ".join(f"r.`{k}` = $props.`{k}`" for k in properties.keys())
-    cypher = (
-        "MATCH ()-[r]->() WHERE elementId(r) = $element_id "
-        f"SET {props_set} "
-        "RETURN elementId(r) AS id"
-    )
-    with get_driver().session() as session:
-        result = session.run(cypher, params)
-        if result.single() is None:
-            return None
-    # Fetch full rel
-    cypher2 = (
-        "MATCH (s)-[r]->(e) WHERE elementId(r) = $element_id "
-        "RETURN r, s.name AS sname, e.name AS ename"
-    )
-    with get_driver().session() as session:
-        rec = session.run(cypher2, {"element_id": element_id}).single()
-        if rec is None:
-            return None
-        return _rel_to_dict(rec["r"], rec["sname"] or "", rec["ename"] or "")
-
-
-def delete_relationship(element_id: str) -> bool:
-    """Delete a relationship by its element_id."""
-    cypher = (
-        "MATCH ()-[r]->() WHERE elementId(r) = $element_id "
-        "DELETE r "
-        "RETURN count(r) AS deleted"
-    )
-    with get_driver().session() as session:
-        deleted = session.run(cypher, {"element_id": element_id}).single()["deleted"]
-    return deleted > 0
-
-
-def get_relationship(element_id: str) -> dict | None:
-    """Return a single relationship by its element_id."""
-    cypher = (
-        "MATCH (s)-[r]->(e) WHERE elementId(r) = $element_id "
-        "RETURN r, s.name AS sname, e.name AS ename"
-    )
-    with get_driver().session() as session:
-        rec = session.run(cypher, {"element_id": element_id}).single()
-        if rec is None:
-            return None
-        return _rel_to_dict(rec["r"], rec["sname"] or "", rec["ename"] or "")
-
-
-# ── Search and topology ──────────────────────────────────────────────────────
-
-def search_graph(query: str, label: str | None = None, limit: int = 50) -> dict:
-    """Search nodes by keyword across name and all property values."""
-    driver = get_driver()
-    params: dict[str, Any] = {"query": query, "limit": limit}
-
-    if label:
-        _validate_identifier(label, "label")
-        params["label"] = label
-        cypher = (
-            "MATCH (n) "
-            "WHERE any(k IN keys(n) WHERE toString(n[k]) CONTAINS $query) "
-            "AND $label IN labels(n) "
-            "RETURN n LIMIT $limit"
-        )
-    else:
-        cypher = (
-            "MATCH (n) "
-            "WHERE any(k IN keys(n) WHERE toString(n[k]) CONTAINS $query) "
-            "RETURN n LIMIT $limit"
-        )
-
-    with driver.session() as session:
-        nodes = [_node_to_dict(r["n"]) for r in session.run(cypher, params)]
-
-    return {"results": nodes, "query": query, "count": len(nodes)}
-
-
-def get_topology(element_id: str, depth: int = 1) -> dict:
-    """Return a subgraph centered on the given node element_id, within depth."""
-    driver = get_driver()
-    cypher = (
-        "MATCH path = (center)-[r*1..$depth]-(leaf) "
-        "WHERE elementId(center) = $element_id "
-        "WITH nodes(path) AS ns, rels(path) AS rs "
-        "UNWIND ns AS n WITH collect(DISTINCT n) AS uniq, rs "
-        "UNWIND rs AS r "
-        "RETURN uniq AS nodes, collect(DISTINCT r) AS rels"
-    )
-    params = {"element_id": element_id, "depth": depth}
-
-    try:
-        with driver.session() as session:
-            result = session.run(cypher, params)
-            rec = result.single()
-            if not rec:
-                return {"nodes": [], "relationships": []}
-
-            nodes = [_node_to_dict(n) for n in rec["nodes"]]
-            relationships = []
-            for rel in rec["rels"]:
-                if rel is None:
-                    continue
-                relationships.append({
-                    "id": rel.element_id,
-                    "type": rel.type,
-                    "start_node_id": rel.start_node.element_id,
-                    "end_node_id": rel.end_node.element_id,
-                    "properties": dict(rel),
-                })
-            return {"nodes": nodes, "relationships": relationships}
-    except Exception as exc:
-        logger.warning("Topology query failed: %s", exc)
-        return {"nodes": [], "relationships": [], "error": str(exc)}
-
-
-# ── HTTP Handlers (called from routes.py) ───────────────────────────────────
-
-def _err(exc: Exception):
-    """Map an internal exception to an (status, payload) tuple."""
-    if isinstance(exc, ValueError):
-        return 400, {"error": str(exc)}
-    if isinstance(exc, (ConnectionError, RuntimeError)):
-        return 503, {"error": str(exc)}
-    return 500, {"error": f"Internal error: {exc}"}
-
-
-def handle_graph_get(method: str, parsed_path: str, query_params: dict) -> tuple:
-    """Route all GET /graph/* requests.
-
-    Returns a ``(status, data)`` tuple.
-    """
+            err_body = json.dumps(
+                {"ok": False, "error": str(exc)}, cls=_GraphEncoder).encode("utf-8")
+            handler.send_response(status)
+            handler.send_header("Content-Type", "application/json; charset=utf-8")
+            handler.send_header("Content-Length", str(len(err_body)))
+            handler.end_headers()
+            handler.wfile.write(err_body)
+        except Exception:
+            pass
+    return True
+
+
+def handle_graph_get(method: str, parsed_path: str, query_params: dict) -> tuple[int, dict]:
     path = parsed_path
+    store = get_store()
+    if store is None:
+        return _err("graph store unavailable", 503)
     try:
+        if path == "/graph/health":
+            return 200, _wrap(store.health())
         if path == "/graph/schema":
-            return 200, get_schema()
-
+            return 200, _wrap(store.schema())
         if path == "/graph/search":
-            query = query_params.get("q", "")
+            q = (query_params.get("q") or "").strip()
+            if not q:
+                return _err("q parameter required", 400)
             label = query_params.get("label") or None
             limit = int(query_params.get("limit", 50))
-            if not query:
-                return 400, {"error": "q parameter is required"}
-            return 200, search_graph(query, label, limit)
-
+            return 200, _wrap(store.search(q, label, limit))
         if path == "/graph/nodes":
-            label = query_params.get("label", "")
-            if not label:
-                return 400, {"error": "label parameter is required"}
-            limit = int(query_params.get("limit", 100))
-            return 200, list_nodes(label, limit)
-
+            label = (query_params.get("label") or "").strip()
+            limit = int(query_params.get("limit", 500))
+            import time as _nt
+            _nt0 = _nt.time()
+            if label:
+                data = store.list_nodes(label, limit)
+            else:
+                data = store.list_all_nodes(limit)
+            _nt1 = _nt.time()
+            payload = _wrap(data)
+            _nt2 = _nt.time()
+            logging.getLogger(__name__).warning(
+                "[graph-nodes] query=%.0fms wrap=%.0fms count=%s",
+                (_nt1-_nt0)*1000, (_nt2-_nt1)*1000,
+                data.get("count", "?"))
+            return 200, payload
         if path.startswith("/graph/node/"):
-            element_id = path.split("/graph/node/")[1]
-            data = get_node(element_id)
-            if data is None:
-                return 404, {"error": f"Node not found: {element_id}"}
-            return 200, data
-
+            eid = path[len("/graph/node/"):]
+            n = store.get_node(eid)
+            if not n:
+                return _err(f"node not found: {eid}", 404)
+            return 200, _wrap(n)
         if path.startswith("/graph/relationship/"):
-            element_id = path.split("/graph/relationship/")[1]
-            data = get_relationship(element_id)
-            if data is None:
-                return 404, {"error": f"Relationship not found: {element_id}"}
-            return 200, data
-
+            eid = path[len("/graph/relationship/"):]
+            r = store.get_relationship(eid)
+            if not r:
+                return _err(f"relationship not found: {eid}", 404)
+            return 200, _wrap(r)
         if path.startswith("/graph/relationships/"):
-            element_id = path.split("/graph/relationships/")[1]
+            eid = path[len("/graph/relationships/"):]
             direction = query_params.get("direction", "both")
-            return 200, list_relationships(element_id, direction)
-
+            return 200, _wrap({"results": store.list_relationships(eid, direction)})
+        if path == "/graph/relationships":
+            limit = int(query_params.get("limit", 500))
+            return 200, _wrap({"results": store.list_all_relationships(limit)})
         if path.startswith("/graph/topology/"):
-            element_id = path.split("/graph/topology/")[1]
+            eid = path[len("/graph/topology/"):]
             depth = int(query_params.get("depth", 1))
-            return 200, get_topology(element_id, depth)
+            return 200, _wrap(store.topology(eid, depth))
+        return _err(f"unknown GET path: {path}", 404)
+    except (ValueError, RuntimeError) as e:
+        status = 400 if isinstance(e, ValueError) else 503
+        return _err(str(e), status)
+    except Exception as e:
+        logger.exception("GET handler error")
+        return _err(f"internal error: {e}", 500)
 
-        return 404, {"error": f"Unknown graph endpoint: GET {path}"}
-    except (ValueError, ConnectionError, RuntimeError) as exc:
-        return _err(exc)
 
-
-def handle_graph_post(parsed_path: str, body: dict) -> tuple:
-    """Route all POST /graph/* requests.
-
-    Returns a ``(status, data)`` tuple.
-    """
+def handle_graph_post(method: str, parsed_path: str, body: dict) -> tuple[int, dict]:
     path = parsed_path
+    store = get_store()
+    if store is None:
+        return _err("graph store unavailable", 503)
     try:
         if path == "/graph/nodes":
-            label = body.get("label", "")
-            properties = body.get("properties", {})
-            if not label:
-                return 400, {"error": "label is required"}
-            return 201, create_node(label, properties)
-
+            labels = body.get("labels") or []
+            properties = body.get("properties") or {}
+            return 200, _wrap(store.create_node(labels, properties))
         if path == "/graph/relationships":
-            start_id = body.get("start_node_id")
-            end_id = body.get("end_node_id")
-            rel_type = body.get("type")
-            properties = body.get("properties", {})
-            if not rel_type or not start_id or not end_id:
-                return 400, {"error": "type, start_node_id, and end_node_id are required"}
-            data = create_relationship(start_id, end_id, rel_type, properties)
-            if data is None:
-                return 400, {"error": "Failed to create relationship — check node IDs"}
-            return 201, data
-
-        if path.startswith("/graph/node/") and path.endswith("/expand"):
-            element_id = path.split("/graph/node/")[1].replace("/expand", "")
-            depth = int(body.get("depth", 1))
-            direction = body.get("direction", "both")
-            rel_types = body.get("relationship_types")
-            limit = int(body.get("limit", 100))
-            return 200, expand_node(element_id, depth, direction, rel_types, limit)
-
-        if path.startswith("/graph/node/"):
-            element_id = path.split("/graph/node/")[1]
-            properties = body.get("properties", {})
-            data = update_node(element_id, properties)
-            if data is None:
-                return 404, {"error": f"Node not found: {element_id}"}
-            return 200, data
-
-        if path.startswith("/graph/relationship/"):
-            element_id = path.split("/graph/relationship/")[1]
-            properties = body.get("properties", {})
-            data = update_relationship(element_id, properties)
-            if data is None:
-                return 404, {"error": f"Relationship not found: {element_id}"}
-            return 200, data
-
-        return 404, {"error": f"Unknown graph endpoint: POST {path}"}
-    except (ValueError, ConnectionError, RuntimeError) as exc:
-        return _err(exc)
+            return 200, _wrap(store.create_relationship(
+                body.get("type", ""),
+                body.get("start_node_id", ""),
+                body.get("end_node_id", ""),
+                body.get("properties"),
+            ))
+        if path == "/graph/seed":
+            return 200, _wrap(store.seed_sample())
+        return _err(f"unknown POST path: {path}", 404)
+    except (ValueError, RuntimeError) as e:
+        status = 400 if isinstance(e, ValueError) else 503
+        return _err(str(e), status)
+    except Exception as e:
+        logger.exception("POST handler error")
+        return _err(f"internal error: {e}", 500)
 
 
-def handle_graph_delete(parsed_path: str) -> tuple:
-    """Route all DELETE /graph/* requests.
-
-    Returns a ``(status, data)`` tuple.
-    """
+def handle_graph_delete(method: str, parsed_path: str) -> tuple[int, dict]:
     path = parsed_path
+    store = get_store()
+    if store is None:
+        return _err("graph store unavailable", 503)
     try:
         if path.startswith("/graph/node/"):
-            element_id = path.split("/graph/node/")[1]
-            deleted = delete_node(element_id)
-            if not deleted:
-                return 404, {"error": f"Node not found: {element_id}"}
-            return 200, {"deleted": True}
-
+            eid = path[len("/graph/node/"):]
+            return 200, _wrap(store.delete_node(eid))
         if path.startswith("/graph/relationship/"):
-            element_id = path.split("/graph/relationship/")[1]
-            deleted = delete_relationship(element_id)
-            if not deleted:
-                return 404, {"error": f"Relationship not found: {element_id}"}
-            return 200, {"deleted": True}
+            eid = path[len("/graph/relationship/"):]
+            return 200, _wrap(store.delete_relationship(eid))
+        return _err(f"unknown DELETE path: {path}", 404)
+    except (ValueError, RuntimeError) as e:
+        status = 400 if isinstance(e, ValueError) else 503
+        return _err(str(e), status)
+    except Exception as e:
+        logger.exception("DELETE handler error")
+        return _err(f"internal error: {e}", 500)
 
-        return 404, {"error": f"Unknown graph endpoint: DELETE {path}"}
-    except (ValueError, ConnectionError, RuntimeError) as exc:
-        return _err(exc)
+
+def handle_graph_patch(method: str, parsed_path: str, body: dict) -> tuple[int, dict]:
+    path = parsed_path
+    store = get_store()
+    if store is None:
+        return _err("graph store unavailable", 503)
+    try:
+        if path.startswith("/graph/node/"):
+            eid = path[len("/graph/node/"):]
+            return 200, _wrap(store.update_node(eid, body.get("properties", {})))
+        return _err(f"unknown PATCH path: {path}", 404)
+    except (ValueError, RuntimeError) as e:
+        status = 400 if isinstance(e, ValueError) else 503
+        return _err(str(e), status)
+    except Exception as e:
+        logger.exception("PATCH handler error")
+        return _err(f"internal error: {e}", 500)
+
+
+# ── Compatibility shims for routes.py ────────────────────────────────────────
+# routes.py 调用 handle_graph_*(handler, parsed) 旧接口。
+# 这里把旧调用转发到新的 tuple 返回 API，并直接写响应。
+
+from urllib.parse import parse_qs
+
+
+def _strip_api_prefix(path: str) -> str:
+    """去掉 /api 前缀，返回 /graph/..."""
+    if path.startswith("/api"):
+        return path[4:]
+    return path
+
+
+def _handle_get_legacy(handler, parsed) -> bool:
+    from urllib.parse import urlsplit
+    raw = parsed.path if hasattr(parsed, "path") else urlsplit(parsed).path
+    parsed_path = _strip_api_prefix(raw)
+    qs = parse_qs(getattr(parsed, "query", "") or "")
+    query_params = {k: v[0] if len(v) == 1 else v for k, v in qs.items()}
+    method = getattr(handler, "command", "GET")
+    status, payload = handle_graph_get(method, parsed_path, query_params)
+    if status == 404 and payload.get("error", "").startswith("unknown GET path"):
+        return False
+    _dispatch_response(handler, status, payload)
+    return True
+
+
+def _handle_post_legacy(handler, parsed) -> bool:
+    from urllib.parse import urlsplit
+    raw = parsed.path if hasattr(parsed, "path") else urlsplit(parsed).path
+    parsed_path = _strip_api_prefix(raw)
+    body = _read_body(handler)
+    method = getattr(handler, "command", "POST")
+    status, payload = handle_graph_post(method, parsed_path, body)
+    if status == 404 and payload.get("error", "").startswith("unknown POST path"):
+        return False
+    _dispatch_response(handler, status, payload)
+    return True
+
+
+def _handle_delete_legacy(handler, parsed) -> bool:
+    from urllib.parse import urlsplit
+    raw = parsed.path if hasattr(parsed, "path") else urlsplit(parsed).path
+    parsed_path = _strip_api_prefix(raw)
+    method = getattr(handler, "command", "DELETE")
+    status, payload = handle_graph_delete(method, parsed_path)
+    if status == 404 and payload.get("error", "").startswith("unknown DELETE path"):
+        return False
+    _dispatch_response(handler, status, payload)
+    return True
+
+
+def _handle_patch_legacy(handler, parsed) -> bool:
+    from urllib.parse import urlsplit
+    raw = parsed.path if hasattr(parsed, "path") else urlsplit(parsed).path
+    parsed_path = _strip_api_prefix(raw)
+    body = _read_body(handler)
+    method = getattr(handler, "command", "PATCH")
+    status, payload = handle_graph_patch(method, parsed_path, body)
+    if status == 404 and payload.get("error", "").startswith("unknown PATCH path"):
+        return False
+    _dispatch_response(handler, status, payload)
+    return True
+
+
+# 把旧接口名指向 legacy shim，routes.py 不需要改
+# 但单元测试用的新 API 仍可访问（用新名字：handle_graph_get_v2 / post / delete）
+handle_graph_get_v2 = handle_graph_get
+handle_graph_post_v2 = handle_graph_post
+handle_graph_delete_v2 = handle_graph_delete
+handle_graph_patch_v2 = handle_graph_patch
+
+
+# HTTP 入口（routes.py 用这些名字）：接受 (handler, parsed)，写响应，返回 False 让 routes.py 走 404
+def handle_graph_http_get(handler, parsed):
+    return _handle_get_legacy(handler, parsed)
+
+
+def handle_graph_http_post(handler, parsed):
+    return _handle_post_legacy(handler, parsed)
+
+
+def handle_graph_http_delete(handler, parsed):
+    return _handle_delete_legacy(handler, parsed)
+
+
+def handle_graph_http_patch(handler, parsed):
+    return _handle_patch_legacy(handler, parsed)
+
+
+# ── 预初始化 ────────────────────────────────────────────────────────────
+# 当 routes.py 首次 from api.graph import ... 时，立即初始化 store（而非
+# 等到第一个请求才懒加载）。消除首次请求的 2-3s Neo4j 连接握手开销。
+get_store()

@@ -79,3 +79,8 @@ docs/ui-ux/review-shots/
 .benchmark/
 .worktrees/
 .superpowers
+
+# SQLite-backed MockStore graph data (regenerated on first run)
+data/graph.sqlite
+data/
+!data/.gitkeep
