@@ -3441,6 +3441,20 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
   // saved-session/client-side boot error cannot leave the sidebar empty forever.
   await renderSessionList();
   await _workspaceListReady;
+  // RBAC: if the user has no accessible workspaces and they're landing on a
+  // chat-style route, show the dedicated "no workspace" empty state instead
+  // of the generic "What can I help with?" hero. This prevents the misleading
+  // state where the composer looks ready but every command fails for lack of
+  // workspace context.
+  if(typeof maybeRenderNoWorkspaceEmptyState==='function' && await maybeRenderNoWorkspaceEmptyState()){
+    S._bootReady=true;
+    try{syncTopbar();}catch(_){}
+    try{syncWorkspacePanelState();}catch(_){}
+    try{if(typeof renderSessionList==='function') void renderSessionList();}catch(_){}
+    try{await _finalizeComposerPrefillOnBoot(prefillIntent);}catch(_){}
+    try{if(typeof startGatewaySSE==='function') startGatewaySSE();}catch(_){}
+    return;
+  }
   await _onboardingReady;
   _initResizePanels();
   // Workspace panel restore happens AFTER loadSession so we know if
