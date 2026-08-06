@@ -733,6 +733,80 @@ def handle_admin_users_delete(handler, parsed) -> bool:
     return True
 
 
+def handle_admin_reset_password(handler, parsed, user_id: str) -> bool:
+    """PUT /api/admin/users/{user_id}/password — admin resets another user's password.
+
+    Body: ``{"new_password": "..."}``.
+
+    Differences from POST /api/auth/change-password:
+      - No old_password required (admin acts on behalf of user).
+      - **Bypasses complexity** — admin reset is intentional: the admin may
+        choose a short or otherwise "weak" password when restoring access
+        to a locked-out account. Frontend should still warn but not block.
+      - **All sessions kicked** (no ``keep_token``) — the user must log in
+        again with whatever credential the admin hands them out-of-band.
+
+    Order of checks:
+      1. Caller logged in               → 401 "auth_required"
+      2. Caller is admin                → 403 "admin_required"
+      3. Body parses + new_password set → 400 "missing_field"
+      4. Target user exists             → 404 "user_not_found"
+      5. Hash + invalidate on success   → 200 ``{ok: true}``
+
+    Audit: ``category='rbac', action='password.reset'`` with
+    ``actor_id`` (admin) and ``target_id`` (reset victim).
+    """
+    caller = _current_user(handler)
+    if not caller:
+        _send_json(handler, 401, {"error": "auth_required"})
+        return True
+    if not is_admin(caller):
+        _send_json(handler, 403, {"error": "admin_required"})
+        return True
+
+    try:
+        body = _read_json_body(handler)
+    except json.JSONDecodeError:
+        _send_json(handler, 400, {"error": "invalid_json"})
+        return True
+
+    new_password = body.get("new_password") or ""
+    if not new_password:
+        _send_json(handler, 400, {"error": "missing_field"})
+        return True
+
+    # Reload target from disk — never trust caller-supplied fields.
+    target = find_user_by_id(Path(STATE_DIR), str(user_id))
+    if not target:
+        _send_json(handler, 404, {"error": "user_not_found"})
+        return True
+
+    try:
+        new_hash = _hash_password(new_password)
+        update_password(Path(STATE_DIR), str(user_id), new_hash)
+    except Exception:
+        _send_json(handler, 500, {"error": "internal_error"})
+        return True
+
+    # Force a re-login: no keep_token — the victim is being kicked everywhere.
+    try:
+        invalidate_all_user_sessions(str(user_id))
+    except Exception:
+        # Don't fail the request — password is already updated.
+        pass
+
+    _audit.write(
+        category="rbac",
+        action="password.reset",
+        actor_id=caller["id"], actor_name=caller.get("username"),
+        target_type="user", target_id=str(user_id),
+        target_name=target.get("username"),
+        details={"via": "admin_api"},
+    )
+    _send_json(handler, 200, {"ok": True})
+    return True
+
+
 def handle_admin_audit(handler, parsed) -> bool:
     """GET /api/admin/audit — admin-only; search RBAC events."""
     user = _current_user(handler)
@@ -976,6 +1050,12 @@ def try_handle_rbac(method: str, parsed, handler) -> bool:
         return handle_admin_users_delete(handler, parsed)
     if method == "PUT" and path.startswith("/api/admin/users/") and path.endswith("/panels"):
         return handle_admin_users_update_panels(handler, parsed)
+    if method == "PUT" and path.startswith("/api/admin/users/") and path.endswith("/password"):
+        # parts = ["api", "admin", "users", "{id}", "password"]
+        parts = [p for p in path.split("/") if p]
+        if len(parts) < 5:
+            return False
+        return handle_admin_reset_password(handler, parsed, parts[3])
     if method == "GET" and path == "/api/admin/audit":
         return handle_admin_audit(handler, parsed)
     if method == "GET" and path == "/api/admin/sessions":
