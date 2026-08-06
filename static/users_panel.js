@@ -66,6 +66,7 @@
       ? '<button class="settings-action-btn" disabled title="' + escapeHtml(t('users_cannot_delete_self', 'Cannot delete yourself')) + '">' + escapeHtml(t('delete', 'Delete')) + '</button>'
       : '<button class="settings-action-btn danger" data-action="delete-user" data-id="' + escapeHtml(u.id) + '" data-name="' + escapeHtml(u.username) + '">' + escapeHtml(t('delete', 'Delete')) + '</button>';
     var panelsCount = Array.isArray(u.panels) ? u.panels.length : 0;
+    var resetPasswordBtn = '<button class="action-btn settings-action-btn" data-action="reset-password" data-user-id="' + escapeHtml(u.id) + '" data-username="' + escapeHtml(u.username) + '">' + escapeHtml(t('admin_reset_password', 'Reset password')) + '</button>';
     return '<tr data-user-id="' + escapeHtml(u.id) + '">'
       + '<td>' + escapeHtml(u.username) + '</td>'
       + '<td>' + roleBadge + '</td>'
@@ -75,6 +76,7 @@
       +     escapeHtml(u.role === 'admin' ? t('users_demote', 'Demote') : t('users_promote', 'Promote'))
       +   '</button>'
       +   '<button class="settings-action-btn" data-action="edit-panels" data-id="' + escapeHtml(u.id) + '" data-username="' + escapeHtml(u.username) + '" title="编辑可访问的面板">面板(' + panelsCount + ')</button>'
+      +   resetPasswordBtn
       +   deleteBtn
       + '</td>'
       + '</tr>';
@@ -344,6 +346,51 @@
     }
   }
 
+  async function resetPassword(userId, username) {
+    var title = formatResetPasswordMessage('admin_reset_password_title', username);
+    var hint = t('admin_reset_password_hint', 'Admin reset skips old password check and signs out other sessions');
+    var newPassword;
+
+    // Prefer the shared application modal; keep prompt() as a compatibility
+    // fallback for stripped-down/test pages that do not render appDialogOverlay.
+    if (typeof window.showPromptDialog === 'function' && document.getElementById('appDialogOverlay')) {
+      newPassword = await window.showPromptDialog({
+        title: title,
+        message: hint,
+        inputType: 'password',
+        confirmLabel: t('change_password_submit', 'Submit'),
+        cancelLabel: t('change_password_cancel', 'Cancel'),
+      });
+    } else if (typeof window.prompt === 'function') {
+      newPassword = window.prompt(title + '\n\n' + hint);
+    }
+    if (!newPassword) return;
+
+    try {
+      await api('/api/admin/users/' + encodeURIComponent(userId) + '/password', {
+        method: 'PUT',
+        body: { new_password: newPassword },
+      });
+      if (typeof window.showToast === 'function') {
+        window.showToast(formatResetPasswordMessage('admin_reset_password_ok', username));
+      }
+      // The reset creates an audit event; refresh that table without making a
+      // successful password reset appear to fail if the refresh is unavailable.
+      loadAudit();
+    } catch (e) {
+      var message = 'Error: ' + (e && e.message ? e.message : String(e));
+      if (typeof window.showToast === 'function') {
+        window.showToast(message, 5000, 'error');
+      } else if (typeof window.alert === 'function') {
+        window.alert(message);
+      }
+    }
+  }
+
+  function formatResetPasswordMessage(key, username) {
+    return String(t(key, '')).replace(/\{username\}/g, username == null ? '' : String(username));
+  }
+
   async function deleteUser(userId, name) {
     if (!window.confirm('Delete user "' + name + '"? This cannot be undone.')) return;
     try {
@@ -396,6 +443,11 @@
       var btn = e.target.closest && e.target.closest('[data-action]');
       if (!btn) return;
       var action = btn.getAttribute('data-action');
+      if (action === 'reset-password') {
+        e.preventDefault();
+        resetPassword(btn.getAttribute('data-user-id'), btn.getAttribute('data-username'));
+        return;
+      }
       var id = btn.getAttribute('data-id');
       if (action === 'toggle-role') {
         toggleRole(id, btn.getAttribute('data-current'));
@@ -418,4 +470,5 @@
 
   // Expose to panels.js lazy-load contract
   window.loadUsersPanel = loadUsersPanel;
+  window.openResetPasswordDialog = resetPassword;
 })();
