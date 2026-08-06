@@ -51,6 +51,35 @@ def test_handle_graph_get_search_requires_q():
     assert "q" in payload["error"].lower() or "required" in payload["error"].lower()
 
 
+def test_handle_graph_get_topology_accepts_direction_and_depth_zero():
+    """topology 路由：direction 合法值透传，depth=0('全部') 透传且不出错。
+
+    节点不存在时返回空图，状态仍是 200。
+    """
+    for direction in ("both", "in", "out"):
+        status, payload = handle_graph_get(
+            "GET", "/graph/topology/nonexistent-node-id",
+            {"depth": 3, "direction": direction},
+        )
+        assert status == 200, (direction, payload)
+        assert payload["ok"] is True
+        assert payload["data"]["nodes"] == []
+    # depth=0（"全部"）也允许
+    status, payload = handle_graph_get(
+        "GET", "/graph/topology/nonexistent-node-id",
+        {"depth": 0, "direction": "both"},
+    )
+    assert status == 200
+    assert payload["ok"] is True
+    # 非法 direction 回落为 both
+    status, payload = handle_graph_get(
+        "GET", "/graph/topology/nonexistent-node-id",
+        {"depth": 3, "direction": "garbage"},
+    )
+    assert status == 200
+    assert payload["ok"] is True
+
+
 def test_handle_graph_get_nodes_no_label():
     """无 label 参数时返回全量节点（不再报 400）。"""
     status, payload = handle_graph_get("GET", "/graph/nodes", {})

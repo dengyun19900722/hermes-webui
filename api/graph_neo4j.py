@@ -24,13 +24,16 @@ def _validate_identifier(value: str, kind: str) -> None:
 def _build_topology_cypher(direction: str, depth: int, rel_types: list[str] | None,
                            limit: int) -> tuple[str, dict]:
     """构建 topology 查询 Cypher。关键：N 字符串拼接而非参数化。"""
-    if not isinstance(depth, int) or depth < 1 or depth > 5:
-        raise ValueError(f"depth must be int in [1,5], got {depth}")
+    if not isinstance(depth, int) or depth < 0 or depth > 5:
+        raise ValueError(f"depth must be int in [0,5], got {depth}")
+    # depth=0 表示"全部"——内部映射为最大跳数 5（*1..5 已是 Cypher 表达上限）
+    if depth == 0:
+        depth = 5
 
     dir_pattern = {
-        "both": "-[r]-",
-        "in": "<-[r]-",
-        "out": "-[r]->",
+        "both": ("-", "-"),
+        "in": ("<-", "-"),
+        "out": ("-", "->"),
     }[direction]
 
     rel_clause = ""
@@ -38,11 +41,11 @@ def _build_topology_cypher(direction: str, depth: int, rel_types: list[str] | No
         for rt in rel_types:
             _validate_identifier(rt, "relationship type")
         types_str = "|".join(f":`{rt}`" for rt in rel_types)
-        rel_clause = f"AND type(r) IN [{types_str}]"
+        rel_clause = f" AND type(r) IN [{types_str}]"
 
     cypher = (
-        f"MATCH path = (center){dir_pattern}*1..{depth}(neighbor) "
-        f"WHERE elementId(center) = $element_id {rel_clause} "
+        f"MATCH path = (center){dir_pattern[0]}[r*1..{depth}]{dir_pattern[1]}(neighbor) "
+        f"WHERE elementId(center) = $element_id{rel_clause} "
         f"RETURN center, nodes(path) AS ns, relationships(path) AS rs "
         f"LIMIT $limit"
     )
@@ -124,13 +127,13 @@ class Neo4jStore:
             _validate_identifier(label, "label")
             return (
                 "MATCH (n) "
-                "WHERE any(k IN keys(n) WHERE toString(n[k]) CONTAINS $query) "
+                "WHERE any(k IN keys(n) WHERE toLower(toString(n[k])) CONTAINS toLower($query)) "
                 "AND $label IN labels(n) "
                 "RETURN n LIMIT $limit"
             )
         return (
             "MATCH (n) "
-            "WHERE any(k IN keys(n) WHERE toString(n[k]) CONTAINS $query) "
+            "WHERE any(k IN keys(n) WHERE toLower(toString(n[k])) CONTAINS toLower($query)) "
             "RETURN n LIMIT $limit"
         )
 
@@ -341,12 +344,24 @@ class Neo4jStore:
                      "end_node_id": r["r"].end_node.element_id,
                      "properties": dict(r["r"])} for r in res]
 
-    def topology(self, element_id: str, depth: int = 1) -> dict:
-        """Return a subgraph centered on the given node element_id, within depth."""
-        if not isinstance(depth, int) or depth < 1 or depth > 5:
-            raise ValueError(f"depth must be int in [1,5], got {depth}")
+    def topology(self, element_id: str, depth: int = 1, direction: str = "both") -> dict:
+        """Return a subgraph centered on the given node element_id, within depth.
 
-        cypher, params = _build_topology_cypher("both", depth, None, 200)
+        direction:
+          - "both" 双向（默认）
+          - "in"   上游（被依赖 / 指向该节点）
+          - "out"  下游（依赖 / 该节点指向）
+
+        depth:
+          - 1..5   固定层数
+          - 0      全部展开（内部映射为 5，避免 Cypher 无限遍历）
+        """
+        if not isinstance(depth, int) or depth < 0 or depth > 5:
+            raise ValueError(f"depth must be int in [0,5], got {depth}")
+        if direction not in ("in", "out", "both"):
+            raise ValueError(f"direction must be in/out/both, got {direction}")
+
+        cypher, params = _build_topology_cypher(direction, depth, None, 200)
         params["element_id"] = element_id
         try:
             records = self._run_read(cypher, params)

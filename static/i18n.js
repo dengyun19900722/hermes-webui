@@ -11949,6 +11949,78 @@ const LOCALES = {
     custom_provider_base_url_required: 'Base URL 不能为空',
     custom_provider_base_url_invalid: 'Base URL 必须以 http:// 或 https:// 开头',
     custom_provider_slug_collide_plugin: '不能与插件 provider 重名',
+    // ── Graph panel ──
+    tab_graph: '运维资产图谱',
+    tab_graph_bilingual: '运维资产图谱 (Asset Graph)',
+    graph_overview_nodes_bilingual: '节点 (Nodes)',
+    graph_overview_rels_bilingual: '关系 (Relationships)',
+    graph_properties_title_bilingual: '属性 (Properties)',
+
+    graph_view_graph: '图谱',
+    graph_view_table: '表格',
+    graph_view_json: 'JSON',
+    graph_search_placeholder: '搜索节点…',
+    graph_load_sample: '加载示例数据',
+    graph_create_first: '创建第一个节点',
+    graph_empty_title: '图谱为空',
+    graph_empty_desc: '后端为 Mock 模式且无数据。加载示例运维图谱（主机 / 服务 / 事件 / 应急预案）开始使用。',
+    graph_status_nodes: '节点',
+    graph_status_rels: '关系',
+    graph_table_nodes: '节点',
+    graph_table_rels: '关系',
+    graph_results_overview: '结果概览',
+    graph_overview_nodes: '节点',
+    graph_overview_rels: '关系',
+    graph_crud_create_node: '创建节点',
+    graph_crud_properties: '属性',
+    graph_crud_cancel: '取消',
+    graph_crud_create: '创建',
+    graph_fab_fit: '适应窗口',
+    graph_fab_zoom_in: '放大',
+    graph_fab_zoom_out: '缩小',
+    graph_fab_layout: '布局',
+    graph_fab_clear: '清除筛选',
+    graph_table_headers_id: 'ID',
+    graph_table_headers_labels: '标签',
+    graph_table_headers_name: '名称',
+    graph_table_headers_actions: '操作',
+    graph_table_headers_type: '类型',
+    graph_table_headers_start: '起点',
+    graph_table_headers_end: '终点',
+    graph_btn_locate: '定位',
+    graph_btn_edit: '编辑',
+    graph_btn_delete: '删除',
+    graph_status_ready: '就绪',
+    graph_backend_mock: 'Mock',
+    graph_backend_neo4j: 'Neo4j',
+    graph_load_node_failed: '加载节点失败',
+    graph_refresh: '刷新',
+    graph_close: '关闭',
+    graph_table_delete_confirm: '删除关系 {0}…？',
+    graph_select_node_or_rel: '选择一个节点或关系',
+    graph_properties_title: '属性',
+    graph_back: '返回',
+    graph_node_properties: '属性',
+    graph_node_relationships: '关系',
+    graph_toggle_panel: '切换面板',
+    graph_created: '已创建',
+    graph_all_nodes: '*',
+    graph_all_rels: '*',
+    graph_dict_btn: '字典',
+    graph_dict_title: '图库字典管理',
+    graph_dict_add: '新增条目',
+    graph_dict_import_csv: '导入 CSV',
+    graph_dict_import_json: '导入 JSON',
+    graph_dict_export_json: '导出 JSON',
+    graph_dict_export_yaml: '导出 YAML',
+    graph_dict_search: '搜索...',
+    graph_dict_category_all: '全部',
+    graph_dict_category_node: '节点标签',
+    graph_dict_category_rel: '关系类型',
+    graph_dict_category_prop: '属性名',
+    graph_dict_category_value: '属性值',
+    graph_dict_empty: '暂无字典条目',
+
   },
 
   // Traditional Chinese (zh-Hant)
@@ -24036,7 +24108,26 @@ function applyLocaleToDOM() {
   document.querySelectorAll('[data-i18n]').forEach(el => {
     const key = el.getAttribute('data-i18n');
     const val = t(key);
-    if (val && val !== key) el.textContent = val;
+    if (!val || val === key) return;
+    // 如果元素有子结构（其他标签如 .graph-overview-title-text），
+    // 不能用 textContent 重写整个内容（会清空子节点）
+    if (el.children.length > 0) {
+      // 找第一个 text node 替换；或者匹配 data-i18n 占位 class
+      const textHolder = el.querySelector('[data-i18n-text]') || el.children[0];
+      if (textHolder && (textHolder.children.length === 0 || textHolder.tagName === 'SPAN')) {
+        // 如果 holder 没有嵌套子元素，直接替换其 textContent
+        textHolder.textContent = val;
+        return;
+      }
+      // 兜底：找首个 text node 替换
+      for (const node of el.childNodes) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          node.textContent = val;
+          return;
+        }
+      }
+    }
+    el.textContent = val;
   });
   document.querySelectorAll('[data-i18n-title]').forEach(el => {
     const key = el.getAttribute('data-i18n-title');

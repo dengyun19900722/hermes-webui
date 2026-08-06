@@ -11,6 +11,13 @@
     currentView: "graph",
     selectedNodeId: null,
     selectedRelId: null,
+    dictEnabled: true,
+    dictMap: {
+      node_labels: {},
+      rel_types: {},
+      property_keys: {},
+      property_values: {},
+    },
   };
 
   let panel, tabs, views, searchInput, searchDropdown, statusNodes, statusEdges, statusMsg, backendBadge;
@@ -56,6 +63,10 @@
     if (refreshBtn) refreshBtn.addEventListener("click", loadSchema);
     const closeBtn = $("graphCloseBtn");
     if (closeBtn) closeBtn.addEventListener("click", () => switchPanel && switchPanel("graph"));
+    const dictBtn = $("graphDictBtn");
+    if (dictBtn) dictBtn.addEventListener("click", () => {
+      if (window.GraphDict) window.GraphDict.open();
+    });
     const emptySeedBtn = $("graphEmptySeedBtn");
     if (emptySeedBtn) emptySeedBtn.addEventListener("click", loadSample);
     const emptyCreateBtn = $("graphEmptyCreateBtn");
@@ -86,9 +97,6 @@
 
   function syncFullscreenState() {
     if (!panel) return;
-    // 切到 graph 标签时 switchPanel 只给 panelGraph 加 .active 类，不会移除
-    // 初始的 hidden 属性。.panel-view.active 选择器特异性高于 [hidden]，所以
-    // active 后 panel 仍然可见，因此这里以 .active 类作为唯一判定条件。
     const isActive = panel.classList.contains("active");
     document.body.classList.toggle("graph-fullscreen", isActive);
   }
@@ -97,9 +105,7 @@
     if (!panel.classList.contains("active")) return;
     await checkHealth();
     await loadSchema();
-    // 面板尺寸可能在进入 fullscreen 模式（或切回普通布局）时发生变化，
-    // 主动通知 graph 视图重新计算 cytoscape 画布尺寸，避免初次切到 graph
-    // 标签时画布停留在 0×0。
+    await loadDictionary();
     if (window.GraphViewGraph && typeof window.GraphViewGraph.onShow === "function") {
       window.GraphViewGraph.onShow();
     }
@@ -146,7 +152,6 @@
   function checkEmptyState() {
     const emptyEl = $("graphEmptyState");
     if (!emptyEl) return;
-    // schema 还没加载完时（null）默认隐藏空状态，避免加载早期闪现
     const count = state.schema?.stats?.node_count;
     const isEmpty = state.backend === "mock" &&
                     typeof count === "number" &&
@@ -173,10 +178,24 @@
     }
     try {
       const res = await api("/api/graph/search?q=" + encodeURIComponent(q) + "&limit=5");
-      showSearchDropdown(res.results || []);
+      // api() 已 unwrap {ok, data}，所以 res 就是 {results, query, count}
+      const results = (res && res.results) || [];
+      showSearchDropdown(results);
     } catch (e) {
       // Silent: search is progressive enhancement
     }
+  }
+
+  // 计算 label 颜色（与 graph_view_graph.js 的 colorForLabel 保持一致）
+  const _searchLabelColorCache = { Host: "#4A90E2", Service: "#7ED321", Incident: "#D0021B", Runbook: "#F5A623" };
+  const _searchLabelPalette = ["#FF6B6B", "#4A90E2", "#F5A623", "#7ED321", "#9013FE", "#50E3C2", "#D0021B", "#BD10E6", "#417505", "#8B572A", "#FF8C00", "#00CED1", "#FF1493", "#32CD32", "#FFD700"];
+  function _searchLabelColor(label) {
+    if (_searchLabelColorCache[label]) return _searchLabelColorCache[label];
+    let h = 0;
+    for (let i = 0; i < label.length; i++) h = (h * 31 + label.charCodeAt(i)) | 0;
+    const c = _searchLabelPalette[Math.abs(h) % _searchLabelPalette.length];
+    _searchLabelColorCache[label] = c;
+    return c;
   }
 
   function showSearchDropdown(nodes) {
@@ -185,20 +204,52 @@
       searchDropdown.hidden = true;
       return;
     }
-    searchDropdown.innerHTML = nodes.map(n => {
+    const rows = nodes.map(n => {
       const label = (n.labels && n.labels[0]) || "?";
-      const name = (n.properties && (n.properties.name || n.properties.title)) || n.id;
-      return `<div class="graph-search-result" data-id="${escAttr(n.id)}">
-        <span class="graph-node-label">${escHtml(label)}</span>
-        <span class="graph-node-name">${escHtml(String(name))}</span>
+      // label 走字典翻译，属性名也走
+      const labelTr = applyDictToLabels(label, "node_labels");
+      // 智能 name fallback：name → title → serviceName → hostname → code → id → 短化 id
+      const p = n.properties || {};
+      let name = p.name || p.title || p.serviceName || p.hostname || p.code || p.service || p.id;
+      if (!name && p.id) name = p.id;
+      if (!name) {
+        // fallback: 取 id 最后一段（Neo4j 的 id 类似 "4:uuid:123"）
+        const idStr = String(n.id);
+        name = idStr.length > 16 ? idStr.substring(0, 8) + "..." : idStr;
+      }
+      const color = _searchLabelColor(label);
+      return `<div class="graph-search-result" data-id="${escAttr(n.id)}" title="${escAttr(labelTr + " · " + name)}">
+        <span class="graph-search-label-pill" style="background:${escAttr(color)}">${escHtml(labelTr)}</span>
+        <span class="graph-search-result-meta">
+          <span class="graph-search-node-name">${escHtml(String(name))}</span>
+        </span>
+        <span class="graph-search-action">全链路</span>
       </div>`;
     }).join("");
+    const hint = `<div class="graph-search-hint">提示：<kbd>单击</kbd> 查看详情 · <kbd>双击</kbd> 查看全链路（顶部出现工具栏调整深度/方向）</div>`;
+    searchDropdown.innerHTML = rows + hint;
     searchDropdown.querySelectorAll(".graph-search-result").forEach(el => {
       el.addEventListener("click", () => {
         const id = el.dataset.id;
-        searchInput.value = "";
+        const name = el.querySelector(".graph-search-node-name")?.textContent || id;
+        searchInput.value = name;
         searchDropdown.hidden = true;
-        if (window.GraphViewGraph) window.GraphViewGraph.expandNode(id);
+        if (window.GraphViewGraph) {
+          switchView("graph");
+          // 搜索命中 → 激活全链路视图（默认 3 层双向），并展示中心节点详情
+          window.GraphViewGraph.expandNode(id);
+          window.GraphViewGraph.showNodeDetail(id);
+        }
+      });
+      el.addEventListener("dblclick", e => {
+        e.preventDefault();
+        e.stopPropagation();
+        const id = el.dataset.id;
+        searchDropdown.hidden = true;
+        if (window.GraphViewGraph) {
+          switchView("graph");
+          window.GraphViewGraph.expandNode(id);
+        }
       });
     });
     searchDropdown.hidden = false;
@@ -243,7 +294,42 @@
   }
   function escAttr(s) { return escHtml(s); }
 
+  // ── 字典管理 ────────────────────────────────────────
+  async function loadDictionary() {
+    try {
+      const res = await fetch("/api/graph/dictionary/apply");
+      const json = await res.json();
+      if (json.ok && json.data) {
+        state.dictMap = json.data;
+      }
+    } catch (e) {
+      console.warn("load dictionary failed:", e);
+    }
+  }
+
+  function applyDictToLabels(text, mapType) {
+    if (!state.dictEnabled || !text) return text;
+    const map = state.dictMap[mapType];
+    if (!map) return text;
+    return map[text] || text;
+  }
+
+  // 监听字典变更事件，刷新字典映射
+  document.addEventListener("DOMContentLoaded", () => {
+    const panel = document.getElementById("panelGraph");
+    if (panel) {
+      panel.addEventListener("dict:changed", async () => {
+        await loadDictionary();
+        if (window.GraphViewGraph && typeof window.GraphViewGraph.applyDictToGraph === "function") {
+          window.GraphViewGraph.applyDictToGraph();
+        }
+        // 重新跑一次 i18n stamping，确保新增/编辑后的占位文本等也跟随 locale
+        if (typeof window.applyLocaleToDOM === "function") window.applyLocaleToDOM();
+      });
+    }
+  });
+
   document.addEventListener("DOMContentLoaded", init);
 
-  window.GraphMain = { state, switchView, getState: () => state, setStatus };
+  window.GraphMain = { state, switchView, getState: () => state, setStatus, loadDictionary, applyDictToLabels };
 })();

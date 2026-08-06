@@ -1,6 +1,6 @@
 """SQLite 后端 Mock 实现，无需 Neo4j。
 
-持久化到 data/graph.sqlite（gitignored）。
+持久化到 DEFAULT_WORKSPACE/.graph/graph.sqlite（gitignored）。
 
 多线程安全：每个请求线程用独立的 sqlite3 连接（threading.local）。
 """
@@ -11,6 +11,8 @@ import sqlite3
 import threading
 import uuid
 from typing import Any
+
+from api.config import DEFAULT_WORKSPACE
 
 
 def _gen_id() -> str:
@@ -41,7 +43,9 @@ CREATE TABLE IF NOT EXISTS sample_names (
 class MockStore:
     """每个线程独立连接。"""
 
-    def __init__(self, db_path: str = "data/graph.sqlite"):
+    def __init__(self, db_path: str | None = None):
+        if db_path is None:
+            db_path = str(DEFAULT_WORKSPACE / ".graph" / "graph.sqlite")
         self.db_path = db_path
         os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
         self._local = threading.local()
@@ -221,23 +225,56 @@ class MockStore:
                  "start_node_id": r["start_id"], "end_node_id": r["end_id"],
                  "properties": json.loads(r["properties"])} for r in rows]
 
-    def topology(self, element_id: str, depth: int = 1) -> dict:
+    def topology(self, element_id: str, depth: int = 1, direction: str = "both") -> dict:
+        """以 element_id 为中心，扩展 depth 跳。
+
+        direction:
+          - "both" 双向（默认）
+          - "in"   上游（被依赖 / 指向该节点）
+          - "out"  下游（依赖 / 该节点指向）
+
+        depth:
+          - 1..5   固定层数（mock 自身不做关系数限制，但这里仍用循环次数控制）
+          - 0      全部展开（BFS 直到 frontier 空 或 节点数达 cap）
+        """
+        if direction not in ("in", "out", "both"):
+            raise ValueError(f"direction must be in/out/both, got {direction}")
+        if not isinstance(depth, int) or depth < 0 or depth > 5:
+            raise ValueError(f"depth must be int in [0,5], got {depth}")
+
+        cap = 500  # 防爆：节点上限
         visited_nodes = {element_id}
         visited_rels = set()
         frontier = {element_id}
-        for _ in range(max(1, min(depth, 5))):
+
+        # depth=0 → 全部（跑到 frontier 空 或 达 cap）；其余取 depth，最大 5 跳
+        max_iter = depth if depth > 0 else 100
+
+        for _ in range(max_iter):
+            if not frontier or len(visited_nodes) >= cap:
+                break
             next_frontier = set()
             for nid in frontier:
-                rels = self.list_relationships(nid, direction="both")
+                if len(visited_nodes) >= cap:
+                    break
+                rels = self.list_relationships(nid, direction=direction)
                 for r in rels:
                     visited_rels.add(r["id"])
-                    if r["start_node_id"] not in visited_nodes:
-                        next_frontier.add(r["start_node_id"])
-                        visited_nodes.add(r["start_node_id"])
-                    if r["end_node_id"] not in visited_nodes:
-                        next_frontier.add(r["end_node_id"])
-                        visited_nodes.add(r["end_node_id"])
+                    # 根据方向选择要扩展的邻居
+                    if direction in ("in", "both"):
+                        other = r["start_node_id"]
+                        if other not in visited_nodes:
+                            next_frontier.add(other)
+                            visited_nodes.add(other)
+                    if direction in ("out", "both"):
+                        other = r["end_node_id"]
+                        if other not in visited_nodes:
+                            next_frontier.add(other)
+                            visited_nodes.add(other)
+                    if len(visited_nodes) >= cap:
+                        break
             frontier = next_frontier
+
         nodes = [self.get_node(nid) for nid in visited_nodes]
         rels = [self.get_relationship(rid) for rid in visited_rels]
         return {"nodes": [n for n in nodes if n], "relationships": [r for r in rels if r]}

@@ -31,11 +31,15 @@ def test_topology_cypher_uses_literal_depth():
 
 
 def test_topology_cypher_clamps_depth():
-    """depth 必须在 [1, 5] 内。"""
-    for bad in (0, -1, 6, 100):
+    """depth 必须在 [0, 5] 内；-1、6、100 等越界值被拒。"""
+    for bad in (-1, 6, 100):
         with pytest.raises(ValueError):
             _build_topology_cypher(direction="both", depth=bad,
                                    rel_types=None, limit=50)
+    # depth=0（"全部"）合法且内部映射为 5
+    cypher, _ = _build_topology_cypher(direction="both", depth=0,
+                                       rel_types=None, limit=50)
+    assert "*1..5" in cypher
 
 
 def test_topology_cypher_filters_rel_types():
@@ -48,7 +52,8 @@ def test_topology_cypher_filters_rel_types():
 def test_topology_cypher_direction_in():
     cypher, _ = _build_topology_cypher(direction="in",
                                        depth=1, rel_types=None, limit=50)
-    assert "<-[r]-" in cypher
+    # 入向：箭头指向 center，另一端用 '-' 表示任意节点
+    assert "<-[r*1..1]-" in cypher
 
 
 def test_search_cypher_contains_query():
@@ -63,3 +68,24 @@ def test_search_cypher_with_label():
     ns = Neo4jStore.__new__(Neo4jStore)
     cypher = ns._build_search_cypher("nginx", label="Host", limit=10)
     assert "$label IN labels(n)" in cypher
+
+
+def test_topology_cypher_direction_out():
+    cypher, _ = _build_topology_cypher(direction="out",
+                                       depth=3, rel_types=None, limit=200)
+    assert "-[r*1..3]->" in cypher
+
+
+def test_topology_cypher_direction_both():
+    cypher, _ = _build_topology_cypher(direction="both",
+                                       depth=3, rel_types=None, limit=200)
+    # 双向：两端都是 "-"（不带箭头）
+    assert "-[r*1..3]-" in cypher
+    assert "->" not in cypher.replace("RETURN", "").replace("center", "")
+
+
+def test_topology_cypher_depth_5():
+    """'全部' 在 neo4j 端用最大 5 跳表达，避免 Cypher 无限遍历。"""
+    cypher, _ = _build_topology_cypher(direction="both",
+                                       depth=0, rel_types=None, limit=200)
+    assert "*1..5" in cypher

@@ -14396,7 +14396,7 @@ def handle_post(handler, parsed) -> bool:
     if parsed.path.startswith("/api/graph"):
         from api.graph import handle_graph_http_post
 
-        result = handle_graph_http_post(handler, parsed)
+        result = handle_graph_http_post(handler, parsed, body)
         if result is False:
             return bad(handler, f"unknown graph endpoint: POST {parsed.path}", status=404)
         return True
@@ -16760,7 +16760,7 @@ def handle_patch(handler, parsed) -> bool:
     if parsed.path.startswith("/api/graph"):
         from api.graph import handle_graph_http_patch
 
-        result = handle_graph_http_patch(handler, parsed)
+        result = handle_graph_http_patch(handler, parsed, body)
         if result is False:
             return bad(handler, f"unknown graph endpoint: PATCH {parsed.path}", status=404)
         return True

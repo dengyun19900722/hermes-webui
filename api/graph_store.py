@@ -47,8 +47,14 @@ class GraphStore(Protocol):
         """列出所有关系（不分页节点）。用于 Table 视图。"""
         ...
 
-    def topology(self, element_id: str, depth: int = 1) -> dict:
-        """返回以节点为中心、depth 跳内的子图。{"nodes": [...], "relationships": [...]}"""
+    def topology(self, element_id: str, depth: int = 1, direction: str = "both") -> dict:
+        """返回以节点为中心、depth 跳内的子图。
+
+        depth: 1..5 表示固定层数；0 表示"全部"（BFS 直到 frontier 空 或 达 cap）。
+        direction: "in" 仅入向（上游/被依赖），"out" 仅出向（下游/依赖），
+                   "both" 双向。
+        返回 {"nodes": [...], "relationships": [...]}。
+        """
         ...
 
     def create_node(self, labels: list[str], properties: dict) -> dict:

@@ -13,6 +13,9 @@ import logging
 import os
 from typing import Any
 
+from api.config import DEFAULT_WORKSPACE
+from api.graph_dict import get_manager as get_dict_manager
+
 logger = logging.getLogger(__name__)
 
 
@@ -70,7 +73,9 @@ def get_store():
     except Exception as e:
         logger.warning("Neo4j import/init failed (%s), falling back to Mock", e)
     from api.graph_mock import MockStore
-    db_path = os.environ.get("GRAPH_MOCK_DB", "data/graph.sqlite")
+    db_path = os.environ.get(
+        "GRAPH_MOCK_DB", str(DEFAULT_WORKSPACE / ".graph" / "graph.sqlite")
+    )
     _store = MockStore(db_path=db_path)
     h = _store.health()
     logger.warning(
@@ -191,8 +196,43 @@ def handle_graph_get(method: str, parsed_path: str, query_params: dict) -> tuple
             return 200, _wrap({"results": store.list_all_relationships(limit)})
         if path.startswith("/graph/topology/"):
             eid = path[len("/graph/topology/"):]
-            depth = int(query_params.get("depth", 1))
-            return 200, _wrap(store.topology(eid, depth))
+            # 前端可能用 encodeURIComponent 编码了冒号等字符，需解码
+            from urllib.parse import unquote
+            eid = unquote(eid)
+            try:
+                depth = int(query_params.get("depth", 3))
+            except (TypeError, ValueError):
+                depth = 3
+            direction = query_params.get("direction", "both")
+            if direction not in ("in", "out", "both"):
+                direction = "both"
+            return 200, _wrap(store.topology(eid, depth, direction))
+        # ── 字典路由 ──
+        if path == "/graph/dictionary/apply":
+            return 200, _wrap(get_dict_manager().get_apply_mappings())
+        if path == "/graph/dictionary/stats":
+            return 200, _wrap(get_dict_manager().stats())
+        if path == "/graph/dictionary/export":
+            fmt = query_params.get("format", "json")
+            cat = query_params.get("category") or None
+            mgr = get_dict_manager()
+            if fmt == "yaml":
+                body = mgr.export_yaml(cat)
+            else:
+                body = mgr.export_json(cat)
+            return 200, {"ok": True, "data": body, "format": fmt}
+        if path == "/graph/dictionary":
+            cat = query_params.get("category") or None
+            q = query_params.get("q") or None
+            page = int(query_params.get("page", 1))
+            size = int(query_params.get("size", 50))
+            return 200, _wrap(get_dict_manager().list_items(cat, q, page, size))
+        if path.startswith("/graph/dictionary/"):
+            item_id = path[len("/graph/dictionary/"):]
+            item = get_dict_manager().get_item(item_id)
+            if not item:
+                return _err(f"字典条目不存在: {item_id}", 404)
+            return 200, _wrap(item)
         return _err(f"unknown GET path: {path}", 404)
     except (ValueError, RuntimeError) as e:
         status = 400 if isinstance(e, ValueError) else 503
@@ -221,6 +261,19 @@ def handle_graph_post(method: str, parsed_path: str, body: dict) -> tuple[int, d
             ))
         if path == "/graph/seed":
             return 200, _wrap(store.seed_sample())
+        # ── 字典 POST 路由 ──
+        if path == "/graph/dictionary":
+            return 200, _wrap(get_dict_manager().create_item(body))
+        if path == "/graph/dictionary/import":
+            fmt = (body.get("format") or "json").lower()
+            content = body.get("content", "")
+            mgr = get_dict_manager()
+            if fmt == "csv":
+                result = mgr.import_csv(content)
+            else:
+                result = mgr.import_json(content)
+            status = 200 if result.get("ok") else 400
+            return status, result
         return _err(f"unknown POST path: {path}", 404)
     except (ValueError, RuntimeError) as e:
         status = 400 if isinstance(e, ValueError) else 503
@@ -242,6 +295,12 @@ def handle_graph_delete(method: str, parsed_path: str) -> tuple[int, dict]:
         if path.startswith("/graph/relationship/"):
             eid = path[len("/graph/relationship/"):]
             return 200, _wrap(store.delete_relationship(eid))
+        # ── 字典 DELETE 路由 ──
+        if path.startswith("/graph/dictionary/"):
+            item_id = path[len("/graph/dictionary/"):]
+            if get_dict_manager().delete_item(item_id):
+                return 200, _wrap({"deleted": True})
+            return _err(f"字典条目不存在: {item_id}", 404)
         return _err(f"unknown DELETE path: {path}", 404)
     except (ValueError, RuntimeError) as e:
         status = 400 if isinstance(e, ValueError) else 503
@@ -258,8 +317,23 @@ def handle_graph_patch(method: str, parsed_path: str, body: dict) -> tuple[int, 
         return _err("graph store unavailable", 503)
     try:
         if path.startswith("/graph/node/"):
-            eid = path[len("/graph/node/"):]
+            eid = unquote(path[len("/graph/node/"):])
             return 200, _wrap(store.update_node(eid, body.get("properties", {})))
+        # ── 字典 PATCH 路由 ──
+        if path.startswith("/graph/dictionary/"):
+            rest = path[len("/graph/dictionary/"):]
+            if rest.endswith("/toggle"):
+                item_id = rest[:-7]
+                toggled = get_dict_manager().toggle_item(item_id)
+                if not toggled:
+                    return _err(f"字典条目不存在: {item_id}", 404)
+                return 200, _wrap(toggled)
+            else:
+                item_id = rest
+                updated = get_dict_manager().update_item(item_id, body)
+                if not updated:
+                    return _err(f"字典条目不存在: {item_id}", 404)
+                return 200, _wrap(updated)
         return _err(f"unknown PATCH path: {path}", 404)
     except (ValueError, RuntimeError) as e:
         status = 400 if isinstance(e, ValueError) else 503
@@ -297,11 +371,13 @@ def _handle_get_legacy(handler, parsed) -> bool:
     return True
 
 
-def _handle_post_legacy(handler, parsed) -> bool:
+def _handle_post_legacy(handler, parsed, body=None) -> bool:
     from urllib.parse import urlsplit
     raw = parsed.path if hasattr(parsed, "path") else urlsplit(parsed).path
     parsed_path = _strip_api_prefix(raw)
-    body = _read_body(handler)
+    # routes.py 的 handle_post 已经 read_body 并可能传入；否则这里再读一次。
+    if body is None:
+        body = _read_body(handler)
     method = getattr(handler, "command", "POST")
     status, payload = handle_graph_post(method, parsed_path, body)
     if status == 404 and payload.get("error", "").startswith("unknown POST path"):
@@ -322,11 +398,12 @@ def _handle_delete_legacy(handler, parsed) -> bool:
     return True
 
 
-def _handle_patch_legacy(handler, parsed) -> bool:
+def _handle_patch_legacy(handler, parsed, body=None) -> bool:
     from urllib.parse import urlsplit
     raw = parsed.path if hasattr(parsed, "path") else urlsplit(parsed).path
     parsed_path = _strip_api_prefix(raw)
-    body = _read_body(handler)
+    if body is None:
+        body = _read_body(handler)
     method = getattr(handler, "command", "PATCH")
     status, payload = handle_graph_patch(method, parsed_path, body)
     if status == 404 and payload.get("error", "").startswith("unknown PATCH path"):
@@ -348,19 +425,21 @@ def handle_graph_http_get(handler, parsed):
     return _handle_get_legacy(handler, parsed)
 
 
-def handle_graph_http_post(handler, parsed):
-    return _handle_post_legacy(handler, parsed)
+def handle_graph_http_post(handler, parsed, body=None):
+    return _handle_post_legacy(handler, parsed, body)
 
 
 def handle_graph_http_delete(handler, parsed):
     return _handle_delete_legacy(handler, parsed)
 
 
-def handle_graph_http_patch(handler, parsed):
-    return _handle_patch_legacy(handler, parsed)
+def handle_graph_http_patch(handler, parsed, body=None):
+    return _handle_patch_legacy(handler, parsed, body)
 
 
 # ── 预初始化 ────────────────────────────────────────────────────────────
 # 当 routes.py 首次 from api.graph import ... 时，立即初始化 store（而非
 # 等到第一个请求才懒加载）。消除首次请求的 2-3s Neo4j 连接握手开销。
 get_store()
+# 字典管理器同样预初始化（创建 DEFAULT_WORKSPACE/.graph/graph_dict.json 并 seed 内置条目）
+get_dict_manager()

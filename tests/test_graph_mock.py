@@ -102,6 +102,70 @@ def test_topology_depth_2(store):
     assert c["id"] in node_ids  # depth=2 看到两层
 
 
+def test_topology_direction_in(store):
+    """direction='in' 仅返回指向该节点的关系对应的起点（上游/被依赖）。"""
+    a = store.create_node(["Host"], {"name": "a"})
+    b = store.create_node(["Host"], {"name": "b"})
+    c = store.create_node(["Host"], {"name": "c"})
+    # b -> a, c -> a （a 是被依赖的终点）
+    store.create_relationship("DEPENDS_ON", b["id"], a["id"])
+    store.create_relationship("DEPENDS_ON", c["id"], a["id"])
+    # in: 只看入向，所以 a + b + c 都出现（b/c 指向 a）
+    topo = store.topology(a["id"], depth=1, direction="in")
+    node_ids = {n["id"] for n in topo["nodes"]}
+    assert node_ids == {a["id"], b["id"], c["id"]}
+    # out: 只有 a 本身
+    topo_out = store.topology(a["id"], depth=1, direction="out")
+    assert {n["id"] for n in topo_out["nodes"]} == {a["id"]}
+
+
+def test_topology_direction_out(store):
+    """direction='out' 仅返回该节点指向的关系对应的终点（下游/依赖）。"""
+    a = store.create_node(["Host"], {"name": "a"})
+    b = store.create_node(["Host"], {"name": "b"})
+    c = store.create_node(["Host"], {"name": "c"})
+    # a -> b, a -> c
+    store.create_relationship("DEPENDS_ON", a["id"], b["id"])
+    store.create_relationship("DEPENDS_ON", a["id"], c["id"])
+    topo = store.topology(a["id"], depth=1, direction="out")
+    assert {n["id"] for n in topo["nodes"]} == {a["id"], b["id"], c["id"]}
+    topo_in = store.topology(a["id"], depth=1, direction="in")
+    assert {n["id"] for n in topo_in["nodes"]} == {a["id"]}
+
+
+def test_topology_direction_invalid_raises(store):
+    a = store.create_node(["Host"], {"name": "a"})
+    with pytest.raises(ValueError):
+        store.topology(a["id"], depth=1, direction="weird")
+
+
+def test_topology_depth_zero_means_all(store):
+    """depth=0 → BFS 展开到 frontier 空（或 5 跳上限），覆盖整条链。"""
+    nodes = [store.create_node(["Host"], {"name": f"n{i}"})["id"]
+             for i in range(7)]
+    for i in range(6):
+        store.create_relationship("DEPENDS_ON", nodes[i], nodes[i+1])
+    topo = store.topology(nodes[0], depth=0, direction="out")
+    node_ids = {n["id"] for n in topo["nodes"]}
+    # 全部 7 个链节点都应被覆盖
+    assert node_ids == set(nodes)
+    # 中途反向不可达的旁支节点不应出现
+    side = store.create_node(["Host"], {"name": "side"})
+    store.create_relationship("DEPENDS_ON", side["id"], nodes[3])
+    topo_fwd = store.topology(nodes[0], depth=0, direction="out")
+    assert side["id"] not in {n["id"] for n in topo_fwd["nodes"]}
+    # depth=0 双向：反向旁支可达
+    topo_both = store.topology(nodes[0], depth=0, direction="both")
+    assert side["id"] in {n["id"] for n in topo_both["nodes"]}
+
+
+def test_topology_depth_invalid_raises(store):
+    a = store.create_node(["Host"], {"name": "a"})
+    for bad in (-1, 6, 100):
+        with pytest.raises(ValueError):
+            store.topology(a["id"], depth=bad)
+
+
 def test_update_node(store):
     n = store.create_node(["Host"], {"name": "web-01", "ip": "10.0.0.1"})
     updated = store.update_node(n["id"], {"ip": "10.0.0.2"})

@@ -326,23 +326,7 @@
     </div>
     <!-- Graph panel -->
     <div class="panel-view" id="panelGraph" hidden>
-      <div class="panel-head">
-        <span data-i18n="tab_graph">Graph</span>
-        <div class="panel-head-actions">
-          <span class="graph-backend-badge" id="graphBackendBadge" hidden></span>
-          <button class="panel-head-btn has-tooltip" id="graphSeedBtn" data-i18n-tooltip="graph_load_sample" data-tooltip="Load sample data" aria-label="Load sample data" type="button">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-          </button>
-          <button class="panel-head-btn has-tooltip" id="graphRefreshBtn" data-i18n-tooltip="graph_refresh" data-tooltip="Refresh" aria-label="Refresh" type="button">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-          </button>
-          <button class="panel-head-btn has-tooltip" id="graphCloseBtn" data-i18n-tooltip="graph_close" data-tooltip="Close" aria-label="Close" type="button">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
-        </div>
-      </div>
-
-      <div class="graph-tabs" role="tablist">
+      <div class="graph-tabs graph-tabs-with-title" role="tablist">
         <button class="graph-tab active" data-view="graph" role="tab" aria-selected="true">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="18" r="3"/><line x1="8.5" y1="7.5" x2="11" y2="15"/><line x1="15.5" y1="7.5" x2="13" y2="15"/><line x1="9" y1="6" x2="15" y2="6"/></svg>
           <span data-i18n="graph_view_graph">Graph</span>
@@ -360,12 +344,56 @@
           <input id="graphSearchInput" placeholder="Search nodes..." data-i18n-placeholder="graph_search_placeholder" autocomplete="off">
           <div class="graph-search-dropdown" id="graphSearchDropdown" hidden></div>
         </div>
+        <div class="graph-title-actions">
+          <span class="graph-backend-badge" id="graphBackendBadge" hidden></span>
+          <button class="graph-title-btn has-tooltip" id="graphSeedBtn" data-i18n-tooltip="graph_load_sample" data-tooltip="Load sample data" aria-label="Load sample data" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          </button>
+          <button class="graph-title-btn has-tooltip" id="graphRefreshBtn" data-i18n-tooltip="graph_refresh" data-tooltip="Refresh" aria-label="Refresh" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          </button>
+          <button class="graph-title-btn has-tooltip" id="graphDictBtn" data-i18n-tooltip="graph_dict_btn" title="Dictionary" aria-label="Dictionary" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><line x1="8" y1="7" x2="16" y2="7"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+          </button>
+        </div>
       </div>
 
       <div class="graph-body">
         <div class="graph-body-views">
           <div class="graph-view graph-view-graph active" data-view="graph">
-            <div class="graph-canvas" id="graphCanvas"></div>
+            <div class="graph-canvas" id="graphCanvas">
+              <div class="graph-chain-toolbar" id="graphChainToolbar" hidden>
+                <div class="graph-chain-toolbar-head">
+                  <span class="graph-chain-toolbar-badge">全链路</span>
+                  <span class="graph-chain-toolbar-root" id="graphChainRootName">--</span>
+                </div>
+                <div class="graph-chain-toolbar-controls">
+                  <div class="graph-chain-group">
+                    <span class="graph-chain-group-label">深度</span>
+                    <button class="graph-chain-btn" data-depth="1" type="button" title="1 层邻居">1</button>
+                    <button class="graph-chain-btn" data-depth="2" type="button" title="2 层邻居">2</button>
+                    <button class="graph-chain-btn active" data-depth="3" type="button" title="3 层邻居（默认）">3</button>
+                    <button class="graph-chain-btn" data-depth="5" type="button" title="5 层邻居">5</button>
+                    <button class="graph-chain-btn" data-depth="0" type="button" title="BFS 直到 frontier 为空（最多 500 节点）">全部</button>
+                  </div>
+                  <div class="graph-chain-group">
+                    <span class="graph-chain-group-label">方向</span>
+                    <button class="graph-chain-btn active" data-dir="both" type="button" title="双向：上游 + 下游">双向</button>
+                    <button class="graph-chain-btn" data-dir="out" type="button" title="下游：依赖 / 节点指向">下游</button>
+                    <button class="graph-chain-btn" data-dir="in" type="button" title="上游：被依赖 / 指向节点">上游</button>
+                  </div>
+                </div>
+                <div class="graph-chain-toolbar-tail">
+                  <span class="graph-chain-summary" id="graphChainSummary">--</span>
+                  <button class="graph-chain-close" id="graphChainClose" type="button" title="返回全图" aria-label="关闭全链路">✕</button>
+                </div>
+              </div>
+              <div class="graph-hint graph-hint-floating" id="graphHintBanner">
+                <span class="graph-hint-title">操作提示</span>
+                <span class="graph-hint-text">单击 → 详情 · 双击 → 全链路视图（深度/方向可调）</span>
+                <button class="graph-hint-close" type="button" title="关闭提示" aria-label="关闭">×</button>
+              </div>
+            </div>
             <div class="graph-empty-state" id="graphEmptyState" hidden>
               <div class="graph-empty-icon">📊</div>
               <h3 data-i18n="graph_empty_title">Graph is empty</h3>
@@ -407,31 +435,59 @@
           </div>
         </div>
         <aside class="graph-results-overview" id="graphResultsOverview">
-          <header class="graph-overview-header" data-i18n="graph_results_overview">Results overview</header>
-          <section class="graph-overview-section">
-            <div class="graph-overview-title" data-i18n="graph_overview_nodes">
-              Nodes
-              <span class="graph-overview-count" id="graphOverviewNodesCount">0</span>
+          <div class="graph-overview-content" id="graphOverviewContent">
+            <header class="graph-overview-header" data-i18n="graph_results_overview">Results overview</header>
+            <section class="graph-overview-section">
+              <div class="graph-overview-title" data-i18n="graph_overview_nodes_bilingual">
+                <span class="graph-overview-title-text">节点 (Nodes)</span>
+                <span class="graph-overview-title-right">
+                  <span class="graph-overview-count" id="graphOverviewNodesCount">0</span>
+                </span>
+              </div>
+              <div class="graph-overview-pills" id="graphLabelPills">
+                <button class="graph-pill" data-label="*" type="button">
+                  <span class="graph-pill-name">*</span>
+                  <span class="graph-pill-count" id="graphOverviewAllNodes">0</span>
+                </button>
+              </div>
+            </section>
+            <section class="graph-overview-section">
+              <div class="graph-overview-title" data-i18n="graph_overview_rels_bilingual">
+                关系 (Relationships)
+                <span class="graph-overview-count" id="graphOverviewRelsCount">0</span>
+              </div>
+              <div class="graph-overview-pills" id="graphRelPills">
+                <button class="graph-pill graph-pill--rel" data-rel="*" type="button">
+                  <span class="graph-pill-name">*</span>
+                  <span class="graph-pill-count" id="graphOverviewAllRels">0</span>
+                </button>
+              </div>
+            </section>
+            <section class="graph-overview-section">
+              <div class="graph-overview-title" data-i18n="graph_properties_title_bilingual">
+                属性 (Properties)
+                <span class="graph-overview-count" id="graphPropsCount">0</span>
+              </div>
+              <div class="graph-overview-pills" id="graphPropPills"></div>
+            </section>
+          </div>
+
+          <div class="graph-node-detail" id="graphNodeDetail" hidden>
+            <div class="graph-node-detail-header">
+              <button class="btn-link" id="graphNodeDetailBack">← <span data-i18n="graph_back">Back</span></button>
+              <span class="graph-node-detail-id" id="graphNodeDetailId"></span>
             </div>
-            <div class="graph-overview-pills" id="graphLabelPills">
-              <button class="graph-pill" data-label="*" type="button">
-                <span class="graph-pill-name">*</span>
-                <span class="graph-pill-count" id="graphOverviewAllNodes">0</span>
-              </button>
+            <div class="graph-node-detail-labels" id="graphNodeDetailLabels"></div>
+            <div class="graph-node-detail-body">
+              <h4 data-i18n="graph_node_properties">Properties</h4>
+              <div class="graph-node-props" id="graphNodeDetailProps"></div>
+              <h4 data-i18n="graph_node_relationships">Relationships</h4>
+              <div class="graph-node-rels" id="graphNodeDetailRels"></div>
             </div>
-          </section>
-          <section class="graph-overview-section">
-            <div class="graph-overview-title" data-i18n="graph_overview_rels">
-              Relationships
-              <span class="graph-overview-count" id="graphOverviewRelsCount">0</span>
-            </div>
-            <div class="graph-overview-pills" id="graphRelPills">
-              <button class="graph-pill graph-pill--rel" data-rel="*" type="button">
-                <span class="graph-pill-name">*</span>
-                <span class="graph-pill-count" id="graphOverviewAllRels">0</span>
-              </button>
-            </div>
-          </section>
+          </div>
+
+          <button class="graph-overview-toggle" id="graphOverviewToggle"
+                  data-i18n-tooltip="graph_toggle_panel" type="button">◀</button>
         </aside>
       </div>
 
@@ -1986,6 +2042,7 @@
 <script src="static/graph_view_table.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/graph_view_json.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/graph_crud.js?v=__WEBUI_VERSION__" defer></script>
+<script src="static/graph_dict.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/graph_main.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/boot.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/outline.js?v=__WEBUI_VERSION__" defer></script>
