@@ -9073,7 +9073,17 @@ from api.workspace import (
     _strip_surrounding_quotes,
     _is_remote_terminal_backend,
     _workspace_blocked_roots,
+    visible_workspaces,
+    _require_workspace_op,
+    WorkspacePermissionError,
 )
+# Workspace RBAC support (Task 5). Imported at module level — not lazily inside
+# the handlers — so tests can patch them as module attributes
+# (``patch.object(routes, "find_user_by_id", ...)``) and so a broken RBAC
+# dependency fails loudly at import time instead of at first mutation.
+from api import audit as _audit
+from api.user_store import find_user_by_id
+from api.auth import _state_dir as _get_state_dir
 from api.upload import (
     handle_upload,
     handle_upload_extract,
@@ -13397,14 +13407,7 @@ def handle_get(handler, parsed) -> bool:
         return _handle_session_export(handler, parsed)
 
     if parsed.path == "/api/workspaces":
-        return j(
-            handler,
-            {
-                "workspaces": load_workspaces(),
-                "last": get_last_workspace(),
-                "terminal_remote_backend": _terminal_remote_backend_enabled(),
-            },
-        )
+        return _handle_workspaces_list(handler, parsed)
 
     if parsed.path == "/api/workspaces/suggest":
         qs = parse_qs(parsed.query)
@@ -14020,6 +14023,11 @@ def handle_get(handler, parsed) -> bool:
                     handler.wfile.write(html_content)
                     return True
 
+    # ── 引导中心（实施助手 2.1）GET 路由 ───────────────────────────────────────
+    if parsed.path.startswith("/api/guidance/implementation"):
+        from api.guidance_http import handle_guidance_get
+        return handle_guidance_get(handler, parsed)
+
     return False  # 404
 
 
@@ -14272,6 +14280,15 @@ def handle_post(handler, parsed) -> bool:
         if diag:
             diag.stage("read_client_event_body")
         return _handle_client_event_log(handler, _read_client_event_payload(handler))
+
+    # ── 引导中心（实施助手 2.1）POST 路由 ──────────────────────────────────────
+    # 必须在 read_body() 之前处理：<task_id>/note 与 CSV 导入都需要原始 rfile
+    # （multipart 由本模块自行解析）。
+    if parsed.path.startswith("/api/guidance/implementation"):
+        from api.guidance_http import handle_guidance_post
+        if diag:
+            diag.finish()
+        return handle_guidance_post(handler, parsed)
 
     if diag:
         diag.stage("read_body")
@@ -15674,6 +15691,12 @@ def handle_post(handler, parsed) -> bool:
     if parsed.path == "/api/workspaces/reorder":
         return _handle_workspace_reorder(handler, body)
 
+    if parsed.path == "/api/workspaces/members/add":
+        return _handle_workspace_member_add(handler, body)
+
+    if parsed.path == "/api/workspaces/members/remove":
+        return _handle_workspace_member_remove(handler, body)
+
     # ── Approval (POST) ──
     if parsed.path == "/api/approval/respond":
         return _handle_approval_respond(handler, body)
@@ -16725,6 +16748,10 @@ def handle_patch(handler, parsed) -> bool:
     body = read_body(handler)
     if not _guard_request_session_visibility(handler, parsed, body=body, method="PATCH"):
         return True
+    # ── Guidance Center (实施助手 2.1) ──
+    if parsed.path.startswith("/api/guidance/implementation/"):
+        from api.guidance_http import handle_guidance_patch
+        return handle_guidance_patch(handler, parsed, body)
     if parsed.path.startswith("/api/mcp/servers/"):
         name = parsed.path[len("/api/mcp/servers/"):]
         return _handle_mcp_server_toggle(handler, name, body)
@@ -16782,6 +16809,10 @@ def handle_delete(handler, parsed) -> bool:
         if result is False:
             return bad(handler, f"unknown notes endpoint: DELETE {parsed.path}", status=404)
         return True
+    # ── 引导中心（实施助手 2.1）DELETE 路由 ────────────────────────────────────
+    if parsed.path == "/api/guidance/implementation":
+        from api.guidance_http import handle_guidance_delete
+        return handle_guidance_delete(handler, parsed)
     return False
 
 
@@ -23449,6 +23480,41 @@ def _handle_file_open_vscode(handler, body):
         return bad(handler, _sanitize_error(e))
 
 
+def _handle_workspaces_list(handler, parsed):
+    """GET /api/workspaces — RBAC-filtered workspace list.
+
+    Default: only workspaces the caller owns or is a member of. ``?view=all``
+    is an admin-only escape hatch that returns the unfiltered list (used by the
+    admin console to manage workspaces it isn't a member of).
+
+    Deployments with no RBAC users configured (legacy / single-user) are NOT
+    filtered — otherwise every workspace would vanish, since ``visible_workspaces``
+    hides entries whose owner it can't match.
+    """
+    qs = parse_qs(parsed.query)
+    view = (qs.get("view", [""])[0] or "").strip().lower()
+    all_ws = load_workspaces()
+    caller_is_admin = _current_rbac_user_is_admin(handler)
+    if view == "all":
+        if not caller_is_admin:
+            return bad(handler, "Admin role required", 403)
+        workspaces = all_ws
+    elif not _rbac_users_configured():
+        workspaces = all_ws
+    else:
+        workspaces = visible_workspaces(
+            _current_rbac_user_id(handler), caller_is_admin, all_ws
+        )
+    return j(
+        handler,
+        {
+            "workspaces": workspaces,
+            "last": get_last_workspace(),
+            "terminal_remote_backend": _terminal_remote_backend_enabled(),
+        },
+    )
+
+
 def _handle_workspace_add(handler, body):
     # Strip surrounding paired quotes BEFORE any further processing — macOS
     # Finder's "Copy as Pathname" wraps paths in single quotes, and users
@@ -23497,34 +23563,154 @@ def _handle_workspace_add(handler, body):
     wss = load_workspaces()
     if any(w["path"] == str(p) for w in wss):
         return bad(handler, "Workspace already in list")
-    wss.append({"path": str(p), "name": name or p.name})
+    # RBAC: the creator becomes owner and sole member. When no RBAC user is
+    # resolved (legacy/no-auth deployments) the entry is written WITHOUT
+    # owner/members so _migrate_workspace_access() can backfill it on the next
+    # load rather than us inventing an owner here.
+    caller = _current_rbac_user(handler)
+    caller_id = caller.get("id") if isinstance(caller, dict) else None
+    entry = {"path": str(p), "name": name or p.name}
+    if caller_id:
+        entry["owner"] = caller_id
+        entry["members"] = [caller_id]
+    wss.append(entry)
     save_workspaces(wss)
+    _audit_workspace_op("workspace.add", caller_id, str(p))
     return j(handler, {"ok": True, "workspaces": wss})
 
 
-def _handle_workspace_remove(handler, body):
-    path_str = body.get("path", "").strip()
+def _audit_workspace_op(action, actor_id, path, **extra):
+    """Best-effort RBAC audit entry for a workspace mutation.
+
+    Swallows failures: an unwritable audit log must never turn a successful
+    workspace mutation into a 500 (the state file has already been saved by
+    the time we get here).
+    """
+    try:
+        _audit.write(
+            category="rbac",
+            action=action,
+            actor_id=actor_id,
+            path=path,
+            **extra,
+        )
+    except Exception:
+        logger.debug("audit write failed for %s", action, exc_info=True)
+
+
+def _resolve_workspace_for_op(handler, body, op):
+    """Look up the workspace named by ``body['path']`` and gate *op* on RBAC.
+
+    Returns ``(wss, target, handled)``. When ``handled`` is True the error
+    response has already been sent and the caller must return immediately.
+
+    ``handled`` is a boolean rather than "the response object" on purpose:
+    ``bad()`` delegates to ``j()``, which sends the reply and returns ``None``,
+    so an ``if err is not None`` guard would silently never fire and let a 403
+    fall through into a 500.
+    """
+    path_str = (body.get("path") or "").strip()
     if not path_str:
-        return bad(handler, "path is required")
+        bad(handler, "path is required")
+        return None, None, True
     wss = load_workspaces()
-    wss = [w for w in wss if w["path"] != path_str]
+    target = next((w for w in wss if isinstance(w, dict) and w.get("path") == path_str), None)
+    if target is None:
+        bad(handler, "Workspace not found", 404)
+        return None, None, True
+    caller = _current_rbac_user(handler)
+    try:
+        _require_workspace_op(target, caller if isinstance(caller, dict) else {}, op)
+    except WorkspacePermissionError as e:
+        bad(handler, str(e), 403)
+        return None, None, True
+    return wss, target, False
+
+
+def _handle_workspace_remove(handler, body):
+    wss, target, handled = _resolve_workspace_for_op(handler, body, "delete")
+    if handled:
+        return None
+    path_str = target["path"]
+    wss = [w for w in wss if not (isinstance(w, dict) and w.get("path") == path_str)]
     save_workspaces(wss)
+    _audit_workspace_op("workspace.remove", _current_rbac_user_id(handler), path_str)
     return j(handler, {"ok": True, "workspaces": wss})
 
 
 def _handle_workspace_rename(handler, body):
-    path_str = body.get("path", "").strip()
-    name = body.get("name", "").strip()
-    if not path_str or not name:
+    name = (body.get("name") or "").strip()
+    if not name:
+        # Mirror the pre-RBAC contract: a missing name is a 400 before any
+        # workspace lookup or permission check.
         return bad(handler, "path and name are required")
-    wss = load_workspaces()
-    for w in wss:
-        if w["path"] == path_str:
-            w["name"] = name
-            break
-    else:
-        return bad(handler, "Workspace not found", 404)
+    wss, target, handled = _resolve_workspace_for_op(handler, body, "rename")
+    if handled:
+        return None
+    old_name = target.get("name")
+    target["name"] = name
     save_workspaces(wss)
+    _audit_workspace_op(
+        "workspace.rename",
+        _current_rbac_user_id(handler),
+        target["path"],
+        old_name=old_name,
+        new_name=name,
+    )
+    return j(handler, {"ok": True, "workspaces": wss})
+
+
+def _handle_workspace_member_add(handler, body):
+    """POST /api/workspaces/members/add — owner or admin grants a user access."""
+    user_id = (body.get("user_id") or "").strip()
+    if not user_id:
+        return bad(handler, "user_id is required")
+    wss, target, handled = _resolve_workspace_for_op(handler, body, "modify members of")
+    if handled:
+        return None
+    # Existence check runs AFTER the permission gate on purpose: a non-member
+    # must not be able to probe which user ids exist.
+    if find_user_by_id(_get_state_dir(), user_id) is None:
+        return bad(handler, "User not found", 404)
+    members = target.get("members")
+    if not isinstance(members, list):
+        members = []
+    if user_id not in members:
+        members.append(user_id)
+    target["members"] = members
+    save_workspaces(wss)
+    _audit_workspace_op(
+        "workspace.member_add",
+        _current_rbac_user_id(handler),
+        target["path"],
+        member_id=user_id,
+    )
+    return j(handler, {"ok": True, "workspaces": wss})
+
+
+def _handle_workspace_member_remove(handler, body):
+    """POST /api/workspaces/members/remove — owner or admin revokes access."""
+    user_id = (body.get("user_id") or "").strip()
+    if not user_id:
+        return bad(handler, "user_id is required")
+    wss, target, handled = _resolve_workspace_for_op(handler, body, "modify members of")
+    if handled:
+        return None
+    if target.get("owner") == user_id:
+        # Removing the owner would orphan the workspace (invisible to everyone
+        # but admins, and unmanageable). Transfer ownership first.
+        return bad(handler, "Cannot remove the workspace owner", 400)
+    members = target.get("members")
+    if not isinstance(members, list):
+        members = []
+    target["members"] = [m for m in members if m != user_id]
+    save_workspaces(wss)
+    _audit_workspace_op(
+        "workspace.member_remove",
+        _current_rbac_user_id(handler),
+        target["path"],
+        member_id=user_id,
+    )
     return j(handler, {"ok": True, "workspaces": wss})
 
 
