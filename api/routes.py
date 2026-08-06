@@ -11974,6 +11974,7 @@ def _require_license(handler, parsed) -> bool | None:
     # Always allow license admin, auth, static files, license page, login, CSP
     if (
         path.startswith("/api/license/")
+        or path.startswith("/api/admin/license/")
         or path.startswith("/api/auth/")
         or path.startswith("/static/")
         or path.startswith("/session/static/")

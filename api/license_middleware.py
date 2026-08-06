@@ -24,7 +24,7 @@ def _is_whitelisted_path(path: str) -> bool:
         return True
     if path == "/license" or path.startswith("/license/"):
         return True
-    if path.startswith("/api/license/"):
+    if path.startswith("/api/license/") or path.startswith("/api/admin/license/"):
         return True
     return False
 

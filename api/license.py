@@ -256,6 +256,9 @@ def check_license_status(workspace: Path) -> dict:
 
     try:
         expires_at = datetime.fromisoformat(expires_at_str.replace("Z", "+00:00"))
+        if expires_at.tzinfo is None:
+            # 无时区偏移的日期按 UTC 处理，避免与 offset-aware 的 now 运算报错
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
     except ValueError:
         return {
             "activated": True,
@@ -366,6 +369,10 @@ def import_license(workspace: Path, license_string: str) -> dict:
     if expires_at:
         try:
             expires_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            if expires_dt.tzinfo is None:
+                # 无时区偏移的日期（如 2027-12-31T23:59:59）按 UTC 处理，
+                # 避免与 offset-aware 的 now 比较时报 TypeError。
+                expires_dt = expires_dt.replace(tzinfo=timezone.utc)
             now = datetime.now(timezone.utc)
             if expires_dt < now:
                 _log.warning(
@@ -373,7 +380,7 @@ def import_license(workspace: Path, license_string: str) -> dict:
                     expires_at, now.isoformat(),
                 )
                 return {"ok": False, "error": "License 已过期"}
-        except ValueError as e:
+        except (ValueError, TypeError) as e:
             _log.warning("[license] 导入: 无法解析过期时间 %s  错误=%s", expires_at, e)
 
     _log.info("[license] 导入成功: 过期时间=%s", expires_at)

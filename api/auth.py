@@ -1003,8 +1003,19 @@ def _save_user_sessions() -> None:
 
 
 def verify_password_against_hash(plain: str, expected_hash: str) -> bool:
-    """Verify plaintext against a stored PBKDF2 hash (constant-time compare)."""
-    return hmac.compare_digest(_hash_password(plain), expected_hash)
+    """Verify plaintext against a stored PBKDF2 hash (constant-time compare).
+
+    与 verify_password() 保持一致的迁移语义：当当前 `.pbkdf2_key` 与旧
+    `.signing_key` 不同时，也尝试旧 salt，避免 key 轮换后 RBAC 用户
+    （users.json 里的多用户）因哈希未迁移而无法登录。
+    """
+    if hmac.compare_digest(_hash_password(plain), expected_hash):
+        return True
+    legacy_salt = _signing_key()
+    current_salt = _pbkdf2_key()
+    if legacy_salt != current_salt:
+        return hmac.compare_digest(_hash_password(plain, salt=legacy_salt), expected_hash)
+    return False
 
 
 def authenticate(username: str, password: str) -> dict | None:
