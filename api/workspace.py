@@ -335,6 +335,9 @@ def _migrate_global_workspaces() -> list:
 
 
 def load_workspaces() -> list:
+    # STATE_DIR is imported locally to avoid a circular import (config.py loads
+    # at server bootstrap and workspace.py is imported during that bootstrap).
+    from api.config import STATE_DIR as _STATE_DIR
     ws_file = _workspaces_file()
     if ws_file.exists():
         try:
@@ -348,7 +351,10 @@ def load_workspaces() -> list:
                     )
                 except Exception:
                     logger.debug("Failed to persist cleaned workspace list")
-            return cleaned or [{'path': _profile_default_workspace(), 'name': 'Home'}]
+            return _migrate_workspace_access(
+                cleaned or [{'path': _profile_default_workspace(), 'name': 'Home'}],
+                Path(_STATE_DIR),
+            )
         except Exception:
             logger.debug("Failed to load workspaces from %s", ws_file)
     # No profile-local file yet.
@@ -362,15 +368,146 @@ def load_workspaces() -> list:
     if is_default:
         migrated = _migrate_global_workspaces()
         if migrated:
-            return migrated
-    # Fresh start: single entry from the profile's configured workspace, labeled "Home"
-    return [{'path': _profile_default_workspace(), 'name': 'Home'}]
+            return _migrate_workspace_access(migrated, Path(_STATE_DIR))
+    # Fresh start: single entry from the profile's configured workspace, labeled "Home".
+    # Run RBAC migration so even the synthetic default gets an owner set.
+    return _migrate_workspace_access(
+        [{'path': _profile_default_workspace(), 'name': 'Home'}],
+        Path(_STATE_DIR),
+    )
 
 
 def save_workspaces(workspaces: list) -> None:
     ws_file = _workspaces_file()
     ws_file.parent.mkdir(parents=True, exist_ok=True)
     ws_file.write_text(json.dumps(workspaces, ensure_ascii=False, indent=2), encoding='utf-8')
+
+
+# ── Workspace RBAC (visibility, permission gate, owner/members backfill) ────
+
+class WorkspacePermissionError(PermissionError):
+    """Raised when a user lacks permission to perform a workspace operation.
+
+    Subclasses :class:`PermissionError` so callers that already handle
+    ``PermissionError`` (HTTP handlers wrapping routes) don't need a separate
+    catch path. Used by :func:`_require_workspace_op` to gate mutating
+    workspace endpoints on RBAC.
+    """
+
+
+def visible_workspaces(user_id, is_admin, all_ws):
+    """Filter *all_ws* to those *user_id* is allowed to see.
+
+    Admins see everything (the picker UI must show the full list). Regular
+    users see only workspaces where they are the ``owner`` or appear in
+    ``members``. Workspaces missing both fields (legacy state from before
+    :func:`_migrate_workspace_access` runs) are hidden from non-admins —
+    the load path always runs that helper first, so by the time HTTP
+    handlers call this every workspace should have a valid ``owner``.
+
+    Returns a new list; does not mutate *all_ws*.
+    """
+    if is_admin:
+        return list(all_ws)
+    out = []
+    for w in all_ws:
+        if not isinstance(w, dict):
+            continue
+        owner = w.get("owner")
+        members = w.get("members")
+        if owner is None and members is None:
+            # No RBAC fields — migration will backfill on next load. Treat as
+            # invisible to non-admins so a fresh server doesn't leak workspace
+            # paths to users with no membership record.
+            continue
+        if owner == user_id:
+            out.append(w)
+            continue
+        if isinstance(members, list) and user_id in members:
+            out.append(w)
+    return out
+
+
+def _require_workspace_op(ws, user, op):
+    """Raise :class:`WorkspacePermissionError` unless *user* may perform *op*.
+
+    *user* is a user record (must have ``id`` and ``role``). Owners and
+    admins always pass. Everyone else is rejected. *op* is a short verb
+    phrase used in the error message (e.g. ``"delete"``, ``"modify members
+    of"``).
+    """
+    if isinstance(user, dict) and user.get("role") == "admin":
+        return
+    user_id = user.get("id") if isinstance(user, dict) else None
+    owner = ws.get("owner") if isinstance(ws, dict) else None
+    if user_id and owner == user_id:
+        return
+    raise WorkspacePermissionError(f"Only owner or admin can {op} workspace")
+
+
+def _migrate_workspace_access(workspaces, state_dir):
+    """Idempotently backfill ``owner`` and ``members`` on every workspace.
+
+    For each entry missing either field, the earliest-created admin (by
+    ``created_at`` ascending; ties broken by import order from
+    :func:`api.user_store.load_users`) becomes the owner and the sole
+    member. Workspaces that already have both fields are left untouched
+    — this is the idempotency guarantee that lets us call the function on
+    every load without churn.
+
+    Picks "skip + warn" over "guess wrong" when no admin exists: better to
+    leave a workspace unowned (and thus invisible to non-admins) than to
+    assign a random user. Persists via :func:`save_workspaces` on change
+    and writes one audit entry under ``category='rbac',
+    action='workspace.migration'`` (best-effort; both persist and audit
+    are swallowed on failure so migration never blocks workspace loading).
+    """
+    from api.user_store import load_users
+
+    users = load_users(state_dir)
+    admins = sorted(
+        [u for u in users if u.get("role") == "admin"],
+        key=lambda u: u.get("created_at") or "",
+    )
+    if not admins:
+        logger.warning(
+            "RBAC workspace migration skipped: no admin user found in %s",
+            state_dir,
+        )
+        return workspaces
+
+    first_admin_id = admins[0].get("id")
+    if not first_admin_id:
+        logger.warning("RBAC workspace migration skipped: admin record missing id")
+        return workspaces
+
+    migrated_count = 0
+    for w in workspaces:
+        if not isinstance(w, dict):
+            continue
+        if "owner" not in w or "members" not in w:
+            w["owner"] = first_admin_id
+            w["members"] = [first_admin_id]
+            migrated_count += 1
+
+    if migrated_count:
+        try:
+            save_workspaces(workspaces)
+        except Exception:
+            logger.debug("Failed to persist RBAC-migrated workspaces", exc_info=True)
+        try:
+            from api.audit import write as audit_write
+
+            audit_write(
+                category="rbac",
+                action="workspace.migration",
+                owner_default=first_admin_id,
+                count=migrated_count,
+            )
+        except Exception:
+            logger.debug("audit write failed for workspace.migration", exc_info=True)
+
+    return workspaces
 
 
 def get_profile_default_workspace() -> str:
