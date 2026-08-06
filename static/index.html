@@ -152,6 +152,11 @@
       <line x1="5" y1="12" x2="19" y2="12"/>
     </svg>
   </button>
+  <button class="app-titlebar-account app-titlebar-guidance" id="titlebarGuidanceBtn" onclick="window.__openGuidanceCenter&&window.__openGuidanceCenter()" type="button" aria-label="引导中心" title="引导中心">
+    <span class="app-titlebar-account-icon" aria-hidden="true">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+    </span>
+  </button>
   <button class="app-titlebar-account" id="titlebarAccountBtn" onclick="toggleTitlebarAccountMenu(event)" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="账号菜单" title="账号">
     <span class="app-titlebar-account-icon" aria-hidden="true">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
@@ -433,6 +438,10 @@
           <button type="button" class="side-menu-item" data-settings-section="users" onclick="switchSettingsSection('users',{fromSidebarItem:true})">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
             <span data-i18n="settings_tab_users">Users</span>
+          </button>
+          <button type="button" class="side-menu-item" data-settings-section="guidance" onclick="switchSettingsSection('guidance',{fromSidebarItem:true})">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+            <span data-i18n="guidance_sidebar_entry">引导中心</span>
           </button>
           <button type="button" class="side-menu-item" data-settings-section="providers" onclick="switchSettingsSection('providers',{fromSidebarItem:true})">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
@@ -1506,6 +1515,7 @@
             <div id="settingsPreferencesAutosaveStatus" class="settings-autosave-status" aria-live="polite"></div>
           </div>
           <div class="settings-pane" id="settingsPaneUsers"></div>
+          <div class="settings-pane" id="settingsPaneGuidance"></div>
           <div class="settings-pane" id="settingsPaneProviders">
             <div class="settings-section-head">
               <div>
@@ -1858,6 +1868,8 @@
 <script src="static/obsidian_notes.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/panels.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/users_panel.js?v=__WEBUI_VERSION__" defer></script>
+<script src="static/change_password_dialog.js?v=__WEBUI_VERSION__" defer></script>
+<script src="static/guidance_panel.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/onboarding.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/boot.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/guidance.js?v=__WEBUI_VERSION__" defer></script>
@@ -2041,18 +2053,21 @@
           <div class="gp21-progress-fill" id="gp21ProgressFill" style="width:0%"></div>
         </div>
         <span class="gp21-progress-label" id="gp21ProgressLabel">0/12</span>
+        <span class="gp21-current-user" id="gp21CurrentUser"></span>
         <div class="gp21-actions">
+          <button class="gp21-btn" id="gp21ImportBtn" title="快速上传 CSV">📤 上传 CSV</button>
           <button class="gp21-btn" id="gp21ExportBtn">导出报告</button>
           <button class="gp21-btn" id="gp21ResetBtn">重置进度</button>
           <button class="gp21-btn" id="gp21CloseBtn">关闭</button>
         </div>
-      </header>
-      <div class="gp21-tasks" id="gp21Tasks"></div>
-      <footer class="gp21-footer">
-        <span id="gp21CurrentUser"></span>
         <input type="file" id="gp21ImportFile" accept=".csv" style="display:none">
-        <button class="gp21-btn gp21-btn-primary" id="gp21ImportBtn">📤 上传 CSV</button>
-      </footer>
+      </header>
+      <div class="gp21-body">
+        <aside class="gp21-sidebar" id="gp21Sidebar"></aside>
+        <main class="gp21-main">
+          <div class="gp21-tasks" id="gp21Tasks"></div>
+        </main>
+      </div>
     </div>
   </div>
 </template>

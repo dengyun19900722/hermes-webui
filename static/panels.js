@@ -6762,6 +6762,29 @@ function renderProfileDropdown(data) {
     mgmt.onclick = () => { closeProfileDropdown(); mobileSwitchPanel('profiles'); };
     dd.appendChild(mgmt);
   }
+  // Divider + account actions: "Change password" (always available, even in
+  // single-profile mode) and "Sign out" (per RBAC plan §7). The change-password
+  // item lives BEFORE sign-out so the spec's "before logout" ordering is
+  // satisfied. data-action attributes are picked up by the global click
+  // delegation in static/change_password_dialog.js.
+  const acctDiv = document.createElement('div'); acctDiv.className = 'ws-divider'; dd.appendChild(acctDiv);
+  const cpItem = document.createElement('div');
+  cpItem.className = 'profile-opt';
+  cpItem.setAttribute('data-action', 'change-password');
+  cpItem.setAttribute('role', 'menuitem');
+  cpItem.innerHTML = `${li('lock', 12)} ${esc(t('menu_change_password'))}`;
+  cpItem.onclick = () => { closeProfileDropdown(); if (typeof openChangePasswordDialog === 'function') openChangePasswordDialog(); };
+  dd.appendChild(cpItem);
+  const soItem = document.createElement('div');
+  soItem.className = 'profile-opt';
+  soItem.setAttribute('data-action', 'sign-out-from-dropdown');
+  soItem.setAttribute('role', 'menuitem');
+  // No icon available in icons.js for "log-out" — use a simple inline SVG arrow
+  // (door + arrow) that matches Lucide's log-out glyph without adding a new
+  // entry to the shared icon registry for this single-use case.
+  soItem.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px;display:inline-block;margin-right:4px"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg> ' + esc(t('sign_out', 'Sign Out'));
+  soItem.onclick = () => { closeProfileDropdown(); if (typeof signOut === 'function') signOut(); };
+  dd.appendChild(soItem);
   // Sync titlebar label to the resolved active profile
   const tbl = $('titlebarProfileLabel');
   if (tbl) tbl.textContent = active;
@@ -7853,7 +7876,7 @@ function switchSettingsSection(name,opts){
     _settingsSection = name;
     return;
   }
-  let section=(name==='appearance'||name==='preferences'||name==='users'||name==='providers'||name==='plugins'||name==='extensions'||name==='system'||name==='help')?name:'conversation';
+  let section=(name==='appearance'||name==='preferences'||name==='users'||name==='guidance'||name==='providers'||name==='plugins'||name==='extensions'||name==='system'||name==='help')?name:'conversation';
   // Deep-linking to the Plugins pane when the tab is hidden (no plugins
   // installed, #3457) falls back to Conversation. Resolve this BEFORE toggling
   // panes/sidebar/dropdown below so every downstream selection uses the
@@ -7865,13 +7888,13 @@ function switchSettingsSection(name,opts){
   }
   _settingsSection=section;
   _currentSettingsSection=section;
-  const map={conversation:'Conversation',appearance:'Appearance',preferences:'Preferences',users:'Users',providers:'Providers',plugins:'Plugins',extensions:'Extensions',system:'System',help:'Help'};
+  const map={conversation:'Conversation',appearance:'Appearance',preferences:'Preferences',users:'Users',guidance:'Guidance',providers:'Providers',plugins:'Plugins',extensions:'Extensions',system:'System',help:'Help'};
   // Sidebar menu items
   document.querySelectorAll('#settingsMenu .side-menu-item').forEach(it=>{
     it.classList.toggle('active', it.dataset.settingsSection===section);
   });
   // Panes in main
-  ['conversation','appearance','preferences','users','providers','plugins','extensions','system','help'].forEach(key=>{
+  ['conversation','appearance','preferences','users','guidance','providers','plugins','extensions','system','help'].forEach(key=>{
     const pane=$('settingsPane'+map[key]);
     if(pane) pane.classList.toggle('active', key===section);
   });
@@ -7886,6 +7909,7 @@ function switchSettingsSection(name,opts){
     if(section==='plugins') loadPluginsPanel();
     if(section==='extensions') loadExtensionsPanel();
     if(section==='users') loadUsersPanel();
+    if(section==='guidance') loadGuidancePanel();
   }
   if(opts&&opts.fromSidebarItem)_closeMobileSidebarAfterPanelSelection();
 }
@@ -7947,6 +7971,8 @@ async function _buildSettingsIndex() {
       settingsPaneConversation: 'conversation',
       settingsPaneAppearance: 'appearance',
       settingsPanePreferences: 'preferences',
+      settingsPaneUsers: 'users',
+      settingsPaneGuidance: 'guidance',
       settingsPaneProviders: 'providers',
       settingsPanePlugins: 'plugins',
       settingsPaneExtensions: 'extensions',
@@ -8080,6 +8106,8 @@ async function filterSettings(query) {
     conversation: t('settings_tab_conversation') || 'Conversation',
     appearance: t('settings_tab_appearance') || 'Appearance',
     preferences: t('settings_tab_preferences') || 'Preferences',
+    users: t('settings_tab_users') || 'Users',
+    guidance: t('guidance_sidebar_entry') || '引导中心',
     providers: t('providers_tab_title') || 'Providers',
     plugins: t('settings_tab_plugins') || 'Plugins',
     extensions: t('settings_tab_extensions') || 'Extensions',
@@ -8167,6 +8195,8 @@ function _resolveSettingsField(entry) {
     conversation: 'settingsPaneConversation',
     appearance: 'settingsPaneAppearance',
     preferences: 'settingsPanePreferences',
+    users: 'settingsPaneUsers',
+    guidance: 'settingsPaneGuidance',
     providers: 'settingsPaneProviders',
     plugins: 'settingsPanePlugins',
     extensions: 'settingsPaneExtensions',
