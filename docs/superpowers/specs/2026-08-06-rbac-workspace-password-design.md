@@ -163,7 +163,7 @@ def _require_workspace_op(ws: dict, user: dict, op: str) -> None:
 | 鉴权 | 必须登录（任意 role） |
 | Body | `{old_password: str, new_password: str}` |
 | 校验 | 旧密码 PBKDF2 verify；新密码 ≥ 8 字符 + 同时含字母和数字 |
-| 副作用 | 1) `update_password(user_id, hash)` 写 users.json；2) `invalidate_all_user_sessions(user_id)` 删 `.rbac-sessions.json` 中该用户所有 token；3) 当前 cookie 不动 |
+| 副作用 | 1) `update_password(user_id, hash)` 写 users.json；2) `invalidate_all_user_sessions(user_id, keep_token=current_token)` 删 `.rbac-sessions.json` 中该用户**除当前 token 之外**的所有 token |
 | 错误码 | 401 未登录；400 旧密码错 / 新密码不符规则；500 IO |
 | 返回 | `{ok: true}` 或 `{error: "..."}` |
 
@@ -191,7 +191,7 @@ def _require_workspace_op(ws: dict, user: dict, op: str) -> None:
 | GET | `/api/workspaces?view=all` | admin | 不过滤；响应加 `view: "all"` |
 | POST | `/api/workspaces` | 登录 | body `{path, name?}`；**路径不存在时自动 mkdir -p**；creator 自动成为 owner+members |
 | PUT | `/api/workspaces/{path}` | owner or admin | 重命名（body `{name}`） |
-| DELETE | `/api/workspaces/{path}` | owner or admin | 从 list 移除（不动磁盘） |
+| DELETE | `/api/workspaces/{path}` | owner or admin | 从 list 移除（不动磁盘）；**前端必须二次确认 modal**（防误删） |
 | POST | `/api/workspaces/{path}/members` | owner or admin | body `{user_id}`；user_id 不存在返回 404 |
 | DELETE | `/api/workspaces/{path}/members/{user_id}` | owner or admin | 移人；不允许移除 owner |
 
@@ -396,7 +396,8 @@ UI（中央 empty state）：
 #### i18n 测试
 
 - 新增键在中英 locale 各出现一次
-- 校验：`python -c "from static.i18n_test import assert_keys; assert_keys([...])"`
+- 校验方式（由 writing-plans 阶段决定具体工具）：可以是 grep 脚本校验 i18n.js 中键存在，也可以是 pytest fixture 加载两个 locale 字典对比
+- 占位：测试模块 `static/i18n_test` 不存在；writing-plans 阶段需先决定是否新增，或复用现有 i18n 校验模式
 
 ### 5.3 验收清单
 
