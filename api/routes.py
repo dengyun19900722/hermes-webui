@@ -23498,8 +23498,31 @@ def _handle_workspaces_list(handler, parsed):
     if view == "all":
         if not caller_is_admin:
             return bad(handler, "Admin role required", 403)
-        workspaces = all_ws
-    elif not _rbac_users_configured():
+        # The admin console shows "owner: <username>" per row, so resolve owner
+        # ids to usernames here rather than making the client fetch every user.
+        # Unknown ids (deleted user) map to None; the client falls back to the
+        # raw id.
+        from api.user_store import load_users
+
+        user_by_id = {
+            str(u.get("id")): u.get("username")
+            for u in load_users(_get_state_dir())
+            if u.get("id")
+        }
+        augmented = [
+            {**w, "owner_username": user_by_id.get(str(w.get("owner") or ""))}
+            for w in all_ws
+        ]
+        return j(
+            handler,
+            {
+                "workspaces": augmented,
+                "last": get_last_workspace(),
+                "view": "all",
+                "terminal_remote_backend": _terminal_remote_backend_enabled(),
+            },
+        )
+    if not _rbac_users_configured():
         workspaces = all_ws
     else:
         workspaces = visible_workspaces(

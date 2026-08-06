@@ -5805,7 +5805,8 @@ function renderWorkspaceDropdownInto(dd, workspaces, currentWs){
       opt.className='ws-opt'+(w.path===currentWs?' active':'');
       opt.dataset.name=w.name||'';
       opt.dataset.path=w.path||'';
-      opt.innerHTML=`<span class="ws-opt-name">${esc(w.name)}</span><span class="ws-opt-path">${esc(w.path)}</span>`;
+      const ownerBadge=(typeof workspaceOwnerBadgeHtml === 'function') ? workspaceOwnerBadgeHtml(w) : '';
+      opt.innerHTML=`<span class="ws-opt-name">${esc(w.name)}${ownerBadge}</span><span class="ws-opt-path">${esc(w.path)}</span>`;
       opt.onclick=()=>switchToWorkspace(w.path,w.name);
       listContainer.appendChild(opt);
     }
@@ -5931,10 +5932,11 @@ function renderWorkspacesPanel(workspaces){
     row.draggable=true;
     const isActive = w.path === activePath;
     const activeBadge = isActive ? `<span class="detail-badge active" style="margin-left:6px;font-size:9px;padding:1px 6px">${esc(t('profile_active'))}</span>` : '';
+    const ownerBadge = (typeof workspaceOwnerBadgeHtml === 'function') ? workspaceOwnerBadgeHtml(w) : '';
     row.innerHTML=`
       <span class="ws-drag-handle" title="${esc(t('workspace_drag_hint'))}">${li('grip-vertical',12)}</span>
       <div class="ws-row-info">
-        <div class="ws-row-name">${esc(w.name)}${activeBadge}</div>
+        <div class="ws-row-name">${esc(w.name)}${activeBadge}${ownerBadge}</div>
         <div class="ws-row-path">${esc(w.path)}</div>
       </div>`;
     // Click on info area only — not on drag handle
