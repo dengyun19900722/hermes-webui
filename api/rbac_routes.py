@@ -22,14 +22,41 @@ from api.auth import (
     authenticate,
     create_user_session,
     get_user_from_session,
+    invalidate_all_user_sessions,
     invalidate_user_session,
     is_admin,
     needs_initialization,
     initialize_first_admin,
+    verify_password_against_hash,
+    _hash_password,
 )
-from api.user_store import find_user_by_username, find_user_by_id
+from api.user_store import find_user_by_username, find_user_by_id, update_password
 from api.config import STATE_DIR
 from api.helpers import j
+
+
+# Password complexity rules for self-service change.
+# Mirrored from api.admin.create_user so that admins and users have the same
+# surface (8+ chars AND must contain both letters and digits). When you tune
+# these, also update the i18n keys in static/i18n.js
+#   password_too_short, password_needs_classes
+_MIN_PASSWORD_LEN = 8
+
+
+def _validate_password_complexity(password: str) -> str | None:
+    """Return i18n error key when password fails complexity, else None.
+
+    Rules (deliberately simple — see _MIN_PASSWORD_LEN):
+      - length < _MIN_PASSWORD_LEN → "password_too_short"
+      - missing letter OR missing digit → "password_needs_classes"
+    """
+    if not isinstance(password, str) or len(password) < _MIN_PASSWORD_LEN:
+        return "password_too_short"
+    has_letter = any(c.isalpha() for c in password)
+    has_digit = any(c.isdigit() for c in password)
+    if not (has_letter and has_digit):
+        return "password_needs_classes"
+    return None
 
 
 def _read_json_body(handler) -> dict:
@@ -191,6 +218,86 @@ def handle_auth_init_status(handler, parsed) -> bool:
     except Exception:
         pass
     _send_json(handler, 200, {"initialized": initialized, "license_status": license_status})
+    return True
+
+
+def handle_auth_change_password(handler, parsed) -> bool:
+    """POST /api/auth/change-password — authenticated user updates own password.
+
+    Body: ``{"old_password": "...", "new_password": "..."}``.
+
+    Order of checks (each short-circuits with a 4xx + i18n-friendly error key):
+      1. Must be logged in                  → 401 "auth_required"
+      2. Body must include both fields      → 400 "missing_field"
+      3. old_password must verify           → 400 "password_old_wrong"
+      4. new_password must pass complexity  → 400 "password_too_short" | "password_needs_classes"
+
+    Side effects on success:
+      - user.password_hash replaced on disk via api.user_store.update_password
+      - all OTHER sessions for this user are invalidated; current keep_token preserved
+      - audit.write(category='rbac', action='password.change') fired
+
+    Returns ``{ok: true}`` on success. Errors use the same i18n-key
+    ``error`` field that the frontend already maps to a translated string.
+    """
+    user = _current_user(handler)
+    if not user:
+        _send_json(handler, 401, {"error": "auth_required"})
+        return True
+
+    try:
+        body = _read_json_body(handler)
+    except json.JSONDecodeError:
+        _send_json(handler, 400, {"error": "invalid_json"})
+        return True
+
+    old_password = body.get("old_password") or ""
+    new_password = body.get("new_password") or ""
+    if not old_password or not new_password:
+        _send_json(handler, 400, {"error": "missing_field"})
+        return True
+
+    # Verify current password against the user's stored hash. We re-load
+    # the user record (instead of trusting the caller-supplied user dict)
+    # so a stale cookie pointing at a deleted user is rejected.
+    record = find_user_by_id(Path(STATE_DIR), str(user.get("id") or ""))
+    if not record:
+        _send_json(handler, 401, {"error": "auth_required"})
+        return True
+    stored_hash = record.get("password_hash") or ""
+    if not stored_hash or not verify_password_against_hash(old_password, stored_hash):
+        _send_json(handler, 400, {"error": "password_old_wrong"})
+        return True
+
+    # Complexity check (length + classes)
+    complexity_err = _validate_password_complexity(new_password)
+    if complexity_err:
+        _send_json(handler, 400, {"error": complexity_err})
+        return True
+
+    # All checks passed — persist new hash + kick other sessions.
+    try:
+        new_hash = _hash_password(new_password)
+        update_password(Path(STATE_DIR), str(user["id"]), new_hash)
+    except Exception:
+        _send_json(handler, 500, {"error": "internal_error"})
+        return True
+
+    keep_token = _get_session_token(handler)
+    try:
+        invalidate_all_user_sessions(str(user["id"]), keep_token=keep_token)
+    except Exception:
+        # Don't fail the request — password is already updated.
+        pass
+
+    _audit.write(
+        category="rbac",
+        action="password.change",
+        actor_id=user["id"], actor_name=user.get("username"),
+        target_type="user", target_id=user["id"], target_name=user.get("username"),
+        details={"via": "self"},
+    )
+    _send_json(handler, 200, {"ok": True})
     return True
 
 
@@ -833,6 +940,10 @@ def try_handle_rbac(method: str, parsed, handler) -> bool:
         return handle_auth_logout(handler, parsed)
     if method == "GET" and path == "/api/auth/init_status":
         return handle_auth_init_status(handler, parsed)
+
+    # Authenticated self-service password change (RBAC)
+    if method == "POST" and path == "/api/auth/change-password":
+        return handle_auth_change_password(handler, parsed)
 
     # Public token view (no auth)
     if method == "GET" and path == "/api/shared/session":
