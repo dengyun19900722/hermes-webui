@@ -88,3 +88,36 @@ def add_user(state_dir: Path, user: dict[str, Any]) -> dict[str, Any]:
     users.append(user)
     save_users(state_dir, users)
     return user
+
+
+def update_password(state_dir: Path, user_id: str, new_password_hash: str) -> dict[str, Any]:
+    """Replace the user's password_hash on disk. Raises KeyError if not found.
+
+    Returns the updated user record. Callers are responsible for invalidating
+    any cached PBKDF2 key (see api.auth._invalidate_password_hash_cache) and
+    kicking existing sessions (see api.auth.invalidate_all_user_sessions) after
+    a successful update.
+    """
+    users = load_users(state_dir)
+    for user in users:
+        if user.get("id") == user_id:
+            user["password_hash"] = new_password_hash
+            save_users(state_dir, users)
+            return user
+    raise KeyError(f"User not found: {user_id}")
+
+
+def _hash_password_for_test(plain: str) -> str:
+    """Deterministic PBKDF2 hash for tests only. Not for production use.
+
+    Production password hashing lives in api.auth._hash_password and uses a
+    random salt plus a higher iteration count. This helper exists so unit tests
+    can produce stable, comparable hashes without dragging in the production
+    secret material.
+    """
+    import hashlib
+
+    salt = b"test-salt-fixed-for-reproducibility"
+    return "pbkdf2_sha256$" + hashlib.pbkdf2_hmac(
+        "sha256", plain.encode("utf-8"), salt, 1000
+    ).hex()

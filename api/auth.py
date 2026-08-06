@@ -1070,6 +1070,35 @@ def invalidate_user_session(token: str) -> None:
         _save_user_sessions()
 
 
+def invalidate_all_user_sessions(user_id: str, *, keep_token: str | None = None) -> int:
+    """Invalidate every RBAC session belonging to ``user_id``.
+
+    Returns the number of sessions removed. Used by:
+      - Admin password reset (Task 3): always force a re-login.
+      - Self password change (Task 2): kick all OTHER sessions, but pass the
+        caller's own ``keep_token`` so they don't get logged out of the page
+        they just changed their password on.
+
+    If ``keep_token`` matches a session owned by ``user_id`` that token is
+    preserved (only the OTHER sessions are removed). ``keep_token`` is
+    keyword-only so the no-keep-token call site is unambiguous.
+    """
+    if not user_id:
+        return 0
+    with _USER_SESSION_LOCK:
+        _user_sessions.update(_load_user_sessions())
+        removed = 0
+        for token, info in list(_user_sessions.items()):
+            if keep_token and token == keep_token:
+                continue
+            if isinstance(info, dict) and info.get("user_id") == user_id:
+                _user_sessions.pop(token, None)
+                removed += 1
+        if removed:
+            _save_user_sessions()
+        return removed
+
+
 # ── Role check helpers ────────────────────────────────────────────────────────
 
 def is_admin(user: dict | None) -> bool:
