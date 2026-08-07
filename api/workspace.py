@@ -277,7 +277,12 @@ def _clean_workspace_list(workspaces: list) -> list:
         # Rename confusing 'default' label to 'Home'
         if name.lower() == 'default':
             name = 'Home'
-        result.append({'path': str(p), 'name': name})
+        # Preserve all keys (owner, members, etc.) — _clean_workspace_list must
+        # not strip RBAC fields. Earlier versions emitted only {path, name},
+        # which caused the next _migrate_workspace_access() pass to backfill
+        # owner/members with [admin] only — silently wiping non-admin members
+        # added via the workspace.member.add endpoint.
+        result.append({**w, 'path': str(p), 'name': name})
     return result
 
 
