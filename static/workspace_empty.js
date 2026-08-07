@@ -23,6 +23,18 @@ function renderNoWorkspaceEmptyState(){
   const title = (typeof t === 'function') ? t('workspace_empty_title') : 'You have no accessible workspaces';
   const hint  = (typeof t === 'function') ? t('workspace_empty_hint')  : 'Contact your administrator to be added, or create one yourself';
   const btn   = (typeof t === 'function') ? t('workspace_empty_create_btn') : '+ Create workspace';
+  const emptyLabel = (typeof t === 'function') ? t('no_workspace') : '无可用工作区';
+  // Snapshot the original chat empty-state HTML before we overwrite it so the
+  // auth-change reset can restore it for the *next* user (see panels.js
+  // _resetWorkspaceStateForAuthChange). Without this, a user who has no
+  // workspace and then logs out leaves the workspace empty state stuck on the
+  // default page for whoever logs in next, even if they actually have
+  // workspaces (e.g. test2 receiving a shared workspace from dengy).
+  try{
+    if(typeof S !== 'undefined' && S && S._emptyStateOriginalHTML === undefined){
+      S._emptyStateOriginalHTML = root.innerHTML;
+    }
+  }catch(_){}
   root.classList.add('workspace-empty-state', 'no-suggestions');
   root.innerHTML = `
     <div class="workspace-empty-state__icon" aria-hidden="true">📁</div>
@@ -44,6 +56,19 @@ function renderNoWorkspaceEmptyState(){
   if(liveTools) liveTools.style.display = 'none';
   const liveCards = $('liveCompressionCards');
   if(liveCards) liveCards.innerHTML = '';
+  // Mirror the empty state to the composer / sidebar workspace chips so they
+  // do not keep showing the stale session workspace while the main view says
+  // "no workspaces available" (e.g. admin removed all workspaces for this user).
+  const chipLabel = $('composerWorkspaceLabel');
+  if(chipLabel) chipLabel.textContent = emptyLabel;
+  const chip = $('composerWorkspaceChip');
+  if(chip) { chip.disabled = true; chip.title = emptyLabel; chip.classList.add('no-workspace'); }
+  const mobileLabel = $('composerMobileWorkspaceLabel');
+  if(mobileLabel) mobileLabel.textContent = emptyLabel;
+  const mobileAction = $('composerMobileWorkspaceAction');
+  if(mobileAction) { mobileAction.title = emptyLabel; mobileAction.classList.add('no-workspace'); }
+  const sidebarName = $('sidebarWsName');
+  if(sidebarName) sidebarName.textContent = emptyLabel;
 }
 
 function openCreateWorkspaceDialog(){

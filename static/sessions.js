@@ -8470,6 +8470,13 @@ function resetSessionStateForAuthChange(nextUserId=''){
   S.toolCalls = [];
   S.activeStreamId = null;
   S.busy = false;
+  // Reset workspace-related front-end state too so the default page after an
+  // account switch never shows the previous user's workspace list / file tree /
+  // composer chip / detail view. /api/settings + /api/workspaces are re-read on
+  // the next boot for the new identity.
+  if(typeof window._resetWorkspaceStateForAuthChange === 'function'){
+    try{ window._resetWorkspaceStateForAuthChange(); }catch(_){}
+  }
   try{ localStorage.removeItem('hermes-webui-session'); }catch(_){}
   try{ if(typeof _setActiveSessionUrl === 'function') _setActiveSessionUrl(null); }catch(_){}
   const empty=$('emptyState');

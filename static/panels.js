@@ -5668,7 +5668,19 @@ function syncWorkspaceDisplays(){
   // Fall back to the profile default workspace when no session is active yet.
   // S._profileDefaultWorkspace is set during boot and profile switches from /api/settings.
   const defaultWs=(typeof S._profileDefaultWorkspace==='string'&&S._profileDefaultWorkspace)||'';
-  const ws=hasSession?S.session.workspace:(defaultWs||'');
+  let ws=hasSession?S.session.workspace:(defaultWs||'');
+  // The profile default workspace may reference a path the current user cannot
+  // actually access (e.g. test user inherits /private/tmp/hermes-webui-chain-ws
+  // from admin but is not a member). Treat those as no-workspace so the chip /
+  // sidebar / composer don't display a stale name. Only honour ws values that
+  // appear in the freshly fetched workspace list.
+  const listAccessible=Array.isArray(_workspaceList)?_workspaceList:[];
+  const isAccessible=!!ws && listAccessible.some(w=>w&&w.path===ws);
+  if(ws && !isAccessible){
+    // Drop the inaccessible default from the chip but keep S._profileDefaultWorkspace
+    // around so subsequent boot loads can re-evaluate it (e.g. admin shares it later).
+    ws='';
+  }
   const hasWorkspace=!!(ws);
   const label=hasWorkspace?getWorkspaceFriendlyName(ws):t('no_workspace');
 
@@ -5695,6 +5707,31 @@ function syncWorkspaceDisplays(){
   if(mobileAction){
     mobileAction.title=hasWorkspace?ws:t('no_workspace');
     mobileAction.classList.toggle('active',!!(composerDropdown&&composerDropdown.classList.contains('open')));
+  }
+  // When the user has no accessible workspace, lock the composer so they
+  // cannot start a question (the empty-state view asks them to create or be
+  // invited to one first). Re-evaluated on boot, profile switch and auth change.
+  const composerInput=$('msg');
+  if(composerInput){
+    if(!hasWorkspace && S._bootReady){
+      if(!_composerLockState){
+        _composerLockState={disabled:composerInput.disabled, placeholder:composerInput.placeholder};
+      }
+      composerInput.disabled=true;
+      const emptyHint=(typeof t==='function')?t('composer_disabled_no_workspace'):'无可用工作区';
+      composerInput.placeholder=emptyHint;
+      const sendBtn=$('sendBtn');
+      if(sendBtn) sendBtn.disabled=true;
+    }else if(_composerLockState && _composerLockState.placeholder==='无可用工作区'){
+      // Restore the previous lock state when a workspace becomes available again.
+      composerInput.disabled=!!_composerLockState.disabled;
+      if(typeof _composerLockState.placeholder==='string'){
+        composerInput.placeholder=_composerLockState.placeholder;
+      }
+      _composerLockState=null;
+      const sendBtn=$('sendBtn');
+      if(sendBtn) sendBtn.disabled=false;
+    }
   }
 }
 
@@ -6023,6 +6060,29 @@ function _renderWorkspaceDetail(ws){
     ? `<span class="detail-badge active">${esc(t('profile_active'))}</span>`
     : `<span class="detail-badge">Inactive</span>`;
   const defaultBadge = isDefault ? ` <span class="detail-badge">${esc(t('profile_default_label'))}</span>` : '';
+  // Owner 行：优先 username，否则降级到 id（admin/owner 可见，member 也可见）
+  const ownerUid = ws.owner ? String(ws.owner) : '';
+  const ownerUsername = ws.owner_username ? String(ws.owner_username) : '';
+  const ownerDisplay = ownerUsername || (ownerUid && ownerUid.length <= 32 ? ownerUid : (ownerUid ? ownerUid.slice(0, 8) + '…' : ''));
+  // Members 列表：把 members_username (按 id 顺序) 与 members (id) zip
+  const memberIds = Array.isArray(ws.members) ? ws.members.map(String) : [];
+  const memberUsernames = Array.isArray(ws.members_username) ? ws.members_username : [];
+  const membersRendered = memberIds.length
+    ? memberIds.map((mid, i) => {
+        const uname = (memberUsernames[i] && String(memberUsernames[i])) || '';
+        const label = uname || (mid.length <= 32 ? mid : mid.slice(0, 8) + '…');
+        return `<span class="ws-member-chip" data-uid="${esc(mid)}" data-uname="${esc(uname)}">${esc(label)}</span>`;
+      }).join('')
+    : `<span style="color:var(--muted);font-size:12px">${esc(t('workspace_members_empty') || '无成员')}</span>`;
+  // Manage members 入口：仅 admin 或 owner 可见
+  const callerUid = String(window._currentAuthUserId || '');
+  const callerRole = String(window._currentAuthRole || '');
+  const canManageMembers = callerRole === 'admin' || (ownerUid && ownerUid === callerUid);
+  const manageMembersHtml = canManageMembers
+    ? `<div class="detail-row" style="margin-top:6px">
+         <button type="button" class="sm-btn" id="btnManageWorkspaceMembers" data-path="${esc(ws.path)}" style="font-size:11px;padding:4px 10px">${esc(t('workspace_manage_members') || '管理成员')}</button>
+       </div>`
+    : '';
   body.innerHTML = `
     <div class="main-view-content">
       <div class="detail-card">
@@ -6030,6 +6090,8 @@ function _renderWorkspaceDetail(ws){
         <div class="detail-row"><div class="detail-row-label">Name</div><div class="detail-row-value">${esc(ws.name || '')}</div></div>
         <div class="detail-row"><div class="detail-row-label">Path</div><div class="detail-row-value"><code>${esc(ws.path)}</code></div></div>
         <div class="detail-row"><div class="detail-row-label">Status</div><div class="detail-row-value">${statusBadge}${defaultBadge}</div></div>
+        <div class="detail-row"><div class="detail-row-label">${esc(t('workspace_owner_field_label') || 'Owner')}</div><div class="detail-row-value">${esc(ownerDisplay || '—')}</div></div>
+        <div class="detail-row"><div class="detail-row-label">${esc(t('workspace_members_field_label') || 'Members')}</div><div class="detail-row-value ws-members-row" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">${membersRendered}${manageMembersHtml}</div></div>
       </div>
       <div class="detail-card" style="margin-top:12px">
         <div class="detail-card-title">${esc(t('checkpoint_title'))}</div>
@@ -6043,6 +6105,89 @@ function _renderWorkspaceDetail(ws){
   _workspaceMode = 'read';
   _setWorkspaceHeaderButtons('read', ws);
   _loadCheckpoints(ws.path);
+  // Bind Manage Members button (if rendered)
+  const btn = $('btnManageWorkspaceMembers');
+  if (btn) {
+    btn.addEventListener('click', () => _openWorkspaceMembersDialog(ws));
+  }
+}
+
+async function _openWorkspaceMembersDialog(ws){
+  if (!ws || !ws.path) return;
+  // 加载用户列表
+  let users = [];
+  try {
+    const data = await api('/api/users', { timeoutMs: 6000, timeoutToast: false });
+    users = (data && Array.isArray(data.users)) ? data.users : [];
+  } catch (e) {
+    showToast((e && e.message) || String(e), 'error');
+    return;
+  }
+  const memberIds = new Set(Array.isArray(ws.members) ? ws.members.map(String) : []);
+  // 渲染弹窗（用现有的 settings-dialog / modal 体系，或自己造一个简单遮罩）
+  const backdrop = document.createElement('div');
+  backdrop.className = 'ws-members-modal-backdrop';
+  const memberUsernames = Array.isArray(ws.members_username) ? ws.members_username : [];
+  const memberRows = users.map(u => {
+    const uid = String(u.id || '');
+    const uname = String(u.username || uid);
+    const checked = memberIds.has(uid);
+    const role = String(u.role || '');
+    return `<label class="ws-members-row-item" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid var(--border)">
+      <input type="checkbox" data-uid="${esc(uid)}" data-uname="${esc(uname)}" ${checked ? 'checked' : ''}>
+      <span style="flex:1">${esc(uname)}</span>
+      <span style="font-size:11px;color:var(--muted)">${esc(role)}</span>
+    </label>`;
+  }).join('');
+  backdrop.innerHTML = `
+    <div class="ws-members-modal" style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:18px 20px;min-width:360px;max-width:520px;max-height:70vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,.25);z-index:10000">
+      <div style="font-size:14px;font-weight:600;margin-bottom:10px">${esc(t('workspace_manage_members') || '管理成员')} — ${esc(ws.name || ws.path)}</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">${esc(t('workspace_manage_members_hint') || '勾选要授予访问权限的用户。Owner 始终保留在成员列表中。')}</div>
+      <div class="ws-members-list" style="overflow:auto;flex:1;border:1px solid var(--border);border-radius:6px;padding:4px 0">${memberRows}</div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
+        <button type="button" class="sm-btn" id="wsMembersCancel" style="padding:6px 14px">${esc(t('cancel') || '取消')}</button>
+        <button type="button" class="sm-btn" id="wsMembersSave" style="padding:6px 14px;background:var(--accent);color:#000;font-weight:700">${esc(t('save') || '保存')}</button>
+      </div>
+    </div>`;
+  backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:9999';
+  document.body.appendChild(backdrop);
+
+  const close = () => backdrop.remove();
+  const cancelBtn = backdrop.querySelector('#wsMembersCancel');
+  if (cancelBtn) cancelBtn.addEventListener('click', close);
+  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+
+  const saveBtn = backdrop.querySelector('#wsMembersSave');
+  if (saveBtn) saveBtn.addEventListener('click', async () => {
+    saveBtn.disabled = true;
+    try {
+      const checkboxes = [...backdrop.querySelectorAll('input[type="checkbox"][data-uid]')];
+      const desiredIds = new Set(checkboxes.filter(cb => cb.checked).map(cb => String(cb.dataset.uid)));
+      const currentIds = new Set(memberIds);
+      // 计算差集（owner 始终在 members 中）
+      const ownerUid = ws.owner ? String(ws.owner) : '';
+      if (ownerUid) desiredIds.add(ownerUid);
+      const toAdd = [...desiredIds].filter(uid => !currentIds.has(uid));
+      const toRemove = [...currentIds].filter(uid => !desiredIds.has(uid) && uid !== ownerUid);
+      for (const uid of toAdd) {
+        await api('/api/workspaces/members/add', { method: 'POST', body: JSON.stringify({ path: ws.path, user_id: uid }) });
+      }
+      for (const uid of toRemove) {
+        await api('/api/workspaces/members/remove', { method: 'POST', body: JSON.stringify({ path: ws.path, user_id: uid }) });
+      }
+      // 刷新列表与详情
+      const data = await api('/api/workspaces');
+      _workspaceList = data.workspaces || [];
+      const refreshed = _workspaceList.find(w => w.path === ws.path);
+      if (refreshed) _renderWorkspaceDetail(refreshed);
+      renderWorkspacesPanel(_workspaceList);
+      showToast(t('workspace_members_saved') || '成员已保存');
+      close();
+    } catch (e) {
+      saveBtn.disabled = false;
+      showToast((e && e.message) || String(e), 'error');
+    }
+  });
 }
 
 function _setWorkspaceHeaderButtons(mode, ws){
@@ -6093,6 +6238,60 @@ function _clearWorkspaceDetail(){
   if (body) { body.innerHTML = ''; body.style.display = 'none'; }
   if (empty) empty.style.display = '';
   _setWorkspaceHeaderButtons('empty');
+}
+
+// Reset all workspace-related front-end state when the authenticated user
+// changes (login / logout / account switch). Without this, the default page
+// can render the previous user's workspace list, file tree, composer chip and
+// detail view. The next boot reloads /api/settings + /api/workspaces for the
+// new identity, so clearing here is safe and avoids cross-account leakage.
+function _resetWorkspaceStateForAuthChange(){
+  _workspaceList = [];
+  if(typeof _clearWorkspaceDetail === 'function') _clearWorkspaceDetail();
+  // Clear the cached profile default workspace (re-read on next boot/settings).
+  if(typeof S !== 'undefined' && S){
+    S._profileDefaultWorkspace = null;
+    S._profileSwitchWorkspace = null;
+    // Restore the chat empty-state HTML if a previous no-workspace render had
+    // overwritten it (workspace_empty.js:renderNoWorkspaceEmptyState snapshots
+    // the original on first use). Without this, the default page for the next
+    // user keeps showing "you have no accessible workspaces" even when that
+    // user does have workspaces (e.g. one shared by another account).
+    const root = (typeof $ === 'function') ? $('emptyState') : null;
+    if(root && typeof S._emptyStateOriginalHTML === 'string'){
+      root.innerHTML = S._emptyStateOriginalHTML;
+      root.classList.remove('workspace-empty-state', 'no-suggestions');
+    }
+  }
+  // Close + reset the right-hand workspace panel (Files / Artifacts / Todos).
+  try{
+    if(typeof closeWorkspacePanel === 'function') closeWorkspacePanel();
+  }catch(_){}
+  try{
+    if(typeof clearPreview === 'function') clearPreview({keepPanelOpen:false});
+  }catch(_){}
+  try{
+    const fileTree=$('fileTree');
+    if(fileTree) fileTree.innerHTML='';
+  }catch(_){}
+  // Reflect the cleared state across composer / sidebar chips.
+  try{
+    if(typeof syncWorkspaceDisplays === 'function') syncWorkspaceDisplays();
+  }catch(_){}
+  try{
+    if(typeof syncWorkspacePanelState === 'function') syncWorkspacePanelState();
+  }catch(_){}
+  // Clear no-workspace markers the empty-state render left on composer / mobile
+  // chips so the next user's chip is interactive again.
+  try{
+    const chip = $('composerWorkspaceChip');
+    if(chip){ chip.disabled = false; chip.classList.remove('no-workspace'); chip.removeAttribute('title'); }
+    const mobileAction = $('composerMobileWorkspaceAction');
+    if(mobileAction){ mobileAction.classList.remove('no-workspace'); mobileAction.removeAttribute('title'); }
+  }catch(_){}
+}
+if(typeof window!=='undefined'){
+  window._resetWorkspaceStateForAuthChange = _resetWorkspaceStateForAuthChange;
 }
 
 async function activateCurrentWorkspace(){
