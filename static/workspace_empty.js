@@ -87,7 +87,10 @@ async function maybeRenderNoWorkspaceEmptyState(){
   const path = (typeof window !== 'undefined' && window.location)
     ? (window.location.pathname || '')
     : '';
-  const isChatRoute = path === '/chat' || path === '/chat/' || /^\/session\//.test(path);
+  const isChatRoute =
+    path === '/' || path === '' ||
+    path === '/chat' || path === '/chat/' ||
+    /^\/session\//.test(path);
   if(!isChatRoute) return false;
   // Fetch the workspace list directly. We do NOT depend on the
   // module-scoped `_workspaceList` inside panels.js — the boot sequence
