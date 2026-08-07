@@ -15079,7 +15079,7 @@ def handle_post(handler, parsed) -> bool:
                 close_terminal(body["session_id"])
             except Exception:
                 logger.debug("Failed to close workspace terminal after workspace update")
-        set_last_workspace(new_ws)
+        set_last_workspace(new_ws, _current_rbac_user_id(handler))
         return j(handler, {"session": s.compact() | {"messages": s.messages}})
     if parsed.path == "/api/session/worktree/remove":
         sid = body.get("session_id", "")
@@ -23517,22 +23517,25 @@ def _handle_workspaces_list(handler, parsed):
             handler,
             {
                 "workspaces": augmented,
-                "last": get_last_workspace(),
+                "last": get_last_workspace(_current_rbac_user_id(handler)),
                 "view": "all",
                 "terminal_remote_backend": _terminal_remote_backend_enabled(),
             },
         )
+    rbac_user_id = _current_rbac_user_id(handler)
     if not _rbac_users_configured():
         workspaces = all_ws
     else:
-        workspaces = visible_workspaces(
-            _current_rbac_user_id(handler), caller_is_admin, all_ws
-        )
+        workspaces = visible_workspaces(rbac_user_id, caller_is_admin, all_ws)
+    # Restrict "last" to the caller's accessible paths so user A's
+    # last-used workspace never bleeds into user B's composer chip
+    # (see api/workspace.py:_last_workspace_file).
+    allowed_paths = {str(w.get("path")) for w in workspaces if isinstance(w, dict)}
     return j(
         handler,
         {
             "workspaces": workspaces,
-            "last": get_last_workspace(),
+            "last": get_last_workspace(rbac_user_id, allowed_paths=allowed_paths),
             "terminal_remote_backend": _terminal_remote_backend_enabled(),
         },
     )

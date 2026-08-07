@@ -61,9 +61,26 @@ def _workspaces_file() -> Path:
     return _profile_state_dir() / 'workspaces.json'
 
 
-def _last_workspace_file() -> Path:
-    """Return the last_workspace.txt path for the active profile."""
-    return _profile_state_dir() / 'last_workspace.txt'
+def _last_workspace_file(user_id: str | None = None) -> Path:
+    """Return the per-user (or profile-global) last_workspace.txt path.
+
+    ``user_id`` triggers a per-user file under the profile state dir so that
+    user A's most-recent workspace doesn't leak into user B's composer chip
+    (cross-user state bleed, see RBAC plan §1.1 / Task 9 follow-up). The
+    legacy ``last_workspace.txt`` is still read as a fallback for any code
+    path that calls without a user_id, and is still WRITTEN by callers
+    that pass ``user_id=None`` for backwards compatibility (admin/global
+    flows that legitimately want shared state).
+    """
+    base = _profile_state_dir()
+    if user_id:
+        # Defensive sanitize: the user id is uuid4 hex so the regex is a
+        # belt-and-suspenders guard against any future caller passing an
+        # unsanitized value. Anything weird falls back to the global file.
+        safe = ''.join(ch for ch in str(user_id) if ch.isalnum() or ch in '-_')
+        if safe:
+            return base / f'last_workspace_{safe}.txt'
+    return base / 'last_workspace.txt'
 
 
 def _expanduser_path(path: str | Path) -> Path:
@@ -554,16 +571,26 @@ def get_profile_default_workspace() -> str:
     return _profile_default_workspace()
 
 
-def get_last_workspace() -> str:
+def get_last_workspace(user_id: str | None = None, *, allowed_paths: set[str] | None = None) -> str:
+    """Read the most recently used workspace.
+
+    Per-user file (``last_workspace_<user_id>.txt``) is preferred over the
+    profile-global ``last_workspace.txt`` so user A's state doesn't leak
+    into user B's composer / new-session default. Both fall through to
+    ``_profile_default_workspace()`` if neither exists or is unusable.
+
+    ``allowed_paths`` optionally restricts the returned path to a set of
+    workspace paths the caller is permitted to see. This is the second
+    line of defense against cross-user leakage (the first being the
+    per-user file): even if the per-user file somehow points at a
+    workspace the user has lost access to, we won't surface it.
+    """
     remote_cwd = _remote_terminal_cwd()
 
     def valid_last_workspace(raw: str) -> str | None:
         if not raw:
             return None
         if remote_cwd:
-            # For remote/SSH profiles, last_workspace is target-side state. Do
-            # not accept stale server-local paths merely because they exist on
-            # the WebUI host; require the value to stay under terminal.cwd.
             if _remote_terminal_workspace_candidate(raw) is not None:
                 return raw
             return None
@@ -571,18 +598,35 @@ def get_last_workspace() -> str:
             return raw
         return None
 
+    def _filter(p: str | None) -> str | None:
+        if not p:
+            return None
+        if allowed_paths is not None and p not in allowed_paths:
+            return None
+        return p
+
+    # Per-user file first
+    if user_id:
+        lw_user = _last_workspace_file(user_id)
+        if lw_user.exists():
+            try:
+                p = _filter(valid_last_workspace(lw_user.read_text(encoding='utf-8').strip()))
+                if p:
+                    return p
+            except Exception:
+                logger.debug("Failed to read per-user last workspace from %s", lw_user)
+    # Profile-global file (legacy / shared flows)
     lw_file = _last_workspace_file()
     if lw_file.exists():
         try:
-            p = valid_last_workspace(lw_file.read_text(encoding='utf-8').strip())
+            p = _filter(valid_last_workspace(lw_file.read_text(encoding='utf-8').strip()))
             if p:
                 return p
         except Exception:
             logger.debug("Failed to read last workspace from %s", lw_file)
-    # Fallback: try global file
     if _GLOBAL_LW_FILE.exists():
         try:
-            p = valid_last_workspace(_GLOBAL_LW_FILE.read_text(encoding='utf-8').strip())
+            p = _filter(valid_last_workspace(_GLOBAL_LW_FILE.read_text(encoding='utf-8').strip()))
             if p:
                 return p
         except Exception:
@@ -590,9 +634,15 @@ def get_last_workspace() -> str:
     return _profile_default_workspace()
 
 
-def set_last_workspace(path: str) -> None:
+def set_last_workspace(path: str, user_id: str | None = None) -> None:
+    """Persist the most-recently used workspace.
+
+    With ``user_id``, writes a per-user file; without it, falls back to the
+    legacy profile-global file (kept for admin/global flows that genuinely
+    want shared state).
+    """
     try:
-        lw_file = _last_workspace_file()
+        lw_file = _last_workspace_file(user_id) if user_id else _last_workspace_file()
         lw_file.parent.mkdir(parents=True, exist_ok=True)
         lw_file.write_text(str(path), encoding='utf-8')
     except Exception:
