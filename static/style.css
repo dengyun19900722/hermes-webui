@@ -3038,15 +3038,14 @@
     box-shadow:0 0 0 4px color-mix(in srgb, var(--accent) 50%, transparent);
   }
   /* Light-theme variant: pure dark text on light accent fill (e.g. yellow
-     background in solarized-light needs dark text to stay legible). */
-  :root.light .workspace-empty-state__cta,
-  :root[data-theme="light"] .workspace-empty-state__cta{
+     background in solarized-light needs dark text to stay legible).
+     Hermes applies dark mode via :root.dark; light = no .dark class. */
+  :root:not(.dark) .workspace-empty-state__cta{
     color:#1a1a1a;
     background:var(--accent);
     border-color:color-mix(in srgb, var(--accent) 70%, #000 30%);
   }
-  :root.light .workspace-empty-state__cta:hover,
-  :root[data-theme="light"] .workspace-empty-state__cta:hover{
+  :root:not(.dark) .workspace-empty-state__cta:hover{
     background:var(--accent-hover);
     border-color:color-mix(in srgb, var(--accent) 50%, #000 50%);
   }
