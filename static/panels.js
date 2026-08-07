@@ -6200,7 +6200,7 @@ async function saveWorkspaceForm(){
       openWorkspaceDetail(targetPath);
       return;
     }
-    const data = await api('/api/workspaces/add', { method:'POST', body: JSON.stringify({ path }) });
+    const data = await api('/api/workspaces/add', { method:'POST', body: JSON.stringify({ path, create: true }) });
     _workspaceList = data.workspaces || [];
     _workspacePreFormDetail = null;
     // Apply rename if a friendly name was supplied
@@ -6302,7 +6302,7 @@ async function promptWorkspacePath(){
   const path=(value||'').trim();
   if(!path)return;
   try{
-    const data=await api('/api/workspaces/add',{method:'POST',body:JSON.stringify({path})});
+    const data=await api('/api/workspaces/add',{method:'POST',body:JSON.stringify({path,create:true})});
     _workspaceList=data.workspaces||[];
     const target=_workspaceList[_workspaceList.length-1];
     if(!target) throw new Error(t('workspace_not_added'));

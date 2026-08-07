@@ -2977,30 +2977,78 @@
   .empty-state p{font-size:14px;text-align:center;max-width:320px;}
   /* ── Workspace-required empty state (RBAC: no accessible workspaces) ──
      Inherits the .empty-state centering, then overrides the visual chrome
-     so the user sees a folder icon + create CTA instead of the chat hero. */
-  .empty-state.workspace-empty-state{gap:14px;}
+     so the user sees a folder icon + create CTA instead of the chat hero.
+     CTA colors are forced to a high-contrast pair (white on darker accent)
+     because several themes ship --accent and --accent-text too close in
+     value, leaving the button text invisible against the accent fill. */
+  .empty-state.workspace-empty-state{
+    gap:18px;
+    padding:32px 28px;
+    border-radius:16px;
+    background:var(--surface2);
+    border:1px solid var(--border);
+    box-shadow:0 1px 0 var(--border) inset, 0 8px 24px rgba(0,0,0,.04);
+  }
   .empty-state.workspace-empty-state .empty-logo{display:none;}
-  .workspace-empty-state__icon{font-size:48px;line-height:1;opacity:.85;margin-bottom:4px;}
-  .workspace-empty-state__cta{
-    margin-top:6px;
-    padding:9px 18px;
+  .workspace-empty-state__icon{
+    font-size:56px;
+    line-height:1;
+    opacity:.9;
+    margin-bottom:6px;
+    filter:drop-shadow(0 2px 6px rgba(0,0,0,.18));
+  }
+  .empty-state.workspace-empty-state h2{
+    font-size:18px;
+    font-weight:700;
+    color:var(--text);
+  }
+  .empty-state.workspace-empty-state p{
     font-size:13.5px;
-    font-weight:600;
-    color:var(--accent-text);
-    background:var(--accent);
-    border:1px solid var(--accent);
+    color:var(--muted);
+    max-width:340px;
+    line-height:1.55;
+  }
+  .workspace-empty-state__cta{
+    margin-top:8px;
+    padding:10px 22px;
+    font-size:13.5px;
+    font-weight:700;
+    /* Forced white text + darker accent fill + ring border so the label is
+       legible against every theme accent (yellow / red / orange / blue). */
+    color:#fff;
+    background:color-mix(in srgb, var(--accent) 88%, #000 12%);
+    border:1px solid color-mix(in srgb, var(--accent) 70%, #000 30%);
     border-radius:10px;
     cursor:pointer;
-    transition:background .15s,border-color .15s,transform .05s;
+    box-shadow:0 2px 6px rgba(0,0,0,.18), 0 0 0 1px rgba(255,255,255,.06) inset;
+    transition:background .15s, border-color .15s, transform .05s, box-shadow .15s;
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
   }
   .workspace-empty-state__cta:hover{
-    background:var(--accent-bg-strong);
-    border-color:var(--accent-bg-strong);
+    background:color-mix(in srgb, var(--accent) 78%, #000 22%);
+    border-color:color-mix(in srgb, var(--accent) 60%, #000 40%);
+    box-shadow:0 4px 10px rgba(0,0,0,.24), 0 0 0 1px rgba(255,255,255,.08) inset;
   }
   .workspace-empty-state__cta:active{transform:translateY(1px);}
   .workspace-empty-state__cta:focus-visible{
-    outline:2px solid var(--accent);
+    outline:2px solid #fff;
     outline-offset:2px;
+    box-shadow:0 0 0 4px color-mix(in srgb, var(--accent) 50%, transparent);
+  }
+  /* Light-theme variant: pure dark text on light accent fill (e.g. yellow
+     background in solarized-light needs dark text to stay legible). */
+  :root.light .workspace-empty-state__cta,
+  :root[data-theme="light"] .workspace-empty-state__cta{
+    color:#1a1a1a;
+    background:var(--accent);
+    border-color:color-mix(in srgb, var(--accent) 70%, #000 30%);
+  }
+  :root.light .workspace-empty-state__cta:hover,
+  :root[data-theme="light"] .workspace-empty-state__cta:hover{
+    background:var(--accent-hover);
+    border-color:color-mix(in srgb, var(--accent) 50%, #000 50%);
   }
   .suggestion-grid{display:flex;flex-direction:column;gap:8px;margin-top:12px;width:100%;max-width:380px;}
   .suggestion{padding:12px 14px;background:var(--input-bg);border:1px solid var(--border);border-radius:10px;font-size:13px;color:var(--muted);cursor:pointer;transition:all .15s;text-align:left;}
