@@ -144,6 +144,242 @@ _BUILTIN_ENTRIES: list[dict] = [
     {"category": "property_value", "source": "unhealthy", "target": "不健康"},
     {"category": "property_value", "source": "offline", "target": "离线"},
     {"category": "property_value", "source": "online", "target": "在线"},
+    # ── Neo4j 浏览器识别补充（2026-08-07，来自 12.7.2.75:7474/browser/） ──
+    # 节点标签
+    {"category": "node_label", "source": "BusinessGroup", "target": "业务组",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "node_label", "source": "Firewall", "target": "防火墙",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "node_label", "source": "KVM", "target": "KVM",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "node_label", "source": "Log", "target": "日志节点",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "node_label", "source": "Model", "target": "型号",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "node_label", "source": "NPB", "target": "NPB设备",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "node_label", "source": "Project", "target": "项目",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "node_label", "source": "Redis", "target": "Redis",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "node_label", "source": "Software", "target": "软件",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "node_label", "source": "Switch", "target": "交换机",
+     "description": "Neo4j 浏览器识别补充"},
+    # 关系类型
+    {"category": "rel_type", "source": "AAA", "target": "AAA",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "rel_type", "source": "BELONGS_TO", "target": "从属于",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "rel_type", "source": "CONTAINS", "target": "包含",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "rel_type", "source": "DEPLOYED_ON", "target": "部署于",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "rel_type", "source": "LOCATED_IN", "target": "位于",
+     "description": "Neo4j 浏览器识别补充"},
+    # 属性名（property_key）
+    {"category": "property_key", "source": "_synced_at", "target": "同步时间",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "account", "target": "账户",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "asset_owner", "target": "资产负责人",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "baseboard_product", "target": "主板产品",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "baseboard_vendor", "target": "主板厂商",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "bios_vendor", "target": "BIOS厂商",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "bios_version", "target": "BIOS版本",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "busi_name", "target": "业务名",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "business", "target": "业务",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "cabinet", "target": "机柜",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "cabinet_cmdb_id", "target": "机柜CMDB ID",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "cabinet_position", "target": "机柜位置",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "capacity", "target": "容量",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "chassis_type", "target": "机箱类型",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "cmdb_id", "target": "CMDB ID",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "config", "target": "配置",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "cpu_info", "target": "CPU信息",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "developer", "target": "开发者",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "device_model", "target": "设备型号",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "device_name", "target": "设备名",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "device_status", "target": "设备状态",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "device_vendor", "target": "设备厂商",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "disk_info", "target": "磁盘信息",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "disk_plan", "target": "磁盘规划",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "disk_size", "target": "磁盘容量",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "disk_used", "target": "磁盘已用",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "error_desc", "target": "错误描述",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "error_key", "target": "错误码",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "first_seen", "target": "首次发现时间",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "floor", "target": "楼层",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "group", "target": "组",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "group_name", "target": "组名",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "group_path", "target": "组路径",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "host_group", "target": "主机组",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "install_date", "target": "安装日期",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "installed_version", "target": "已安装版本",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "instance_name", "target": "实例名",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "interface_type", "target": "接口类型",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "internal_model", "target": "内部型号",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "ip_10g", "target": "10G IP",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "ip_1g", "target": "1G IP",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "ip_mgmt", "target": "管理IP",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "kernel", "target": "内核",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "last_seen", "target": "最后发现时间",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "let_type", "target": "租约类型",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "level", "target": "级别",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "load_avg", "target": "平均负载",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "location", "target": "位置",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "log_name", "target": "日志名",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "log_type", "target": "日志类型",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "manufacturer", "target": "制造商",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "master_port", "target": "主端口",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "memory_gb", "target": "内存GB",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "memory_modules", "target": "内存条",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "memory_slots", "target": "内存槽位",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "mgmt_password", "target": "管理密码",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "mgmt_user", "target": "管理用户",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "network_cards", "target": "网卡",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "network_interfaces", "target": "网络接口",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "os_arch", "target": "系统架构",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "os_name", "target": "系统名",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "os_type", "target": "系统类型",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "os_version", "target": "系统版本",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "password", "target": "密码",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "port_count", "target": "端口数",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "ports", "target": "端口列表",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "position", "target": "位置",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "processor_count", "target": "处理器数",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "product", "target": "产品",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "program_id", "target": "程序ID",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "program_name", "target": "程序名",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "raid", "target": "RAID",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "remark", "target": "备注",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "role", "target": "角色",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "room", "target": "机房",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "room_cmdb_id", "target": "机房CMDB ID",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "root_password", "target": "root密码",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "sentinel_ports", "target": "哨兵端口",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "serial", "target": "序列号",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "serial_number", "target": "序列号",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "services", "target": "服务列表",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "sku", "target": "SKU",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "slave_port", "target": "从端口",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "source", "target": "来源",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "source_type", "target": "来源类型",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "ssh_password", "target": "SSH密码",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "ssh_port", "target": "SSH端口",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "ssh_user", "target": "SSH用户",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "subnet", "target": "子网",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "subnet_mask", "target": "子网掩码",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "system_password", "target": "系统密码",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "system_product", "target": "系统产品",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "system_serial", "target": "系统序列号",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "system_user", "target": "系统用户",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "system_uuid", "target": "系统UUID",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "system_vendor", "target": "系统厂商",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "tag", "target": "标签",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "update_time", "target": "更新时间",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "updated", "target": "已更新",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "uptime_since", "target": "运行时长起点",
+     "description": "Neo4j 浏览器识别补充"},
+    {"category": "property_key", "source": "vendor", "target": "厂商",
+     "description": "Neo4j 浏览器识别补充"},
 ]
 
 
@@ -158,7 +394,12 @@ def _now() -> str:
 def _default_data() -> dict:
     now = _now()
     items = []
+    seen = set()  # 去重：(category, source) 已见跳过
     for entry in _BUILTIN_ENTRIES:
+        key = (entry["category"], entry["source"])
+        if key in seen:
+            continue
+        seen.add(key)
         items.append({
             "id": _gen_id(),
             "category": entry["category"],
@@ -196,6 +437,11 @@ class DictManager:
                 # 迁移：旧数据没有 version 或 items 结构
                 if not isinstance(self._data, dict) or "items" not in self._data:
                     raise ValueError("invalid format")
+                # 迁移：把 _BUILTIN_ENTRIES 中尚未存在的条目增量追加（不影响用户自定义）
+                added = self._merge_builtins()
+                if added:
+                    self._flush()
+                    logger.info("Added %d built-in dict entries on migration", added)
                 return
             except Exception as e:
                 logger.warning("Failed to load dict file %s: %s, reinitializing", path, e)
@@ -205,6 +451,39 @@ class DictManager:
         self._flush()
         logger.info("Seeded %d built-in dict entries to %s",
                     len(self._data["items"]), path)
+
+    def _merge_builtins(self) -> int:
+        """把 _BUILTIN_ENTRIES 中尚未出现的条目追加进来。
+
+        判定标准：同 (category, source) 的条目视为"已存在"，跳过——
+        用户改过 target 或 enabled 状态的实例，我们尊重其编辑结果。
+        返回新追加的条目数。
+        """
+        existing = {
+            (item.get("category"), item.get("source"))
+            for item in self._data.get("items", [])
+            if item.get("category") and item.get("source")
+        }
+        now = _now()
+        added = 0
+        for entry in _BUILTIN_ENTRIES:
+            key = (entry["category"], entry["source"])
+            if key in existing:
+                continue
+            self._data["items"].append({
+                "id": _gen_id(),
+                "category": entry["category"],
+                "source": entry["source"],
+                "target": entry["target"],
+                "scope": entry.get("scope", ""),
+                "description": entry.get("description", ""),
+                "enabled": True,
+                "created_at": now,
+                "updated_at": now,
+            })
+            existing.add(key)
+            added += 1
+        return added
 
     def _flush(self):
         """原子写 JSON 文件。"""
