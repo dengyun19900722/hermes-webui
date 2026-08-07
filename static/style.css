@@ -1838,6 +1838,8 @@
   .app-titlebar-account-field select:focus{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-bg);}
   .app-titlebar-account-signout{display:flex;align-items:center;justify-content:center;width:100%;height:32px;margin-top:10px;border:1px solid var(--border);border-radius:7px;background:var(--surface2);color:var(--danger);font-size:12px;font-weight:700;cursor:pointer;-webkit-app-region:no-drag;}
   .app-titlebar-account-signout:hover{background:color-mix(in srgb,var(--danger) 10%,var(--surface2));border-color:color-mix(in srgb,var(--danger) 35%,var(--border));}
+  .app-titlebar-account-action{display:flex;align-items:center;justify-content:center;width:100%;height:32px;margin-top:10px;border:1px solid var(--border);border-radius:7px;background:var(--surface2);color:var(--text);font-size:12px;font-weight:700;cursor:pointer;-webkit-app-region:no-drag;}
+  .app-titlebar-account-action:hover{background:var(--surface);border-color:var(--accent);}
   .system-health-panel.insights-card{display:flex;flex-direction:column;gap:12px;color:var(--muted);}
   .system-health-panel.unavailable{display:none;}
   .system-health-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}
