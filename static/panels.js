@@ -5668,18 +5668,24 @@ function syncWorkspaceDisplays(){
   // Fall back to the profile default workspace when no session is active yet.
   // S._profileDefaultWorkspace is set during boot and profile switches from /api/settings.
   const defaultWs=(typeof S._profileDefaultWorkspace==='string'&&S._profileDefaultWorkspace)||'';
-  let ws=hasSession?S.session.workspace:(defaultWs||'');
-  // The profile default workspace may reference a path the current user cannot
-  // actually access (e.g. test user inherits /private/tmp/hermes-webui-chain-ws
-  // from admin but is not a member). Treat those as no-workspace so the chip /
-  // sidebar / composer don't display a stale name. Only honour ws values that
-  // appear in the freshly fetched workspace list.
   const listAccessible=Array.isArray(_workspaceList)?_workspaceList:[];
-  const isAccessible=!!ws && listAccessible.some(w=>w&&w.path===ws);
-  if(ws && !isAccessible){
-    // Drop the inaccessible default from the chip but keep S._profileDefaultWorkspace
-    // around so subsequent boot loads can re-evaluate it (e.g. admin shares it later).
-    ws='';
+  // A workspace counts as usable only when it is actually accessible to the
+  // current user (present in the freshly fetched workspace list). The profile
+  // default may reference a path the user cannot access (e.g. test user inherits
+  // /private/tmp/hermes-webui-chain-ws from admin but is not a member).
+  const inAccessible=path=>!!path && listAccessible.some(w=>w&&w.path===path);
+  // Resolve the ws value to display: session workspace > accessible default >
+  // first accessible workspace > none. Critically, "has workspace" is whether
+  // the user owns ANY accessible workspace, not whether the default is one — so
+  // a user like test2 (whose default points elsewhere but who is a member of
+  // another workspace) stays usable.
+  let ws='';
+  if(hasSession && inAccessible(S.session.workspace)){
+    ws=S.session.workspace;
+  }else if(inAccessible(defaultWs)){
+    ws=defaultWs;
+  }else if(listAccessible.length>0){
+    ws=listAccessible[0].path||'';
   }
   const hasWorkspace=!!(ws);
   const label=hasWorkspace?getWorkspaceFriendlyName(ws):t('no_workspace');
@@ -5715,14 +5721,14 @@ function syncWorkspaceDisplays(){
   if(composerInput){
     if(!hasWorkspace && S._bootReady){
       if(!_composerLockState){
-        _composerLockState={disabled:composerInput.disabled, placeholder:composerInput.placeholder};
+        _composerLockState={disabled:composerInput.disabled, placeholder:composerInput.placeholder, noWorkspace:true};
       }
       composerInput.disabled=true;
       const emptyHint=(typeof t==='function')?t('composer_disabled_no_workspace'):'无可用工作区';
       composerInput.placeholder=emptyHint;
       const sendBtn=$('sendBtn');
       if(sendBtn) sendBtn.disabled=true;
-    }else if(_composerLockState && _composerLockState.placeholder==='无可用工作区'){
+    }else if(_composerLockState && _composerLockState.noWorkspace){
       // Restore the previous lock state when a workspace becomes available again.
       composerInput.disabled=!!_composerLockState.disabled;
       if(typeof _composerLockState.placeholder==='string'){
@@ -5735,6 +5741,21 @@ function syncWorkspaceDisplays(){
   }
 }
 
+// Expose a one-shot helper so workspace creation/edit success can immediately
+// release the no-workspace composer lock and re-sync chips (see saveWorkspaceForm).
+function _resetWorkspaceLockForNewWorkspace(){
+  const composerInput=$('msg');
+  if(composerInput && _composerLockState && _composerLockState.noWorkspace){
+    composerInput.disabled=!!_composerLockState.disabled;
+    if(typeof _composerLockState.placeholder==='string'){
+      composerInput.placeholder=_composerLockState.placeholder;
+    }
+    _composerLockState=null;
+    const sendBtn=$('sendBtn');
+    if(sendBtn) sendBtn.disabled=false;
+  }
+}
+
 async function loadWorkspaceList(){
   try{
     const data = await api('/api/workspaces');
@@ -5742,6 +5763,19 @@ async function loadWorkspaceList(){
     _workspaceList = data.workspaces || [];
     syncWorkspaceDisplays();
     if(typeof syncTerminalButton==='function') syncTerminalButton();
+    // Fallback for the "no workspaces" empty state: boot() calls
+    // maybeRenderNoWorkspaceEmptyState(), but if that ran before the auth cookie
+    // was fully applied (e.g. right after login) it can skip rendering even
+    // though the user genuinely has zero workspaces. Once the workspace list
+    // has loaded with real data we re-run the probe so a first-time user with
+    // no workspace still gets the "create a workspace" empty state instead of
+    // a misleading ready-looking composer. It no-ops on non-chat routes and
+    // when workspaces exist, and it guards against double rendering.
+    try{
+      if(Array.isArray(_workspaceList) && _workspaceList.length===0 && typeof maybeRenderNoWorkspaceEmptyState==='function'){
+        void maybeRenderNoWorkspaceEmptyState();
+      }
+    }catch(_e){}
     return data;
   }catch(e){ return {workspaces:[], last:''}; }
 }
@@ -6412,6 +6446,14 @@ async function saveWorkspaceForm(){
     showToast(t('workspace_added'));
     const added = _workspaceList.find(w => w.path === path) || _workspaceList[_workspaceList.length - 1];
     if (added) openWorkspaceDetail(added.path);
+    // Now that the user owns an accessible workspace, re-sync composer chips /
+    // sidebar / composer lock so they can start chatting again. Without this a
+    // user who creates their very first workspace would stay stuck with the
+    // "create a workspace first" disabled composer.
+    try{
+      if(typeof syncWorkspaceDisplays === 'function') syncWorkspaceDisplays();
+      if(typeof _resetWorkspaceLockForNewWorkspace === 'function') _resetWorkspaceLockForNewWorkspace();
+    }catch(_e){};)
   } catch (e) {
     errEl.textContent = t('error_prefix') + e.message;
     errEl.style.display = '';

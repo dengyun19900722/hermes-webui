@@ -107,31 +107,53 @@ function openCreateWorkspaceDialog(){
 // current route. Returns a Promise<boolean>: true if the empty state
 // was rendered (and the boot sequence should early-return).
 async function maybeRenderNoWorkspaceEmptyState(){
+  const _dbg = (window && window._emptyStateDebug !== false);
+  const _log = (...a) => { if(_dbg){ try{ console.log('[emptyState]', ...a); }catch(_){} } };
   // Only intercept the chat-style routes. Other surfaces (workspaces
   // panel, settings) have their own empty UX.
   const path = (typeof window !== 'undefined' && window.location)
     ? (window.location.pathname || '')
     : '';
+  try{ sessionStorage.setItem('hermes-empty-debug', JSON.stringify({t:Date.now(), path:path, hasFn:true})); }catch(_){}
+  _log('enter', {path});
   const isChatRoute =
     path === '/' || path === '' ||
     path === '/chat' || path === '/chat/' ||
     /^\/session\//.test(path);
-  if(!isChatRoute) return false;
+  if(!isChatRoute){ _log('return false: not a chat route', {path}); return false; }
   // Fetch the workspace list directly. We do NOT depend on the
   // module-scoped `_workspaceList` inside panels.js — the boot sequence
   // may or may not have populated it yet by the time we run.
-  if(typeof api !== 'function') return false;
+  if(typeof api !== 'function'){ _log('return false: api not a function', {apiType: typeof api}); return false; }
   let list = null;
   try{
     const data = await api('/api/workspaces', {redirect401: false});
-    list = (data && Array.isArray(data.workspaces)) ? data.workspaces : [];
+    // NOTE: api() returns undefined on 401 when redirect401:false (it skips
+    // navigation). During early boot the login cookie may not have been applied
+    // yet, so a genuine first-time user with no workspaces would otherwise be
+    // skipped and never see the "create a workspace" empty state. We briefly
+    // wait for auth to settle and retry once. If it is still 401 we bail out
+    // (not authenticated → do not render).
+    if(!data){
+      _log('api returned undefined (likely 401) — retrying once');
+      await new Promise((_r)=>setTimeout(_r, 600));
+      const retry = await api('/api/workspaces', {redirect401: false}).catch(()=>undefined);
+      if(!retry){ _log('return false: still 401 after retry'); return false; }
+      list = (Array.isArray(retry.workspaces)) ? retry.workspaces : [];
+      _log('api retry ok', {listLen: list.length});
+    }else{
+      list = (Array.isArray(data.workspaces)) ? data.workspaces : [];
+      _log('api /api/workspaces ok', {dataKeys: data ? Object.keys(data) : null, listLen: list.length, sample: list.slice(0, 1)});
+    }
   }catch(_e){
-    // If the request fails (e.g. 401, network) fall through and let
+    // If the request fails (network, etc.) fall through and let
     // the normal boot logic handle it — never block the app on our
     // empty-state probe.
+    _log('return false: api threw', {message: _e && _e.message, status: _e && _e.status, name: _e && _e.name});
     return false;
   }
-  if(list.length > 0) return false;
+  if(list.length > 0){ _log('return false: list has items', {listLen: list.length, first: list[0]}); return false; }
+  _log('about to render no-workspace empty state', {listLen: list.length});
   renderNoWorkspaceEmptyState();
   return true;
 }

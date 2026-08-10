@@ -3439,14 +3439,20 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
   }catch(_){}
   // Render the session list before restoring the saved conversation so a stale
   // saved-session/client-side boot error cannot leave the sidebar empty forever.
-  await renderSessionList();
-  await _workspaceListReady;
+  try{ await renderSessionList(); }catch(_rse){ try{console.warn('[boot] renderSessionList failed', _rse);}catch(_){} }
+  try{ await _workspaceListReady; }catch(_wle){ try{console.warn('[boot] workspace list load failed', _wle);}catch(_){} }
   // RBAC: if the user has no accessible workspaces and they're landing on a
   // chat-style route, show the dedicated "no workspace" empty state instead
   // of the generic "What can I help with?" hero. This prevents the misleading
   // state where the composer looks ready but every command fails for lack of
   // workspace context.
-  if(typeof maybeRenderNoWorkspaceEmptyState==='function' && await maybeRenderNoWorkspaceEmptyState()){
+  let _renderedNoWs=false;
+  try{
+    if(typeof maybeRenderNoWorkspaceEmptyState==='function'){
+      _renderedNoWs=await maybeRenderNoWorkspaceEmptyState();
+    }
+  }catch(_nwe){ try{console.warn('[boot] workspace-empty probe failed', _nwe);}catch(_){} }
+  if(_renderedNoWs){
     S._bootReady=true;
     try{syncTopbar();}catch(_){}
     try{syncWorkspacePanelState();}catch(_){}
@@ -3455,6 +3461,22 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
     try{if(typeof startGatewaySSE==='function') startGatewaySSE();}catch(_){}
     return;
   }
+  // Robustness: even if the boot-time probe above was skipped (e.g. it ran
+  // while the login redirect was still pointing at /login, or the workspace
+  // list settled after our check), re-probe shortly after the DOM settles so
+  // a first-time user with no workspaces still sees the "create a workspace"
+  // empty state. It no-ops when not on a chat route or when workspaces exist,
+  // and it guards against double rendering.
+  try{
+    setTimeout(()=>{
+      try{
+        if(typeof maybeRenderNoWorkspaceEmptyState==='function'){
+          const _isWsEmpty=(typeof _workspaceList==='undefined')||!Array.isArray(_workspaceList)||_workspaceList.length===0;
+          if(_isWsEmpty) void maybeRenderNoWorkspaceEmptyState();
+        }
+      }catch(_){}
+    }, 800);
+  }catch(_){}
   await _onboardingReady;
   _initResizePanels();
   // Workspace panel restore happens AFTER loadSession so we know if
