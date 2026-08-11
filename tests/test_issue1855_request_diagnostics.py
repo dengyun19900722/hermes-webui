@@ -39,11 +39,43 @@ def test_request_diagnostics_timeout_record_includes_stage_and_thread_stacks(cap
     assert record["thread_stacks"]
 
 
-def test_request_diagnostics_maybe_start_is_limited_to_issue1855_paths():
-    assert RequestDiagnostics.maybe_start("GET", "/api/sessions") is not None
+def test_request_diagnostics_maybe_start_covers_p0_target_paths_only():
+    for path in (
+        "/api/sessions",
+        "/api/session/status",
+        "/api/approval/pending",
+        "/api/clarify/pending",
+        "/api/auth/status",
+        "/api/license/status",
+        "/api/health/agent",
+        "/api/crons/recent",
+        "/api/dashboard/status",
+    ):
+        assert RequestDiagnostics.maybe_start("GET", path) is not None
     assert RequestDiagnostics.maybe_start("POST", "/api/chat/start") is not None
     assert RequestDiagnostics.maybe_start("GET", "/health") is None
     assert RequestDiagnostics.maybe_start("POST", "/api/session/new") is None
+
+
+def test_request_diagnostics_hashes_identity_context_and_keeps_response_metadata_private():
+    logger = logging.getLogger("test.issue1855.context")
+    diag = RequestDiagnostics("GET", "/api/auth/status", logger=logger, auto_start=False)
+    diag.bind_context(profile="ops", user_id="user-13", auth_cookie="session-secret")
+    diag.set_response(status=200, body_bytes=123)
+    with diag._lock:
+        record = diag._build_record_locked(include_stacks=False)
+
+    context = record["context"]
+    assert set(context) == {
+        "profile_hash",
+        "user_id_hash",
+        "auth_cookie_hash",
+    }
+    assert "ops" not in json.dumps(record)
+    assert "user-13" not in json.dumps(record)
+    assert "session-secret" not in json.dumps(record)
+    assert record["response_status"] == 200
+    assert record["response_bytes"] == 123
 
 
 def test_all_sessions_reports_internal_index_stages(tmp_path, monkeypatch):
@@ -94,9 +126,9 @@ def test_all_sessions_reports_internal_index_stages(tmp_path, monkeypatch):
 def test_issue1855_target_routes_are_wired_to_diagnostics():
     src = Path("api/routes.py").read_text(encoding="utf-8")
 
-    assert 'RequestDiagnostics.maybe_start("GET", parsed.path' in src
+    assert 'RequestDiagnostics.maybe_start(' in src
     assert "all_sessions(diag=diag, include_lineage_metadata=False)" in src
-    assert 'RequestDiagnostics.maybe_start("POST", parsed.path' in src
+    assert 'RequestDiagnostics.maybe_start(' in src
     assert "_handle_chat_start(handler, body, diag=diag)" in src
     for stage in (
         "read_body",
@@ -108,3 +140,20 @@ def test_issue1855_target_routes_are_wired_to_diagnostics():
         "response_write",
     ):
         assert stage in src
+
+
+def test_p0_server_diagnostics_stage_order_and_no_raw_identity_logging():
+    src = Path("server.py").read_text(encoding="utf-8")
+    positions = [src.index(f'diag.stage("{stage}")') for stage in (
+        "request_entry",
+        "license_middleware",
+        "auth_middleware",
+        "handler",
+    )]
+    assert positions == sorted(positions)
+    assert 'diag.bind_context(' in src
+    assert 'auth_cookie=self._header_value("Cookie")' in src
+
+    diag_src = Path("api/request_diagnostics.py").read_text(encoding="utf-8")
+    assert "hashlib.sha256" in diag_src
+    assert "response_bytes" in diag_src

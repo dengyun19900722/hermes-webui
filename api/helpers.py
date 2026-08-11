@@ -244,6 +244,9 @@ def j(handler, payload, status: int=200, extra_headers: dict=None, *, pretty: bo
     *extra_headers*: optional dict of additional headers to include
     (e.g., {'Set-Cookie': '...'}).  Headers are sent before end_headers().
     """
+    diag = getattr(handler, "_request_diagnostics", None)
+    if diag is not None:
+        diag.stage("response_serialize")
     body = _json_response_body(payload, pretty=pretty)
     handler.send_response(status)
     handler.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -262,6 +265,9 @@ def j(handler, payload, status: int=200, extra_headers: dict=None, *, pretty: bo
     if extra_headers:
         for k, v in extra_headers.items():
             handler.send_header(k, v)
+    if diag is not None:
+        diag.set_response(status=status, body_bytes=len(body))
+        diag.stage("response_write")
     _safe_write(handler, body)
 
 

@@ -13316,7 +13316,9 @@ def handle_get(handler, parsed) -> bool:
         return j(handler, {"results": get_results(sid)})
 
     if parsed.path == "/api/sessions":
-        diag = RequestDiagnostics.maybe_start("GET", parsed.path, logger=logger)
+        diag = getattr(handler, "_request_diagnostics", None) or RequestDiagnostics.maybe_start(
+            "GET", parsed.path, logger=logger
+        )
         try:
             from api import profiles as profiles_api
 
@@ -14095,7 +14097,9 @@ def _validate_session_toolsets_shape(toolsets):
 
 def handle_post(handler, parsed) -> bool:
     """Handle all POST routes. Returns True if handled, False for 404."""
-    diag = RequestDiagnostics.maybe_start("POST", parsed.path, logger=logger)
+    diag = getattr(handler, "_request_diagnostics", None) or RequestDiagnostics.maybe_start(
+        "POST", parsed.path, logger=logger
+    )
     # RBAC login must be dispatched before the legacy single-password route.
     # Both endpoints historically used this path, but RBAC needs a username.
     if parsed.path == "/api/auth/login":
