@@ -13,7 +13,7 @@
 
 **Tech Stack:** Python (stdlib only, 复用现有 OrderedDict + RLock + source-stamp 模式), Vanilla JS (EventSource native), pytest + monkeypatch, tmux 端到端
 
-**Spec:** `docs/superpowers/specs/2026-08-07-session-loading-perf-design.md`
+**Spec:** `docs/superpowers/specs/2026-08-07-session-perf-会话加载性能-设计.md`
 
 **总估时：** Phase 1 ≈ 1-2 天，Phase 2 ≈ 1 天，Phase 3 ≈ 3-5 天，Phase 4 ≈ 3-5 天，Phase 5+ ≈ 1-2 周
 
@@ -2603,7 +2603,7 @@ python -m pytest tests/bench_session_load.py -v --noconftest -s
 
 ## 执行选择
 
-Plan 已保存到 `docs/superpowers/plans/2026-08-07-session-loading-perf-plan.md`（**待 commit**）。两个执行选项：
+Plan 已保存到 `docs/superpowers/plans/2026-08-07-session-perf-会话加载性能-实施计划.md`（**待 commit**）。两个执行选项：
 
 **1. Subagent-Driven（推荐）** —— 每个 Task 派一个独立 subagent 执行，task 间 review，快速迭代。适合 5 个 PR × ~40 个 task 的大规模实施。
 

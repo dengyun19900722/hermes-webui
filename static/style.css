@@ -3009,9 +3009,9 @@
     line-height:1.55;
   }
   .workspace-empty-state__cta{
-    margin-top:8px;
-    padding:10px 22px;
-    font-size:13.5px;
+    margin-top:12px;
+    padding:14px 32px;
+    font-size:15px;
     font-weight:700;
     /* Forced white text + darker accent fill + ring border so the label is
        legible against every theme accent (yellow / red / orange / blue). */
@@ -3020,16 +3020,22 @@
     border:1px solid color-mix(in srgb, var(--accent) 70%, #000 30%);
     border-radius:10px;
     cursor:pointer;
-    box-shadow:0 2px 6px rgba(0,0,0,.18), 0 0 0 1px rgba(255,255,255,.06) inset;
+    box-shadow:0 2px 6px rgba(0,0,0,.18), 0 0 0 1px rgba(255,255,255,.06) inset, 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent);
     transition:background .15s, border-color .15s, transform .05s, box-shadow .15s;
     display:inline-flex;
     align-items:center;
     gap:6px;
+    animation: wsEmptyCtaPulse 2.4s ease-in-out infinite;
+  }
+  @keyframes wsEmptyCtaPulse{
+    0%,100%{ box-shadow:0 2px 6px rgba(0,0,0,.18), 0 0 0 1px rgba(255,255,255,.06) inset, 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent); }
+    50%   { box-shadow:0 4px 12px rgba(0,0,0,.24), 0 0 0 1px rgba(255,255,255,.08) inset, 0 0 0 10px color-mix(in srgb, var(--accent) 10%, transparent); }
   }
   .workspace-empty-state__cta:hover{
     background:color-mix(in srgb, var(--accent) 78%, #000 22%);
     border-color:color-mix(in srgb, var(--accent) 60%, #000 40%);
     box-shadow:0 4px 10px rgba(0,0,0,.24), 0 0 0 1px rgba(255,255,255,.08) inset;
+    animation-play-state: paused;
   }
   .workspace-empty-state__cta:active{transform:translateY(1px);}
   .workspace-empty-state__cta:focus-visible{

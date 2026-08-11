@@ -73,8 +73,8 @@ def test_get_endpoint_viewer_forbidden(client):
 def test_patch_endpoint_admin(client):
     _login_as(client, "admin")
     res = client.patch(
-        "/api/guidance/implementation/1.1_view_doc",
-        json={"done": True},
+        "/api/guidance/implementation/1.1_fill_entity_table",
+        json={"done": True, "note": "已填写"},
     )
     assert res.status_code == 200
     data = res.get_json()
@@ -90,10 +90,22 @@ def test_patch_unknown_task_returns_400(client):
     assert res.status_code == 400
 
 
+def test_patch_manual_without_note_returns_400(client):
+    """手动标记未自动验证的任务且无备注，应返回 400 manual_note_required。"""
+    _login_as(client, "admin")
+    res = client.patch(
+        "/api/guidance/implementation/1.1_fill_entity_table",
+        json={"done": True},
+    )
+    assert res.status_code == 400
+    data = res.get_json()
+    assert data["error"] == "manual_note_required"
+
+
 def test_post_note_endpoint(client):
     _login_as(client, "admin")
     res = client.post(
-        "/api/guidance/implementation/1.3_import/note",
+        "/api/guidance/implementation/1.3_import_entities/note",
         json={"note": "关联 ZKREQ-130"},
     )
     assert res.status_code == 200
@@ -143,7 +155,7 @@ def test_no_state_leak_between_profiles(tmp_home, monkeypatch):
     other_home = tmp_home / "other"
     other_home.mkdir()
     monkeypatch.setattr(gp, "get_active_hermes_home", lambda: other_home)
-    gp.mark_task("1.1_view_doc", done=True, by="alice")
+    gp.mark_task("1.1_fill_entity_table", done=True, by="alice", note="已填写")
 
     main_home = tmp_home / "hermes"
     monkeypatch.setattr(gp, "get_active_hermes_home", lambda: main_home)

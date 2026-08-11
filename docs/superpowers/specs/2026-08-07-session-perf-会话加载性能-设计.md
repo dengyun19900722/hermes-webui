@@ -543,5 +543,5 @@ PR1 msg_limit  ─► PR2 dashboard 异步 ─► PR3 高频缓存  ─► PR4 S
 
 - **作者**：ZK 运维智能体
 - **关联问题**：生产环境 P0 · 会话多时 Loading Conversation 慢
-- **关联计划文档**：`docs/superpowers/plans/2026-08-07-session-loading-perf-plan.md`（下一步 writing-plans skill 生成）
+- **关联计划文档**：`docs/superpowers/plans/2026-08-07-session-perf-会话加载性能-实施计划.md`（下一步 writing-plans skill 生成）
 - **关联分支**：`1.0.0-zk-ops`

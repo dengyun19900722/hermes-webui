@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12 + FastAPI 路由风格（项目内一致性）+ vanilla-JS 前端 + jsdom 单元测试 + Playwright E2E + pytest。
 
-**Spec:** `docs/superpowers/specs/2026-07-27-1.1.0-onboarding-experience-design.md` §3-§6
+**Spec:** `docs/superpowers/specs/2026-07-27-onboarding-1.1.0引导体验-设计.md` §3-§6
 
 **优先级：** P0（4 份 plan 中第一个交付）
 

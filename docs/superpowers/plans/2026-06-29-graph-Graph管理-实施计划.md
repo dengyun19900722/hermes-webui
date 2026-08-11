@@ -2474,7 +2474,7 @@ git commit -m "test(graph): add mock driver CRUD cycle test"
 
 ---
 
-**Plan complete and saved to `docs/superpowers/plans/2026-06-29-graph-management-plan.md`**
+**Plan complete and saved to `docs/superpowers/plans/2026-06-29-graph-Graph管理-实施计划.md`**
 
 Two execution options:
 

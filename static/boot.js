@@ -3446,6 +3446,7 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
   // of the generic "What can I help with?" hero. This prevents the misleading
   // state where the composer looks ready but every command fails for lack of
   // workspace context.
+  try{ window.__bootReachedEmptyCheck = true; }catch(_){}
   let _renderedNoWs=false;
   try{
     if(typeof maybeRenderNoWorkspaceEmptyState==='function'){
@@ -3613,6 +3614,14 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
   try{syncWorkspacePanelState();}catch(_){}
   try{$('emptyState').style.display='';}catch(_){}
   try{if(typeof renderSessionList==='function') void renderSessionList();}catch(_){}
+  // Even when the main boot IIFE throws (e.g. renderSessionList or a session
+  // restore step rejects), still surface the "no accessible workspace" empty
+  // state for users who genuinely have zero workspaces, instead of leaving the
+  // misleading ready-looking composer. The probe no-ops off chat routes, when
+  // workspaces exist, and when an empty state is already shown.
+  try{
+    if(typeof maybeRenderNoWorkspaceEmptyState==='function') void maybeRenderNoWorkspaceEmptyState();
+  }catch(_){}
 });
 
 // Fix #822 (bfcache path): when the browser restores the page from the

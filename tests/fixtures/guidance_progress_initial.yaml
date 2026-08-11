@@ -1,10 +1,10 @@
 implementation:
-  '1.1_view_doc':
+  '1.1_fill_entity_table':
     done: true
     by: 'alice'
     ts: 1722000000
     note: ''
-  '1.2_download_tpl':
+  '1.3_import_entities':
     done: true
     by: 'alice'
     ts: 1722000100
