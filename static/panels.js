@@ -5565,6 +5565,7 @@ async function submitMemorySave() {
 
 // ── Workspace management ──
 let _workspaceList = [];  // cached from /api/workspaces
+let _workspaceAuthGeneration = 0;
 let _wsSuggestTimer = null;
 let _wsSuggestReq = 0;
 let _wsSuggestIndex = -1;
@@ -5739,6 +5740,13 @@ function syncWorkspaceDisplays(){
       if(sendBtn) sendBtn.disabled=false;
     }
   }
+  // If the user now has at least one accessible workspace, retire the
+  // "+ create a workspace" hero that may have been written into #emptyState
+  // by maybeRenderNoWorkspaceEmptyState, so the chat panel shows the normal
+  // hero instead of the misleading create-workspace call-to-action.
+  if(hasWorkspace && typeof _restoreChatHeroFromNoWorkspace === 'function'){
+    try{ _restoreChatHeroFromNoWorkspace(); }catch(_){}
+  }
 }
 
 // Expose a one-shot helper so workspace creation/edit success can immediately
@@ -5756,28 +5764,53 @@ function _resetWorkspaceLockForNewWorkspace(){
   }
 }
 
+function _workspaceAuthScopeId(){
+  const live=String(window._currentAuthUserId||'');
+  if(live) return live;
+  try{return String(localStorage.getItem('hermes-webui-auth-user-id')||'');}catch(_){return '';}
+}
+
 async function loadWorkspaceList(){
+  const generation=_workspaceAuthGeneration;
+  const requestedScope=_workspaceAuthScopeId();
   try{
-    const data = await api('/api/workspaces');
-    if(typeof syncTerminalBackendState==='function') syncTerminalBackendState(data);
-    _workspaceList = data.workspaces || [];
-    syncWorkspaceDisplays();
-    if(typeof syncTerminalButton==='function') syncTerminalButton();
-    // Fallback for the "no workspaces" empty state: boot() calls
-    // maybeRenderNoWorkspaceEmptyState(), but if that ran before the auth cookie
-    // was fully applied (e.g. right after login) it can skip rendering even
-    // though the user genuinely has zero workspaces. Once the workspace list
-    // has loaded with real data we re-run the probe so a first-time user with
-    // no workspace still gets the "create a workspace" empty state instead of
-    // a misleading ready-looking composer. It no-ops on non-chat routes and
-    // when workspaces exist, and it guards against double rendering.
-    try{
-      if(Array.isArray(_workspaceList) && _workspaceList.length===0 && typeof maybeRenderNoWorkspaceEmptyState==='function'){
-        void maybeRenderNoWorkspaceEmptyState();
+    for(let attempt=0;attempt<2;attempt++){
+      const data = await api('/api/workspaces',{cache:'no-store'});
+      const currentScope=_workspaceAuthScopeId();
+      const responseScope=String(data&&data.scope_user_id||'');
+      const authChanged=(generation!==_workspaceAuthGeneration)||(requestedScope&&currentScope!==requestedScope);
+      const wrongScope=!!(currentScope&&responseScope&&responseScope!==currentScope);
+      if(authChanged){
+        return {workspaces:[..._workspaceList],last:'',stale:true};
       }
-    }catch(_e){}
-    return data;
-  }catch(e){ return {workspaces:[], last:''}; }
+      if(wrongScope){
+        if(attempt===0){
+          await new Promise(resolve=>setTimeout(resolve,50));
+          continue;
+        }
+        return {workspaces:[..._workspaceList],last:'',stale:true};
+      }
+      if(typeof syncTerminalBackendState==='function') syncTerminalBackendState(data);
+      _workspaceList = data.workspaces || [];
+      syncWorkspaceDisplays();
+      if(typeof syncTerminalButton==='function') syncTerminalButton();
+      // Fallback for the "no workspaces" empty state: boot() calls
+      // maybeRenderNoWorkspaceEmptyState(), but if that ran before the auth cookie
+      // was fully applied (e.g. right after login) it can skip rendering even
+      // though the user genuinely has zero workspaces. Once the workspace list
+      // has loaded with real data we re-run the probe so a first-time user with
+      // no workspace still gets the "create a workspace" empty state instead of
+      // a misleading ready-looking composer. It no-ops on non-chat routes and
+      // when workspaces exist, and it guards against double rendering.
+      try{
+        if(Array.isArray(_workspaceList) && _workspaceList.length===0 && typeof maybeRenderNoWorkspaceEmptyState==='function'){
+          void maybeRenderNoWorkspaceEmptyState();
+        }
+      }catch(_e){}
+      return data;
+    }
+  }catch(e){}
+  return {workspaces:[..._workspaceList], last:''};
 }
 
 function _renderWorkspaceAction(label, meta, iconSvg, onClick){
@@ -6274,29 +6307,50 @@ function _clearWorkspaceDetail(){
   _setWorkspaceHeaderButtons('empty');
 }
 
+// Restore the chat hero inside #emptyState after a no-workspace render had
+// overwritten it (workspace_empty.js:renderNoWorkspaceEmptyState snapshots
+// the original innerHTML into S._emptyStateOriginalHTML on first use). Call
+// this whenever the user goes from "no accessible workspaces" to "has at
+// least one accessible workspace" (workspace creation, member share, auth
+// switch) so the main panel stops showing the misleading
+// "+ create a workspace" hero.
+function _restoreChatHeroFromNoWorkspace(){
+  try{
+    const root = (typeof $==='function') ? $('emptyState') : null;
+    if(!root) return;
+    // Only restore if the no-workspace markup is actually present, to avoid
+    // stomping on a different empty state a caller might have written.
+    if(root.classList && root.classList.contains('workspace-empty-state') &&
+       typeof S !== 'undefined' && S && typeof S._emptyStateOriginalHTML === 'string'){
+      root.innerHTML = S._emptyStateOriginalHTML;
+      root.classList.remove('workspace-empty-state', 'no-suggestions');
+    }
+  }catch(_){}
+}
+if(typeof window!=='undefined'){
+  window._restoreChatHeroFromNoWorkspace = _restoreChatHeroFromNoWorkspace;
+}
+
 // Reset all workspace-related front-end state when the authenticated user
 // changes (login / logout / account switch). Without this, the default page
 // can render the previous user's workspace list, file tree, composer chip and
 // detail view. The next boot reloads /api/settings + /api/workspaces for the
 // new identity, so clearing here is safe and avoids cross-account leakage.
 function _resetWorkspaceStateForAuthChange(){
+  _workspaceAuthGeneration++;
   _workspaceList = [];
   if(typeof _clearWorkspaceDetail === 'function') _clearWorkspaceDetail();
   // Clear the cached profile default workspace (re-read on next boot/settings).
   if(typeof S !== 'undefined' && S){
     S._profileDefaultWorkspace = null;
     S._profileSwitchWorkspace = null;
-    // Restore the chat empty-state HTML if a previous no-workspace render had
-    // overwritten it (workspace_empty.js:renderNoWorkspaceEmptyState snapshots
-    // the original on first use). Without this, the default page for the next
-    // user keeps showing "you have no accessible workspaces" even when that
-    // user does have workspaces (e.g. one shared by another account).
-    const root = (typeof $ === 'function') ? $('emptyState') : null;
-    if(root && typeof S._emptyStateOriginalHTML === 'string'){
-      root.innerHTML = S._emptyStateOriginalHTML;
-      root.classList.remove('workspace-empty-state', 'no-suggestions');
-    }
   }
+  // Restore the chat empty-state HTML if a previous no-workspace render had
+  // overwritten it (workspace_empty.js:renderNoWorkspaceEmptyState snapshots
+  // the original on first use). Without this, the default page for the next
+  // user keeps showing "you have no accessible workspaces" even when that
+  // user does have workspaces (e.g. one shared by another account).
+  if(typeof _restoreChatHeroFromNoWorkspace === 'function') _restoreChatHeroFromNoWorkspace();
   // Close + reset the right-hand workspace panel (Files / Artifacts / Todos).
   try{
     if(typeof closeWorkspacePanel === 'function') closeWorkspacePanel();
@@ -6342,9 +6396,23 @@ async function deleteCurrentWorkspace(){
   if(!_ok) return;
   try{
     const data=await api('/api/workspaces/remove',{method:'POST',body:JSON.stringify({path})});
-    _workspaceList=data.workspaces;
+    _workspaceList=data.workspaces||[];
     _clearWorkspaceDetail();
-    renderWorkspacesPanel(data.workspaces);
+    renderWorkspacesPanel(_workspaceList);
+    // A removed workspace must disappear from every current-page cache, not
+    // only from the Spaces list. In particular, deleting the only accessible
+    // workspace immediately locks the composer and clears the old file tree.
+    try{
+      if(typeof syncWorkspaceDisplays==='function') syncWorkspaceDisplays();
+      if(S.session&&S.session.workspace===path){
+        if(typeof clearPreview==='function') clearPreview({keepPanelOpen:false});
+        const fileTree=$('fileTree');
+        if(fileTree) fileTree.innerHTML='';
+      }
+      if(_workspaceList.length===0&&typeof maybeRenderNoWorkspaceEmptyState==='function'){
+        void maybeRenderNoWorkspaceEmptyState();
+      }
+    }catch(_e){}
     showToast(t('workspace_removed'));
   }catch(e){setStatus(t('remove_failed')+e.message);}
 }
@@ -6453,7 +6521,7 @@ async function saveWorkspaceForm(){
     try{
       if(typeof syncWorkspaceDisplays === 'function') syncWorkspaceDisplays();
       if(typeof _resetWorkspaceLockForNewWorkspace === 'function') _resetWorkspaceLockForNewWorkspace();
-    }catch(_e){};)
+    }catch(_e){}
   } catch (e) {
     errEl.textContent = t('error_prefix') + e.message;
     errEl.style.display = '';

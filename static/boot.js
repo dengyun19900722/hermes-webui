@@ -3631,6 +3631,12 @@ window.addEventListener('pageshow', async (event) => {
   try{
     if(typeof loadTitlebarAccountMenu==='function') await loadTitlebarAccountMenu();
   }catch(_){}
+  // BFCache restores the previous DOM and skips the boot IIFE. Refresh the
+  // RBAC-scoped workspace list before syncing any restored composer or file
+  // panel state, otherwise a login switch can retain the prior user's rows.
+  try{
+    if (typeof loadWorkspaceList === 'function') await loadWorkspaceList();
+  }catch(_){}
   const _srch = document.getElementById('sessionSearch');
   if (_srch) _srch.value = '';
   if (typeof syncSessionSearchClear === 'function') syncSessionSearchClear();

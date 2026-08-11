@@ -250,6 +250,46 @@ def test_rbac_owned_empty_session_not_pruned_as_zero_message_orphan(monkeypatch)
     assert pruned == []
 
 
+def test_current_rbac_user_cache_is_bound_to_request_cookie(monkeypatch):
+    """A keep-alive handler reused after login must not retain the prior user."""
+    import api.routes as routes
+
+    users = {
+        "token-a": {"id": "u-a", "username": "alice", "role": "user"},
+        "token-b": {"id": "u-b", "username": "bob", "role": "user"},
+    }
+    monkeypatch.setattr("api.auth.parse_cookie", lambda handler: handler.headers["Token"])
+    monkeypatch.setattr("api.auth.get_user_from_session", lambda token: users.get(token))
+
+    handler = SimpleNamespace(headers={"Token": "token-a"})
+    assert routes._current_rbac_user(handler)["id"] == "u-a"
+    assert routes._current_rbac_user_id(handler) == "u-a"
+
+    handler.headers = {"Token": "token-b"}
+    assert routes._current_rbac_user(handler)["id"] == "u-b"
+    assert routes._current_rbac_user_id(handler) == "u-b"
+
+
+def test_current_rbac_user_cache_reuses_same_token(monkeypatch):
+    import api.routes as routes
+
+    lookups = []
+    monkeypatch.setattr("api.auth.parse_cookie", lambda handler: handler.headers["Token"])
+    monkeypatch.setattr(
+        "api.auth.get_user_from_session",
+        lambda token: lookups.append(token) or {"id": "u-a", "role": "user"},
+    )
+
+    handler = SimpleNamespace(headers={"Token": "token-a"})
+    assert routes._current_rbac_user(handler)["id"] == "u-a"
+    assert routes._current_rbac_user(handler)["id"] == "u-a"
+    assert lookups == ["token-a"]
+
+    handler._req_t0 = 2
+    assert routes._current_rbac_user(handler)["id"] == "u-a"
+    assert lookups == ["token-a", "token-a"]
+
+
 def test_logout_clears_auth_cookie(monkeypatch):
     """RBAC logout must clear the browser cookie so users can switch accounts."""
     import io

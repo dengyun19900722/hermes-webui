@@ -539,18 +539,33 @@ def _current_rbac_user(handler) -> dict | None:
     """Return the RBAC user dict for this request, or None for legacy/no-RBAC auth."""
     if handler is None:
         return None
+    token = None
+    try:
+        from api.auth import parse_cookie
+
+        token = parse_cookie(handler)
+    except Exception:
+        token = None
+    request_marker = getattr(handler, "_req_t0", None)
     handler_dict = getattr(handler, "__dict__", None)
-    if isinstance(handler_dict, dict) and "_hermes_current_rbac_user" in handler_dict:
+    if (
+        isinstance(handler_dict, dict)
+        and "_hermes_current_rbac_user" in handler_dict
+        and handler_dict.get("_hermes_current_rbac_user_token") == token
+        and handler_dict.get("_hermes_current_rbac_user_request") == request_marker
+    ):
         return handler_dict.get("_hermes_current_rbac_user")
     user = None
     try:
-        from api.auth import get_user_from_session, parse_cookie
-        token = parse_cookie(handler)
+        from api.auth import get_user_from_session
+
         user = get_user_from_session(token) if token else None
     except Exception:
         user = None
     try:
         setattr(handler, "_hermes_current_rbac_user", user)
+        setattr(handler, "_hermes_current_rbac_user_token", token)
+        setattr(handler, "_hermes_current_rbac_user_request", request_marker)
     except Exception:
         pass
     return user
@@ -560,14 +575,29 @@ def _current_rbac_user_id(handler) -> str | None:
     """Return the RBAC user id for this request, or None for legacy/no-RBAC auth."""
     if handler is None:
         return None
+    token = None
+    try:
+        from api.auth import parse_cookie
+
+        token = parse_cookie(handler)
+    except Exception:
+        token = None
+    request_marker = getattr(handler, "_req_t0", None)
     handler_dict = getattr(handler, "__dict__", None)
-    if isinstance(handler_dict, dict) and "_hermes_current_rbac_user_id" in handler_dict:
+    if (
+        isinstance(handler_dict, dict)
+        and "_hermes_current_rbac_user_id" in handler_dict
+        and handler_dict.get("_hermes_current_rbac_user_id_token") == token
+        and handler_dict.get("_hermes_current_rbac_user_id_request") == request_marker
+    ):
         return handler_dict.get("_hermes_current_rbac_user_id") or None
     user = _current_rbac_user(handler)
     user_id = str(user.get("id")).strip() if user and user.get("id") else None
     user_id = user_id or None
     try:
         setattr(handler, "_hermes_current_rbac_user_id", user_id)
+        setattr(handler, "_hermes_current_rbac_user_id_token", token)
+        setattr(handler, "_hermes_current_rbac_user_id_request", request_marker)
     except Exception:
         pass
     return user_id
@@ -23480,6 +23510,57 @@ def _handle_file_open_vscode(handler, body):
         return bad(handler, _sanitize_error(e))
 
 
+def _workspace_scope_for_caller(handler, all_ws):
+    """Return raw workspace rows visible to the current RBAC caller."""
+    caller = _current_rbac_user(handler)
+    rbac_user_id = (
+        str(caller.get("id")).strip()
+        if isinstance(caller, dict) and caller.get("id")
+        else None
+    )
+    caller_is_admin = _current_rbac_user_is_admin(handler)
+    if not _rbac_users_configured():
+        return list(all_ws), rbac_user_id
+    return visible_workspaces(rbac_user_id, caller_is_admin, all_ws), rbac_user_id
+
+
+def _augment_workspace_usernames(workspaces):
+    """Add display-only owner/member names without changing stored rows."""
+    try:
+        from api.user_store import load_users
+
+        user_by_id = {
+            str(u.get("id")): u.get("username")
+            for u in load_users(_get_state_dir())
+            if u.get("id")
+        }
+    except Exception:
+        user_by_id = {}
+    augmented = []
+    for workspace in workspaces:
+        if not isinstance(workspace, dict):
+            augmented.append(workspace)
+            continue
+        owner_uid = str(workspace.get("owner") or "")
+        member_ids = [str(member) for member in (workspace.get("members") or []) if member]
+        augmented.append({
+            **workspace,
+            "owner_username": user_by_id.get(owner_uid),
+            "members_username": [user_by_id.get(uid) for uid in member_ids],
+        })
+    return augmented
+
+
+def _workspace_mutation_response(handler, all_ws):
+    """Send a mutation result scoped exactly like GET /api/workspaces."""
+    workspaces, rbac_user_id = _workspace_scope_for_caller(handler, all_ws)
+    return j(handler, {
+        "ok": True,
+        "workspaces": _augment_workspace_usernames(workspaces),
+        "scope_user_id": rbac_user_id,
+    })
+
+
 def _handle_workspaces_list(handler, parsed):
     """GET /api/workspaces — RBAC-filtered workspace list.
 
@@ -23498,35 +23579,17 @@ def _handle_workspaces_list(handler, parsed):
     if view == "all":
         if not caller_is_admin:
             return bad(handler, "Admin role required", 403)
-        # The admin console shows "owner: <username>" per row, so resolve owner
-        # ids to usernames here rather than making the client fetch every user.
-        # Unknown ids (deleted user) map to None; the client falls back to the
-        # raw id.
-        from api.user_store import load_users
-
-        user_by_id = {
-            str(u.get("id")): u.get("username")
-            for u in load_users(_get_state_dir())
-            if u.get("id")
-        }
-        augmented = [
-            {**w, "owner_username": user_by_id.get(str(w.get("owner") or ""))}
-            for w in all_ws
-        ]
         return j(
             handler,
             {
-                "workspaces": augmented,
+                "workspaces": _augment_workspace_usernames(all_ws),
                 "last": get_last_workspace(_current_rbac_user_id(handler)),
+                "scope_user_id": _current_rbac_user_id(handler),
                 "view": "all",
                 "terminal_remote_backend": _terminal_remote_backend_enabled(),
             },
         )
-    rbac_user_id = _current_rbac_user_id(handler)
-    if not _rbac_users_configured():
-        workspaces = all_ws
-    else:
-        workspaces = visible_workspaces(rbac_user_id, caller_is_admin, all_ws)
+    workspaces, rbac_user_id = _workspace_scope_for_caller(handler, all_ws)
     # Restrict "last" to the caller's accessible paths so user A's
     # last-used workspace never bleeds into user B's composer chip
     # (see api/workspace.py:_last_workspace_file).
@@ -23534,8 +23597,9 @@ def _handle_workspaces_list(handler, parsed):
     return j(
         handler,
         {
-            "workspaces": workspaces,
+            "workspaces": _augment_workspace_usernames(workspaces),
             "last": get_last_workspace(rbac_user_id, allowed_paths=allowed_paths),
+            "scope_user_id": rbac_user_id,
             "terminal_remote_backend": _terminal_remote_backend_enabled(),
         },
     )
@@ -23602,7 +23666,7 @@ def _handle_workspace_add(handler, body):
     wss.append(entry)
     save_workspaces(wss)
     _audit_workspace_op("workspace.add", caller_id, str(p))
-    return j(handler, {"ok": True, "workspaces": wss})
+    return _workspace_mutation_response(handler, wss)
 
 
 def _audit_workspace_op(action, actor_id, path, **extra):
@@ -23661,7 +23725,7 @@ def _handle_workspace_remove(handler, body):
     wss = [w for w in wss if not (isinstance(w, dict) and w.get("path") == path_str)]
     save_workspaces(wss)
     _audit_workspace_op("workspace.remove", _current_rbac_user_id(handler), path_str)
-    return j(handler, {"ok": True, "workspaces": wss})
+    return _workspace_mutation_response(handler, wss)
 
 
 def _handle_workspace_rename(handler, body):
@@ -23683,7 +23747,7 @@ def _handle_workspace_rename(handler, body):
         old_name=old_name,
         new_name=name,
     )
-    return j(handler, {"ok": True, "workspaces": wss})
+    return _workspace_mutation_response(handler, wss)
 
 
 def _handle_workspace_member_add(handler, body):
@@ -23711,7 +23775,7 @@ def _handle_workspace_member_add(handler, body):
         target["path"],
         member_id=user_id,
     )
-    return j(handler, {"ok": True, "workspaces": wss})
+    return _workspace_mutation_response(handler, wss)
 
 
 def _handle_workspace_member_remove(handler, body):
@@ -23737,7 +23801,7 @@ def _handle_workspace_member_remove(handler, body):
         target["path"],
         member_id=user_id,
     )
-    return j(handler, {"ok": True, "workspaces": wss})
+    return _workspace_mutation_response(handler, wss)
 
 
 def _handle_workspace_reorder(handler, body):
@@ -23751,21 +23815,40 @@ def _handle_workspace_reorder(handler, body):
     if not paths or not isinstance(paths, list):
         return bad(handler, "paths is required and must be a list")
     wss = load_workspaces()
-    by_path = {w["path"]: w for w in wss}
-    # Build reordered list: given order first, then any omitted entries
-    reordered = []
+    scoped, _ = _workspace_scope_for_caller(handler, wss)
+    visible_paths = {
+        workspace.get("path")
+        for workspace in scoped
+        if isinstance(workspace, dict) and workspace.get("path")
+    }
+    by_path = {
+        workspace["path"]: workspace
+        for workspace in scoped
+        if isinstance(workspace, dict) and workspace.get("path")
+    }
+    # Reorder only the caller's visible rows. Hidden rows stay in their original
+    # slots so one user cannot perturb another user's workspace ordering.
+    ordered_visible = []
     seen = set()
     for p in paths:
+        if not isinstance(p, str):
+            continue
         p = p.strip()
         if p in by_path and p not in seen:
-            reordered.append(by_path[p])
+            ordered_visible.append(by_path[p])
             seen.add(p)
-    # Append any workspaces not mentioned (safety net)
-    for w in wss:
-        if w["path"] not in seen:
-            reordered.append(w)
+    for workspace in scoped:
+        path = workspace.get("path") if isinstance(workspace, dict) else None
+        if path and path not in seen:
+            ordered_visible.append(workspace)
+            seen.add(path)
+    visible_iter = iter(ordered_visible)
+    reordered = [
+        next(visible_iter) if isinstance(workspace, dict) and workspace.get("path") in visible_paths else workspace
+        for workspace in wss
+    ]
     save_workspaces(reordered)
-    return j(handler, {"ok": True, "workspaces": reordered})
+    return _workspace_mutation_response(handler, reordered)
 
 
 def _resolve_approval_legacy(sid: str, approval_id: str, choice: str) -> bool:

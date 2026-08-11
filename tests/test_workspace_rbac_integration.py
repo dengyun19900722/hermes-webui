@@ -168,6 +168,7 @@ def test_admin_create_then_grant_then_user_sees(tmp_path):
         f"user should not see workspaces they are not a member of, "
         f"got {state.response_payload['workspaces']}"
     )
+    assert state.response_payload["scope_user_id"] == USER["id"]
 
     # ── (c) Admin grants membership through the real handler ──────────
     _reset_response(state)
@@ -189,6 +190,7 @@ def test_admin_create_then_grant_then_user_sees(tmp_path):
         rmod._handle_workspaces_list(None, _Parsed())
 
     assert state.response_status == 200
+    assert state.response_payload["scope_user_id"] == USER["id"]
     visible_paths = [w["path"] for w in state.response_payload["workspaces"]]
     assert visible_paths == [str(real_dir)], (
         f"after admin grant, user should see the workspace, got {visible_paths}"

@@ -374,7 +374,7 @@ def load_workspaces() -> list:
                 except Exception:
                     logger.debug("Failed to persist cleaned workspace list")
             return _migrate_workspace_access(
-                cleaned or [{'path': _profile_default_workspace(), 'name': 'Home'}],
+                cleaned,
                 Path(_STATE_DIR),
             )
         except Exception:
@@ -631,7 +631,8 @@ def get_last_workspace(user_id: str | None = None, *, allowed_paths: set[str] | 
                 return p
         except Exception:
             logger.debug("Failed to read global last workspace")
-    return _profile_default_workspace()
+    fallback = _profile_default_workspace()
+    return _filter(fallback) or ""
 
 
 def set_last_workspace(path: str, user_id: str | None = None) -> None:

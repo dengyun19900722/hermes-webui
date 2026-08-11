@@ -66,6 +66,14 @@ def test_allowed_paths_filter_blocks_stale_or_removed_workspace(tmp_path, monkey
     assert get_last_workspace(user, allowed_paths={ws_a, ws_b}) == ws_a
 
 
+def test_empty_allowed_paths_blocks_profile_default_fallback(tmp_path, monkeypatch):
+    _isolate_profile_state(tmp_path, monkeypatch)
+    profile_default = _make_dir(tmp_path, "profile-default")
+    monkeypatch.setattr("api.workspace._profile_default_workspace", lambda: profile_default)
+
+    assert get_last_workspace("u-with-no-access", allowed_paths=set()) == ""
+
+
 def test_filename_sanitization_strips_path_separators(tmp_path, monkeypatch):
     """Per-user filename must never contain path separators or '..'."""
     _isolate_profile_state(tmp_path, monkeypatch)

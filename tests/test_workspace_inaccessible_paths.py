@@ -34,6 +34,17 @@ def test_load_workspaces_preserves_unavailable_entries_on_disk(tmp_path, monkeyp
     assert [w["path"] for w in loaded] == [str(existing.resolve()), str(unavailable.resolve())]
 
 
+def test_load_workspaces_preserves_explicit_empty_list(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    ws_file = state_dir / "workspaces.json"
+    ws_file.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(workspace, "_workspaces_file", lambda: ws_file)
+
+    assert workspace.load_workspaces() == []
+    assert json.loads(ws_file.read_text(encoding="utf-8")) == []
+
+
 def test_clean_workspace_list_still_renames_default_without_dropping_missing(tmp_path):
     missing = tmp_path / "temporarily-unavailable"
 

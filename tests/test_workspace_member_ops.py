@@ -105,6 +105,7 @@ def test_member_add_owner_can_add():
                   {"path": "/a", "user_id": "u-new"}, user=OWNER)
 
     assert cap.status == 200, cap.error
+    assert cap.payload["scope_user_id"] == OWNER["id"]
     assert cap.payload["workspaces"][0]["members"] == ["u-owner", "u-new"]
     assert cap.saved is not None, "member add must persist"
     cap.audit.write.assert_called_once()
@@ -244,7 +245,9 @@ def test_workspace_remove_owner_allowed():
                   workspaces=[_ws(), _ws(path="/b", name="B", owner="u-other")])
 
     assert cap.status == 200, cap.error
-    assert [w["path"] for w in cap.payload["workspaces"]] == ["/b"]
+    assert cap.payload["scope_user_id"] == OWNER["id"]
+    assert cap.payload["workspaces"] == []
+    assert [w["path"] for w in cap.saved] == ["/b"]
     cap.audit.write.assert_called_once()
     assert cap.audit.write.call_args.kwargs["action"] == "workspace.remove"
 
@@ -378,6 +381,7 @@ def _invoke_add(body, user=OWNER, workspaces=None, tmp_path=None):
         p(patch.object(rmod, "save_workspaces",
                        side_effect=lambda n: setattr(cap, "saved", n)))
         p(patch.object(rmod, "_current_rbac_user", return_value=user))
+        p(patch.object(rmod, "_rbac_users_configured", return_value=user is not None))
         p(patch.object(rmod, "_audit", audit))
         p(patch.object(rmod, "bad", side_effect=fake_bad))
         p(patch.object(rmod, "j", side_effect=fake_j))
@@ -410,6 +414,41 @@ def test_workspace_add_without_rbac_user_omits_owner(tmp_path):
     assert cap.status == 200, cap.error
     entry = cap.payload["workspaces"][0]
     assert "owner" not in entry and "members" not in entry
+
+
+def test_workspace_add_response_excludes_other_users_workspaces(tmp_path):
+    d = tmp_path / "owned"
+    d.mkdir()
+    hidden = _ws(path=str(tmp_path / "hidden"), owner="u-other")
+
+    cap = _invoke_add(
+        {"path": str(d), "name": "Owned"},
+        user=OWNER,
+        workspaces=[hidden],
+    )
+
+    assert cap.status == 200, cap.error
+    assert [w["path"] for w in cap.saved] == [hidden["path"], str(d)]
+    assert [w["path"] for w in cap.payload["workspaces"]] == [str(d)]
+
+
+def test_workspace_reorder_preserves_hidden_slots_and_filters_response():
+    workspaces = [
+        _ws(path="/mine-a", owner="u-owner"),
+        _ws(path="/hidden", owner="u-other"),
+        _ws(path="/mine-b", owner="u-owner"),
+    ]
+
+    cap = _invoke(
+        rmod._handle_workspace_reorder,
+        {"paths": ["/mine-b", "/hidden", "/mine-a"]},
+        user=OWNER,
+        workspaces=workspaces,
+    )
+
+    assert cap.status == 200, cap.error
+    assert [w["path"] for w in cap.saved] == ["/mine-b", "/hidden", "/mine-a"]
+    assert [w["path"] for w in cap.payload["workspaces"]] == ["/mine-b", "/mine-a"]
 
 
 # ── Integration: add member → visible in list → remove → invisible ──────────
