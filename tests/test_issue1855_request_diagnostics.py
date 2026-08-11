@@ -78,6 +78,24 @@ def test_request_diagnostics_hashes_identity_context_and_keeps_response_metadata
     assert record["response_bytes"] == 123
 
 
+def test_request_diagnostics_opt_in_logs_fast_completed_requests(caplog, monkeypatch):
+    logger = logging.getLogger("test.issue1855.always")
+    monkeypatch.setenv("HERMES_WEBUI_REQUEST_DIAGNOSTICS", "1")
+    diag = RequestDiagnostics(
+        "GET",
+        "/api/auth/status",
+        logger=logger,
+        timeout_seconds=5,
+        auto_start=False,
+    )
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        diag.finish()
+
+    assert len(caplog.records) == 1
+    assert caplog.records[0].levelno == logging.WARNING
+    assert caplog.records[0].getMessage().startswith("WebUI request diagnostics:")
+
+
 def test_all_sessions_reports_internal_index_stages(tmp_path, monkeypatch):
     session_dir = tmp_path / "sessions"
     session_dir.mkdir()

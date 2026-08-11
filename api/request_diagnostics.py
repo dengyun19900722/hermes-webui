@@ -96,6 +96,28 @@ def _slow_request_seconds() -> float:
     return max(0.0, value)
 
 
+def _log_all_requests() -> bool:
+    """Return whether completed target requests should be logged.
+
+    The default remains slow-request-only.  The opt-in mode is intended for a
+    bounded staging/production measurement window and is deliberately read at
+    finish time so operators can turn collection off without restarting.
+    """
+    enabled = os.getenv("HERMES_WEBUI_REQUEST_DIAGNOSTICS", "").strip().lower()
+    if enabled in {
+        "1",
+        "true",
+        "yes",
+        "on",
+        "all",
+    }:
+        return True
+    # Preserve the documented legacy switch: SLOW_REQUEST_SECONDS=0 means
+    # collect every completed target request, without enabling stack watchdogs.
+    legacy_value = os.getenv("HERMES_WEBUI_SLOW_REQUEST_SECONDS", "").strip()
+    return bool(legacy_value) and _slow_request_seconds() == 0
+
+
 class RequestDiagnostics:
     """Track request stages and emit a watchdog record if a request wedges."""
 
@@ -221,7 +243,21 @@ class RequestDiagnostics:
         # fires _on_timeout for a completed request (and the pending dict stays
         # bounded by the number of in-flight requests).
         _watchdog_unregister(self.request_id)
-        if record and self.timeout_seconds > 0 and record["elapsed_ms"] >= self.timeout_seconds * 1000:
+        if not record:
+            return
+        elapsed_over_threshold = (
+            self.timeout_seconds > 0
+            and record["elapsed_ms"] >= self.timeout_seconds * 1000
+        )
+        if _log_all_requests():
+            # Warning is intentional here: the standalone server keeps the
+            # root logger at WARNING unless an operator configures logging.
+            # The opt-in flag already acknowledges the temporary log volume.
+            self.logger.warning(
+                "WebUI request diagnostics: %s",
+                json.dumps(record, sort_keys=True),
+            )
+        elif elapsed_over_threshold:
             self.logger.warning(
                 "Slow WebUI request completed: %s",
                 json.dumps(record, sort_keys=True),
