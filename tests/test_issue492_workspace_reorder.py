@@ -4,6 +4,12 @@ from unittest.mock import patch, MagicMock, call
 from api.routes import _handle_workspace_reorder
 
 
+@pytest.fixture(autouse=True)
+def _legacy_single_user_workspace_scope(monkeypatch):
+    """These legacy reorder cases intentionally exercise the unscoped mode."""
+    monkeypatch.setattr("api.routes._rbac_users_configured", lambda: False)
+
+
 def _make_handler():
     """Create a mock HTTP handler."""
     h = MagicMock()

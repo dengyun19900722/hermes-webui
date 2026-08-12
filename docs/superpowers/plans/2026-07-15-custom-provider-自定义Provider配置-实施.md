@@ -12,7 +12,7 @@
 
 **Tech Stack:** Python (标准库 + pytest + responses 库 mock), Vanilla JS, HTML/CSS, 项目内 `api/probe_provider_endpoint`（`api/onboarding.py:356`）
 
-**Spec:** `docs/superpowers/specs/2026-07-15-custom-model-config-design.md`
+**Spec:** `docs/superpowers/specs/2026-07-15-custom-provider-自定义Provider配置-设计.md`
 
 ---
 
@@ -1918,7 +1918,7 @@ git commit -m "test(custom_providers): add security, concurrency, set-default, m
 
 **Files:**
 - Modify: `CHANGELOG.md` (add entry)
-- Modify: `docs/superpowers/specs/2026-07-15-custom-model-config-design.md` (mark "已实现")
+- Modify: `docs/superpowers/specs/2026-07-15-custom-provider-自定义Provider配置-设计.md` (mark "已实现")
 
 - [ ] **Step 1: Manual smoke test**
 
@@ -1965,7 +1965,7 @@ Open `CHANGELOG.md` and prepend (or follow project convention):
 
 - [ ] **Step 3: Update spec status to "已实现"**
 
-In `docs/superpowers/specs/2026-07-15-custom-model-config-design.md` line 5, change:
+In `docs/superpowers/specs/2026-07-15-custom-provider-自定义Provider配置-设计.md` line 5, change:
 
 ```markdown
 **状态：** 已批准（待 reviewer 确认）
@@ -1980,7 +1980,7 @@ to:
 - [ ] **Step 4: Commit**
 
 ```bash
-git add CHANGELOG.md docs/superpowers/specs/2026-07-15-custom-model-config-design.md
+git add CHANGELOG.md docs/superpowers/specs/2026-07-15-custom-provider-自定义Provider配置-设计.md
 git commit -m "docs: changelog entry + mark spec implemented"
 ```
 
@@ -2016,7 +2016,7 @@ After completing all tasks, verify the plan against the spec:
 
 ## Execution Handoff
 
-Plan complete and saved to `docs/superpowers/plans/2026-07-15-custom-model-config-implementation.md`. Two execution options:
+Plan complete and saved to `docs/superpowers/plans/2026-07-15-custom-provider-自定义Provider配置-实施.md`. Two execution options:
 
 1. **Subagent-Driven (recommended)** — I dispatch a fresh subagent per task, review between tasks, fast iteration with TDD discipline.
 2. **Inline Execution** — Execute tasks in this session using executing-plans, batch execution with checkpoints for review.

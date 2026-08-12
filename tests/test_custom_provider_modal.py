@@ -4,7 +4,7 @@ There is no JS test runner in the project, so these tests parse `static/panels.j
 as text and verify the new functions exist and reference the right symbols.
 
 Each test corresponds to one or more requirements in the implementation plan
-(`docs/superpowers/plans/2026-07-15-custom-model-config-implementation.md`
+(`docs/superpowers/plans/2026-07-15-custom-provider-自定义Provider配置-实施.md`
 lines 1294-1574).
 """
 from __future__ import annotations

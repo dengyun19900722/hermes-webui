@@ -1,0 +1,757 @@
+/* ── Implementation Assistant (2.1) ──────────────────────────────────────
+ * 样式沿用项目主样式包定义的 CSS 变量，自动适配所有皮肤与深色 / 浅色：
+ *   --bg / --surface / --surface-subtle / --hover-bg / --border / --border2
+ *   --text / --strong / --muted / --em
+ *   --accent / --accent-bg / --accent-bg-strong / --accent-text
+ *   --input-bg / --code-bg / --error / --success
+ * 因此无需为各皮肤单独写主题规则，dark / 浅色已经由 :root 主题变量覆盖。
+ */
+.guidance-overlay-21 {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 9000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  box-sizing: border-box;
+}
+
+.guidance-page-21 {
+  background: var(--bg);
+  color: var(--text);
+  width: min(1280px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.32);
+}
+
+.gp21-header {
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  background: var(--surface);
+}
+
+.gp21-header h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--strong);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 220px;
+  min-width: 200px;
+}
+
+.gp21-progress-bar {
+  height: 8px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+  flex: 1 1 220px;
+  min-width: 180px;
+}
+
+.gp21-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+.gp21-progress-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.gp21-body {
+  display: grid;
+  grid-template-columns: clamp(220px, 22%, 320px) minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.gp21-sidebar {
+  padding: 18px 16px;
+  border-right: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--accent-bg), transparent);
+  overflow-y: auto;
+}
+
+.gp21-sidebar-head {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 2px 8px 14px;
+}
+
+.gp21-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.gp21-step {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px 12px;
+  border-radius: 14px;
+  border: 1px solid transparent;
+  background: var(--surface-subtle);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+  user-select: none;
+}
+
+.gp21-step:hover {
+  background: var(--hover-bg);
+}
+
+.gp21-step.active {
+  border-color: var(--accent-bg-strong);
+  background: var(--accent-bg);
+}
+
+.gp21-step.done {
+  background: var(--accent-bg);
+}
+
+.gp21-step-index {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--surface-subtle);
+  color: var(--text);
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+}
+
+.gp21-step.done .gp21-step-index {
+  background: var(--accent-bg-strong);
+  color: var(--strong);
+  border-color: transparent;
+}
+
+.gp21-step.active .gp21-step-index {
+  background: var(--accent);
+  /* Hardcode contrast so the digit is readable on any skin (some --accent-text
+   * tokens collapse to the same hue as --accent, hiding the number). */
+  color: #1a1a1a;
+  border-color: transparent;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08) inset;
+}
+
+.gp21-step-body {
+  min-width: 0;
+}
+
+.gp21-step-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.gp21-step-desc {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+  line-height: 1.5;
+}
+
+.gp21-main {
+  padding: 16px 24px;
+  overflow: hidden;
+  min-width: 0;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+.gp21-main-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.gp21-main-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--strong);
+}
+
+.gp21-main-meta {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.gp21-tasks {
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--accent) var(--input-bg);
+}
+
+.gp21-tasks::-webkit-scrollbar {
+  width: 10px;
+}
+
+.gp21-tasks::-webkit-scrollbar-track {
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.gp21-tasks::-webkit-scrollbar-thumb {
+  background: var(--accent);
+  border: 2px solid var(--input-bg);
+  border-radius: 6px;
+}
+
+.gp21-group-body {
+  padding: 4px 0 8px;
+  background: var(--bg);
+}
+
+.gp21-task {
+  display: flex;
+  flex-direction: column;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+  color: var(--text);
+}
+
+.gp21-task:last-child {
+  border-bottom: none;
+}
+
+.gp21-task-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.gp21-task input[type="checkbox"] {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.gp21-task-title {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gp21-task-meta {
+  font-size: 12px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.gp21-task-note {
+  align-self: flex-start;
+  width: calc(100% - 40px);
+  margin-left: 28px;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 6px 10px;
+  background: var(--input-bg);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  font-style: italic;
+}
+
+.gp21-task-evidence {
+  align-self: flex-start;
+  width: calc(100% - 40px);
+  margin-left: 28px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--success);
+  padding: 6px 10px;
+  background: var(--accent-bg);
+  border-left: 3px solid var(--success);
+  border-radius: 4px;
+}
+
+.gp21-task-ops {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 8px 0 2px 28px;
+  padding: 10px 12px;
+  background: var(--surface-subtle);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+}
+
+.gp21-task-input {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  min-width: 180px;
+}
+
+.gp21-task-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.gp21-task-help {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.gp21-fill-desc {
+  width: 100%;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text);
+  padding: 8px 12px;
+  background: var(--surface-subtle);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  margin-bottom: 2px;
+}
+
+.gp21-fill-desc b {
+  color: var(--strong);
+}
+
+.gp21-fill-doc {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+  padding: 10px 14px;
+  background: var(--surface-subtle);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  /* 紧凑：缩短 doc 块高度，让 group 内下一个 task 在常见视口下不被挡 */
+  max-height: 320px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--accent) var(--input-bg);
+}
+
+.gp21-fill-doc::-webkit-scrollbar {
+  width: 10px;
+}
+
+.gp21-fill-doc::-webkit-scrollbar-track {
+  background: var(--input-bg);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+.gp21-fill-doc::-webkit-scrollbar-thumb {
+  background: var(--accent);
+  border: 2px solid var(--input-bg);
+  border-radius: 6px;
+}
+
+.gp21-fill-doc b {
+  color: var(--strong);
+}
+
+.gp21-fill-intro {
+  font-size: 12px;
+  color: var(--muted);
+  padding-bottom: 6px;
+  border-bottom: 1px dashed var(--border);
+  line-height: 1.5;
+}
+
+.gp21-fill-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.gp21-fill-h {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--strong);
+  letter-spacing: 0.02em;
+}
+
+.gp21-fill-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.gp21-fill-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  min-width: 0;
+}
+
+.gp21-fill-card-h {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.gp21-fill-card-body {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.gp21-fill-cols {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.gp21-fill-cols b {
+  color: var(--strong);
+}
+
+.gp21-fill-rels {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 12px;
+  font-size: 11px;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.gp21-fill-rels > div {
+  min-width: 0;
+}
+
+.gp21-fill-rels b {
+  color: var(--strong);
+  margin-right: 4px;
+}
+
+.gp21-fill-rules {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 11px;
+  color: var(--text);
+  line-height: 1.5;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px 12px;
+}
+
+.gp21-fill-rules li {
+  min-width: 0;
+}
+
+.gp21-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  padding: 1px 5px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+}
+
+.gp21-fill-example {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--input-bg);
+  padding: 3px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  display: inline-block;
+  margin-top: 2px;
+  word-break: break-all;
+}
+
+.gp21-fill-tip {
+  font-size: 11px;
+  color: var(--muted);
+  margin: 0 0 4px 0 !important;
+}
+
+@media (max-width: 900px) {
+  .gp21-fill-grid {
+    grid-template-columns: 1fr;
+  }
+  .gp21-fill-rels,
+  .gp21-fill-rules {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 知识库文档 modal */
+.gp21-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100000;
+  padding: 20px;
+}
+
+.gp21-modal-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: 100%;
+  max-width: 720px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.gp21-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-subtle);
+}
+
+.gp21-modal-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--strong);
+}
+
+.gp21-modal-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.gp21-modal-body {
+  padding: 20px 24px;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--text);
+}
+
+.gp21-modal-body .gp21-md-host h1 {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--strong);
+  margin: 4px 0 16px;
+}
+
+.gp21-modal-body .gp21-md-host h2 {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--strong);
+  margin: 18px 0 8px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+}
+
+.gp21-modal-body .gp21-md-host h3 {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--accent);
+  margin: 14px 0 6px;
+}
+
+.gp21-modal-body .gp21-md-host p {
+  margin: 6px 0;
+  color: var(--text);
+}
+
+.gp21-modal-body .gp21-md-host ul {
+  margin: 6px 0 6px 24px;
+  padding: 0;
+}
+
+.gp21-modal-body .gp21-md-host li {
+  margin: 3px 0;
+}
+
+.gp21-modal-body .gp21-md-host code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  padding: 1px 6px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+}
+
+.gp21-modal-body .gp21-md-host pre {
+  margin: 10px 0;
+  padding: 12px 14px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow-x: auto;
+}
+
+.gp21-modal-body .gp21-md-host pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 12px;
+}
+
+.gp21-modal-close {
+  flex-shrink: 0;
+}
+
+.gp21-footer {
+  display: none;
+}
+
+.gp21-current-user {
+  font-size: clamp(11px, 1.2vw, 13px);
+  color: var(--muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+}
+
+.gp21-current-user:empty {
+  display: none;
+}
+
+.gp21-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.gp21-btn {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.gp21-btn:hover {
+  background: var(--hover-bg);
+  color: var(--strong);
+  border-color: var(--accent);
+}
+
+.gp21-btn-primary {
+  background: var(--accent);
+  color: #000;
+  border-color: var(--accent);
+  font-weight: 700;
+}
+
+.gp21-btn-primary:hover {
+  background: var(--accent-hover);
+  color: #000;
+}
+
+/* Alert 错误样式（覆盖默认 alert 美化） */
+.gp21-alert {
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* 移动端适配 */
+@media (max-width: 768px) {
+  .guidance-overlay-21 {
+    padding: 0;
+  }
+  .guidance-page-21 {
+    width: 100vw;
+    height: 100vh;
+    max-height: 100vh;
+    border-radius: 0;
+    border: none;
+  }
+  .gp21-header {
+    padding: 12px 16px;
+  }
+  .gp21-body {
+    grid-template-columns: 1fr;
+    overflow-y: auto;
+  }
+  .gp21-sidebar {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding: 14px 16px;
+  }
+  .gp21-steps {
+    flex-direction: row;
+    overflow-x: auto;
+  }
+  .gp21-step {
+    min-width: 180px;
+  }
+  .gp21-main {
+    padding: 12px 16px;
+  }
+  .gp21-footer {
+    padding: 12px 16px;
+  }
+}

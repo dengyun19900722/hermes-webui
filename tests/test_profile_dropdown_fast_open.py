@@ -92,9 +92,10 @@ def test_profiles_panel_refresh_updates_dropdown_cache():
     assert api_idx < cache_idx < render_idx
 
 
-def test_profile_dropdown_prefetches_after_page_load():
+def test_profile_dropdown_prefetches_after_first_session_list_is_ready():
     assert "function _warmProfileDropdownCache(){" in PANELS_JS
-    assert "window.addEventListener('load'" in PANELS_JS
+    assert "window.addEventListener('hermes:session-list-ready'" in PANELS_JS
+    assert "requestIdleCallback" in PANELS_JS
     assert "_warmProfileDropdownCache();" in PANELS_JS
 
 
@@ -137,6 +138,7 @@ def test_poisoned_profile_cache_opens_then_switches_after_fresh_refresh():
           }}
           get innerHTML() {{ return this._innerHTML; }}
           appendChild(child) {{ this.children.push(child); return child; }}
+          setAttribute(name, value) {{ this[name] = String(value); }}
         }}
         const elements = new Map();
         for (const id of ['profileDropdown', 'profileChip', 'titlebarProfileBtn', 'titlebarProfileLabel']) {{

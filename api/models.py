@@ -33,6 +33,7 @@ from api.agent_sessions import (
 
 logger = logging.getLogger(__name__)
 CLI_VISIBLE_SESSION_LIMIT = 20
+SIDEBAR_STATE_DB_BUSY_TIMEOUT_SECONDS = 0.05
 # How many messageful cron sessions to surface in the project-chip layer.
 # Needs to exceed CLI_VISIBLE_SESSION_LIMIT so older cron runs stay
 # addressable even when many newer non-cron sessions dominate the default
@@ -4232,9 +4233,15 @@ def _read_state_db_sidebar_overrides(
     except ImportError:
         return {}
     try:
-        with closing(sqlite3.connect(str(db_path))) as conn:
+        with closing(sqlite3.connect(
+            str(db_path), timeout=SIDEBAR_STATE_DB_BUSY_TIMEOUT_SECONDS
+        )) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
+            cur.execute(
+                "PRAGMA busy_timeout=%d"
+                % int(SIDEBAR_STATE_DB_BUSY_TIMEOUT_SECONDS * 1000)
+            )
             cur.execute("PRAGMA table_info(sessions)")
             session_cols = {row[1] for row in cur.fetchall()}
             if 'id' not in session_cols:
@@ -4293,6 +4300,10 @@ def _read_state_db_sidebar_overrides(
                     count_chunk = [sid for sid in chunk if sid in count_wanted]
                     if not count_chunk:
                         continue
+                    for sid in count_chunk:
+                        entry = overrides.setdefault(sid, {})
+                        entry['_state_db_actual_message_count'] = 0
+                        entry['_state_db_actual_last_message_at'] = None
                     count_placeholders = ','.join('?' * len(count_chunk))
                     last_at_expr = "MAX(timestamp) AS last_message_at" if messages_has_timestamp else "NULL AS last_message_at"
                     cur.execute(
@@ -4307,6 +4318,9 @@ def _read_state_db_sidebar_overrides(
                     for row in cur.fetchall():
                         sid = str(row['session_id'])
                         entry = overrides.setdefault(sid, {})
+                        entry['_state_db_actual_message_count'] = max(
+                            0, int(row['actual_message_count'] or 0)
+                        )
                         try:
                             entry['_state_db_message_count'] = max(
                                 int(entry.get('_state_db_message_count') or 0),
@@ -4316,6 +4330,7 @@ def _read_state_db_sidebar_overrides(
                             pass
                         if row['last_message_at'] is not None:
                             try:
+                                entry['_state_db_actual_last_message_at'] = float(row['last_message_at'] or 0)
                                 entry['_state_db_last_message_at'] = float(row['last_message_at'] or 0)
                             except (TypeError, ValueError):
                                 pass
@@ -4324,7 +4339,9 @@ def _read_state_db_sidebar_overrides(
         return {}
 
 
-def _apply_sidebar_state_db_overrides(sessions: list[dict]) -> None:
+def _apply_sidebar_state_db_overrides(
+    sessions: list[dict], *, count_top_n: int | None = None
+) -> dict[str, dict]:
     """Apply state.db source/title overrides without full lineage enrichment.
 
     Source classification (source/title) is corrected for ALL rows because it
@@ -4339,10 +4356,16 @@ def _apply_sidebar_state_db_overrides(sessions: list[dict]) -> None:
     opens (lazily corrected, exactly as with the lineage cap #4638).
     """
     import os as _os
-    try:
-        _cap = int(_os.environ.get("HERMES_WEBUI_STATE_DB_OVERRIDE_TOP_N", "300"))
-    except (TypeError, ValueError):
-        _cap = 300
+    if count_top_n is None:
+        try:
+            _cap = int(_os.environ.get("HERMES_WEBUI_STATE_DB_OVERRIDE_TOP_N", "300"))
+        except (TypeError, ValueError):
+            _cap = 300
+    else:
+        try:
+            _cap = max(0, int(count_top_n))
+        except (TypeError, ValueError):
+            _cap = 300
     all_ids = {str(s.get('session_id')) for s in sessions if s.get('session_id')}
     if _cap > 0 and len(sessions) > _cap:
         count_ids = {str(s.get('session_id')) for s in sessions[:_cap] if s.get('session_id')}
@@ -4355,8 +4378,9 @@ def _apply_sidebar_state_db_overrides(sessions: list[dict]) -> None:
             count_session_ids=count_ids,
         )
     except Exception:
-        return
+        return {}
     _apply_sidebar_state_db_override_metadata(sessions, metadata)
+    return metadata
 
 
 def _apply_sidebar_state_db_override_metadata(sessions: list[dict], metadata: dict[str, dict]) -> None:
@@ -4373,6 +4397,8 @@ def _apply_sidebar_state_db_override_metadata(sessions: list[dict], metadata: di
         state_db_source_label = entry.pop('_state_db_source_label', None)
         state_db_message_count = entry.pop('_state_db_message_count', None)
         state_db_last_message_at = entry.pop('_state_db_last_message_at', None)
+        entry.pop('_state_db_actual_message_count', None)
+        entry.pop('_state_db_actual_last_message_at', None)
         if state_db_source == 'webui':
             session['source_tag'] = state_db_source_tag
             session['raw_source'] = state_db_raw_source
@@ -4434,7 +4460,11 @@ def _apply_sidebar_state_db_override_metadata(sessions: list[dict], metadata: di
             session['display_title'] = state_db_title
 
 
-def _enrich_sidebar_lineage_metadata(sessions: list[dict]) -> None:
+def _enrich_sidebar_lineage_metadata(
+    sessions: list[dict],
+    *,
+    state_db_metadata: dict[str, dict] | None = None,
+) -> None:
     """Attach state.db compression lineage metadata used by sidebar collapse.
 
     Cap the DB lookup to the top-N most recent sessions to bound wall-clock
@@ -4456,9 +4486,27 @@ def _enrich_sidebar_lineage_metadata(sessions: list[dict]) -> None:
     else:
         candidates = sessions
     try:
+        lineage_ids = {str(s.get('session_id')) for s in candidates if s.get('session_id')}
+        kwargs = {}
+        try:
+            signature = inspect.signature(read_session_lineage_metadata)
+            accepts_kwargs = any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in signature.parameters.values()
+            )
+            if state_db_metadata and (
+                'message_metadata' in signature.parameters or accepts_kwargs
+            ):
+                kwargs['message_metadata'] = state_db_metadata
+            if 'sqlite_timeout_seconds' in signature.parameters or accepts_kwargs:
+                kwargs['sqlite_timeout_seconds'] = SIDEBAR_STATE_DB_BUSY_TIMEOUT_SECONDS
+        except (TypeError, ValueError):
+            if state_db_metadata:
+                kwargs['message_metadata'] = state_db_metadata
         metadata = read_session_lineage_metadata(
             _active_state_db_path(),
-            {str(s.get('session_id')) for s in candidates if s.get('session_id')},
+            lineage_ids,
+            **kwargs,
         )
     except Exception:
         return
@@ -4487,7 +4535,13 @@ def _diag_stage(diag, name: str) -> None:
             pass
 
 
-def all_sessions(diag=None, *, include_lineage_metadata: bool = True):
+def all_sessions(
+    diag=None,
+    *,
+    include_lineage_metadata: bool = True,
+    state_db_metadata_out: dict[str, dict] | None = None,
+    state_db_override_top_n: int | None = None,
+):
     _diag_stage(diag, "all_sessions.active_streams")
     active_stream_ids = _active_stream_ids()
     # Phase C: try index first for O(1) read; fall back to full scan
@@ -4630,7 +4684,11 @@ def all_sessions(diag=None, *, include_lineage_metadata: bool = True):
                 _enrich_sidebar_lineage_metadata(result)
             else:
                 _diag_stage(diag, "all_sessions.state_db_overrides")
-                _apply_sidebar_state_db_overrides(result)
+                state_db_metadata = _apply_sidebar_state_db_overrides(
+                    result, count_top_n=state_db_override_top_n
+                )
+                if state_db_metadata_out is not None:
+                    state_db_metadata_out.update(state_db_metadata)
                 _diag_stage(diag, "all_sessions.lineage_metadata_skipped")
             result = _prefer_fuller_snapshots_for_sidebar(result)
             sidebar_candidates = result
@@ -4686,7 +4744,11 @@ def all_sessions(diag=None, *, include_lineage_metadata: bool = True):
         _enrich_sidebar_lineage_metadata(result)
     else:
         _diag_stage(diag, "all_sessions.state_db_overrides")
-        _apply_sidebar_state_db_overrides(result)
+        state_db_metadata = _apply_sidebar_state_db_overrides(
+            result, count_top_n=state_db_override_top_n
+        )
+        if state_db_metadata_out is not None:
+            state_db_metadata_out.update(state_db_metadata)
         _diag_stage(diag, "all_sessions.lineage_metadata_skipped")
     result = _prefer_fuller_snapshots_for_sidebar(result)
     sidebar_candidates = result

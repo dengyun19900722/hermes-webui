@@ -887,6 +887,12 @@ def test_server():
         _rmtree_retry(TEST_STATE_DIR)
     TEST_STATE_DIR.mkdir(parents=True)
     TEST_WORKSPACE.mkdir(parents=True)
+    test_license_dir = TEST_WORKSPACE / ".license"
+    test_license_dir.mkdir(parents=True, exist_ok=True)
+    (test_license_dir / "license.json").write_text(
+        json.dumps({"activated": True, "expires_at": None, "imported_at": None}),
+        encoding="utf-8",
+    )
 
     # Symlink real skills into test home so skill-related tests work,
     # but all write-heavy state stays isolated.

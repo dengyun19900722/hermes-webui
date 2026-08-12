@@ -442,6 +442,33 @@ function _escHtml(s){
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// ── RBAC: workspace ownership badge ─────────────────────────────────────────
+// Returns an escaped HTML fragment to append after a workspace name:
+//   • caller owns the workspace       → "👑 owner"
+//   • caller is admin, someone else   → "owner: <username>"
+//   • plain member                    → '' (no badge)
+// `owner_username` is only populated by GET /api/workspaces?view=all, which is
+// the admin-only view — the default view carries just the raw `owner` id.
+// Identity globals are published by _applyAuthIdentityScope() in boot.js.
+function workspaceOwnerBadgeHtml(ws){
+  if(!ws || typeof ws !== 'object') return '';
+  const owner = ws.owner == null ? '' : String(ws.owner);
+  if(!owner) return '';  // legacy/unowned workspace — nothing to attribute
+  const style = 'margin-left:6px;font-size:9px;padding:1px 6px;opacity:.85';
+  const tr = (typeof t === 'function') ? t : (key) => key;
+  if(owner === String(window._currentAuthUserId || '')){
+    return `<span class="ws-owner-badge is-owner" style="${style}">${_escHtml(tr('workspace_role_owner'))}</span>`;
+  }
+  if(String(window._currentAuthRole || '') !== 'admin') return '';
+  // Fall back to the raw owner id when the username can't be resolved (deleted
+  // user, or a default-view payload that carries no owner_username).
+  const who = ws.owner_username ? String(ws.owner_username) : owner;
+  // t() only interpolates numbered placeholders, so expand {username} by hand
+  // (same approach as formatResetPasswordMessage in users_panel.js).
+  const label = String(tr('workspace_owner_label', '')).replace(/\{username\}/g, who);
+  return `<span class="ws-owner-badge" style="${style}">${_escHtml(label)}</span>`;
+}
+
 const ARTIFACT_IGNORE_RE = /(^|\/)(?:\.git|\.hg|\.svn|node_modules|\.venv|venv|__pycache__|dist|build|\.next|\.cache)(?:\/|$)/;
 // Canonical Hermes mutators plus MCP filesystem aliases that can create/edit files.
 const ARTIFACT_MUTATION_TOOLS = new Set(['write_file','patch','edit_file','create_file','mcp_filesystem_write_file','mcp_filesystem_edit_file']);

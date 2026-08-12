@@ -79,7 +79,7 @@ def _isolate_projects(tmp_path, monkeypatch):
     monkeypatch.setattr(models, "_projects_migrated", True)
     monkeypatch.setattr(models, "_CRON_PROJECT_LOCK", threading.Lock())
     monkeypatch.setattr(models, "_WEBHOOK_PROJECT_LOCK", threading.Lock())
-    monkeypatch.setattr(profiles, "list_profiles_api", lambda: [])
+    monkeypatch.setattr(profiles, "_list_root_profile_names_fast", lambda: {"default"})
     monkeypatch.setattr(profiles, "_active_profile", "default")
     profiles._invalidate_root_profile_cache()
     yield projects_file
@@ -294,9 +294,7 @@ def test_renamed_root_alias_cron_project_resolves_when_zero_user_projects(tmp_pa
     _write_projects(projects_file, [
         {"project_id": "root-alias-cron", "name": "Cron Jobs", "profile": "default", "color": "#6366f1", "created_at": 1.0},
     ])
-    monkeypatch.setattr(profiles, "list_profiles_api", lambda: [
-        {"name": "kinni", "is_default": True, "path": str(tmp_path)},
-    ])
+    monkeypatch.setattr(profiles, "_list_root_profile_names_fast", lambda: {"default", "kinni"})
     monkeypatch.setattr(profiles, "_active_profile", "kinni")
     profiles._invalidate_root_profile_cache()
 

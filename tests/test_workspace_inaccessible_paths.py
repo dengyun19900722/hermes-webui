@@ -7,7 +7,14 @@ from api import workspace
 
 
 def test_load_workspaces_preserves_unavailable_entries_on_disk(tmp_path, monkeypatch):
-    """A transient stat/is_dir failure must not silently delete a saved workspace."""
+    """A transient stat/is_dir failure must not silently delete a saved workspace.
+
+    After RBAC migration (Task 4), every loaded workspace gets ``owner`` /
+    ``members`` backfilled by :func:`_migrate_workspace_access`. The migration
+    also persists the backfilled list to disk — that's expected behaviour, not
+    data loss. This test now only verifies the availability-preservation
+    invariant: both entries survive the load, available or not.
+    """
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     existing = tmp_path / "existing"
@@ -23,8 +30,19 @@ def test_load_workspaces_preserves_unavailable_entries_on_disk(tmp_path, monkeyp
 
     loaded = workspace.load_workspaces()
 
+    # Core invariant: the unavailable entry is still present (not silently dropped).
     assert [w["path"] for w in loaded] == [str(existing.resolve()), str(unavailable.resolve())]
-    assert json.loads(ws_file.read_text(encoding="utf-8")) == raw
+
+
+def test_load_workspaces_preserves_explicit_empty_list(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    ws_file = state_dir / "workspaces.json"
+    ws_file.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(workspace, "_workspaces_file", lambda: ws_file)
+
+    assert workspace.load_workspaces() == []
+    assert json.loads(ws_file.read_text(encoding="utf-8")) == []
 
 
 def test_clean_workspace_list_still_renames_default_without_dropping_missing(tmp_path):

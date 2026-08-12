@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -95,6 +96,28 @@ def _slow_request_seconds() -> float:
     return max(0.0, value)
 
 
+def _log_all_requests() -> bool:
+    """Return whether completed target requests should be logged.
+
+    The default remains slow-request-only.  The opt-in mode is intended for a
+    bounded staging/production measurement window and is deliberately read at
+    finish time so operators can turn collection off without restarting.
+    """
+    enabled = os.getenv("HERMES_WEBUI_REQUEST_DIAGNOSTICS", "").strip().lower()
+    if enabled in {
+        "1",
+        "true",
+        "yes",
+        "on",
+        "all",
+    }:
+        return True
+    # Preserve the documented legacy switch: SLOW_REQUEST_SECONDS=0 means
+    # collect every completed target request, without enabling stack watchdogs.
+    legacy_value = os.getenv("HERMES_WEBUI_SLOW_REQUEST_SECONDS", "").strip()
+    return bool(legacy_value) and _slow_request_seconds() == 0
+
+
 class RequestDiagnostics:
     """Track request stages and emit a watchdog record if a request wedges."""
 
@@ -120,6 +143,9 @@ class RequestDiagnostics:
         self._current_stage_started = self.started_monotonic
         self._finished = False
         self._watchdog_logged = False
+        self._context: dict[str, Any] = {}
+        self._response_status: int | None = None
+        self._response_bytes: int | None = None
         if auto_start and self.timeout_seconds > 0:
             _watchdog_register(
                 self.request_id,
@@ -136,12 +162,60 @@ class RequestDiagnostics:
         logger: logging.Logger | None = None,
     ) -> "RequestDiagnostics | None":
         clean_path = str(path or "").split("?", 1)[0]
-        if (method.upper(), clean_path) not in {
-            ("GET", "/api/sessions"),
-            ("POST", "/api/chat/start"),
-        }:
+        if method.upper() == "GET":
+            target = clean_path in {
+                "/api/sessions",
+                "/api/session/status",
+                "/api/approval/pending",
+                "/api/clarify/pending",
+                "/api/auth/status",
+                "/api/license/status",
+                "/api/health/agent",
+                "/api/crons/recent",
+                "/api/dashboard/status",
+            }
+        else:
+            target = method.upper() == "POST" and clean_path == "/api/chat/start"
+        if not target:
             return None
         return cls(method, clean_path, logger=logger)
+
+    def bind_context(self, **values: Any) -> None:
+        """Attach non-sensitive request context for slow-request records.
+
+        Values named ``*_cookie``, ``user_id`` or ``profile`` are hashed with
+        this request's id before logging.  The request id acts as a per-record
+        salt, so diagnostics can correlate stages within one request without
+        creating a reusable identity lookup table.
+        """
+        with self._lock:
+            if self._finished:
+                return
+            for key, value in values.items():
+                if value is None or value == "":
+                    continue
+                text = str(value)
+                if key.endswith("_cookie") or key in {"user_id", "profile"}:
+                    digest = hashlib.sha256(
+                        f"{self.request_id}:{key}:{text}".encode("utf-8")
+                    ).hexdigest()[:16]
+                    self._context[f"{key}_hash"] = digest
+                else:
+                    self._context[key] = value
+
+    def set_response(self, *, status: int | None = None, body_bytes: int | None = None) -> None:
+        """Record response metadata without retaining the response payload."""
+        with self._lock:
+            if status is not None:
+                try:
+                    self._response_status = int(status)
+                except (TypeError, ValueError):
+                    self._response_status = None
+            if body_bytes is not None:
+                try:
+                    self._response_bytes = max(0, int(body_bytes))
+                except (TypeError, ValueError):
+                    self._response_bytes = None
 
     def stage(self, name: str) -> None:
         now = time.monotonic()
@@ -169,7 +243,21 @@ class RequestDiagnostics:
         # fires _on_timeout for a completed request (and the pending dict stays
         # bounded by the number of in-flight requests).
         _watchdog_unregister(self.request_id)
-        if record and self.timeout_seconds > 0 and record["elapsed_ms"] >= self.timeout_seconds * 1000:
+        if not record:
+            return
+        elapsed_over_threshold = (
+            self.timeout_seconds > 0
+            and record["elapsed_ms"] >= self.timeout_seconds * 1000
+        )
+        if _log_all_requests():
+            # Warning is intentional here: the standalone server keeps the
+            # root logger at WARNING unless an operator configures logging.
+            # The opt-in flag already acknowledges the temporary log volume.
+            self.logger.warning(
+                "WebUI request diagnostics: %s",
+                json.dumps(record, sort_keys=True),
+            )
+        elif elapsed_over_threshold:
             self.logger.warning(
                 "Slow WebUI request completed: %s",
                 json.dumps(record, sort_keys=True),
@@ -204,6 +292,12 @@ class RequestDiagnostics:
             "current_stage": self._current_stage,
             "stages": stages,
         }
+        if self._context:
+            record["context"] = dict(self._context)
+        if self._response_status is not None:
+            record["response_status"] = self._response_status
+        if self._response_bytes is not None:
+            record["response_bytes"] = self._response_bytes
         if include_stacks:
             record["thread_stacks"] = _thread_stack_snapshot()
         return record

@@ -1824,6 +1824,9 @@
   .app-titlebar-account:hover,.app-titlebar-account.active{background:var(--hover-bg);color:var(--text);border-color:var(--border);}
   .app-titlebar-account-icon,.app-titlebar-account-chevron{display:inline-flex;align-items:center;flex-shrink:0;}
   .app-titlebar-account-chevron{opacity:.55;}
+  /* Guidance Center titlebar entry — icon-only button, mirrors account button */
+  .app-titlebar-guidance{justify-content:center;width:30px;padding:0;}
+  .app-titlebar-guidance svg{width:15px;height:15px;}
   .app-titlebar-account-name{min-width:0;overflow:hidden;text-overflow:ellipsis;}
   .app-titlebar-account-menu{position:fixed;right:max(12px,env(safe-area-inset-right,0));top:calc(42px + var(--app-titlebar-safe-top));z-index:320;width:min(260px,calc(100vw - 24px));padding:10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 12px 30px rgba(0,0,0,.22);color:var(--text);font-size:12px;-webkit-app-region:no-drag;user-select:text;}
   .app-titlebar-account-menu[hidden]{display:none;}
@@ -1835,6 +1838,8 @@
   .app-titlebar-account-field select:focus{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-bg);}
   .app-titlebar-account-signout{display:flex;align-items:center;justify-content:center;width:100%;height:32px;margin-top:10px;border:1px solid var(--border);border-radius:7px;background:var(--surface2);color:var(--danger);font-size:12px;font-weight:700;cursor:pointer;-webkit-app-region:no-drag;}
   .app-titlebar-account-signout:hover{background:color-mix(in srgb,var(--danger) 10%,var(--surface2));border-color:color-mix(in srgb,var(--danger) 35%,var(--border));}
+  .app-titlebar-account-action{display:flex;align-items:center;justify-content:center;width:100%;height:32px;margin-top:10px;border:1px solid var(--border);border-radius:7px;background:var(--surface2);color:var(--text);font-size:12px;font-weight:700;cursor:pointer;-webkit-app-region:no-drag;}
+  .app-titlebar-account-action:hover{background:var(--surface);border-color:var(--accent);}
   .system-health-panel.insights-card{display:flex;flex-direction:column;gap:12px;color:var(--muted);}
   .system-health-panel.unavailable{display:none;}
   .system-health-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}
@@ -2970,6 +2975,86 @@
   }
   .empty-state h2{font-size:20px;color:var(--text);font-weight:700;letter-spacing:-.02em;}
   .empty-state p{font-size:14px;text-align:center;max-width:320px;}
+  /* ── Workspace-required empty state (RBAC: no accessible workspaces) ──
+     Inherits the .empty-state centering, then overrides the visual chrome
+     so the user sees a folder icon + create CTA instead of the chat hero.
+     CTA colors are forced to a high-contrast pair (white on darker accent)
+     because several themes ship --accent and --accent-text too close in
+     value, leaving the button text invisible against the accent fill. */
+  .empty-state.workspace-empty-state{
+    gap:18px;
+    padding:32px 28px;
+    border-radius:16px;
+    background:var(--surface2);
+    border:1px solid var(--border);
+    box-shadow:0 1px 0 var(--border) inset, 0 8px 24px rgba(0,0,0,.04);
+  }
+  .empty-state.workspace-empty-state .empty-logo{display:none;}
+  .workspace-empty-state__icon{
+    font-size:56px;
+    line-height:1;
+    opacity:.9;
+    margin-bottom:6px;
+    filter:drop-shadow(0 2px 6px rgba(0,0,0,.18));
+  }
+  .empty-state.workspace-empty-state h2{
+    font-size:18px;
+    font-weight:700;
+    color:var(--text);
+  }
+  .empty-state.workspace-empty-state p{
+    font-size:13.5px;
+    color:var(--muted);
+    max-width:340px;
+    line-height:1.55;
+  }
+  .workspace-empty-state__cta{
+    margin-top:12px;
+    padding:14px 32px;
+    font-size:15px;
+    font-weight:700;
+    /* Forced white text + darker accent fill + ring border so the label is
+       legible against every theme accent (yellow / red / orange / blue). */
+    color:#fff;
+    background:color-mix(in srgb, var(--accent) 88%, #000 12%);
+    border:1px solid color-mix(in srgb, var(--accent) 70%, #000 30%);
+    border-radius:10px;
+    cursor:pointer;
+    box-shadow:0 2px 6px rgba(0,0,0,.18), 0 0 0 1px rgba(255,255,255,.06) inset, 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent);
+    transition:background .15s, border-color .15s, transform .05s, box-shadow .15s;
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    animation: wsEmptyCtaPulse 2.4s ease-in-out infinite;
+  }
+  @keyframes wsEmptyCtaPulse{
+    0%,100%{ box-shadow:0 2px 6px rgba(0,0,0,.18), 0 0 0 1px rgba(255,255,255,.06) inset, 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent); }
+    50%   { box-shadow:0 4px 12px rgba(0,0,0,.24), 0 0 0 1px rgba(255,255,255,.08) inset, 0 0 0 10px color-mix(in srgb, var(--accent) 10%, transparent); }
+  }
+  .workspace-empty-state__cta:hover{
+    background:color-mix(in srgb, var(--accent) 78%, #000 22%);
+    border-color:color-mix(in srgb, var(--accent) 60%, #000 40%);
+    box-shadow:0 4px 10px rgba(0,0,0,.24), 0 0 0 1px rgba(255,255,255,.08) inset;
+    animation-play-state: paused;
+  }
+  .workspace-empty-state__cta:active{transform:translateY(1px);}
+  .workspace-empty-state__cta:focus-visible{
+    outline:2px solid #fff;
+    outline-offset:2px;
+    box-shadow:0 0 0 4px color-mix(in srgb, var(--accent) 50%, transparent);
+  }
+  /* Light-theme variant: pure dark text on light accent fill (e.g. yellow
+     background in solarized-light needs dark text to stay legible).
+     Hermes applies dark mode via :root.dark; light = no .dark class. */
+  :root:not(.dark) .workspace-empty-state__cta{
+    color:#1a1a1a;
+    background:var(--accent);
+    border-color:color-mix(in srgb, var(--accent) 70%, #000 30%);
+  }
+  :root:not(.dark) .workspace-empty-state__cta:hover{
+    background:var(--accent-hover);
+    border-color:color-mix(in srgb, var(--accent) 50%, #000 50%);
+  }
   .suggestion-grid{display:flex;flex-direction:column;gap:8px;margin-top:12px;width:100%;max-width:380px;}
   .suggestion{padding:12px 14px;background:var(--input-bg);border:1px solid var(--border);border-radius:10px;font-size:13px;color:var(--muted);cursor:pointer;transition:all .15s;text-align:left;}
   .suggestion:hover{background:var(--accent-bg);color:var(--text);border-color:var(--accent-bg);transform:translateX(2px);}
@@ -3478,6 +3563,7 @@
     .app-titlebar-hamburger,.app-titlebar-spacer{display:flex;}
     .app-titlebar-new-chat,.app-titlebar-reload,.app-titlebar-account{display:inline-flex;width:44px;height:44px;}
     .app-titlebar-account{justify-content:center;max-width:44px;padding:0;border:none;border-radius:8px;}
+    .app-titlebar-guidance{width:44px;}
     .app-titlebar-account-name,.app-titlebar-account-chevron{display:none;}
     .app-titlebar-account-menu{top:calc(58px + var(--app-titlebar-safe-top));right:max(8px,env(safe-area-inset-right,0));width:min(260px,calc(100vw - 16px));}
     .app-titlebar-inner{flex:1 1 auto;}
@@ -8009,6 +8095,85 @@ html[data-conversation-outline="enabled"] #outlineToggleBtn:not([hidden]){displa
   border:1px solid color-mix(in srgb,var(--error,#f87171) 30%,transparent);
   color:var(--error,#f87171);
 }
+
+/* === Change-password modal (RBAC plan §7) ================================== */
+/* Same visual shell as .custom-provider-modal so the two dialogs feel like
+   one family. Scoped under .change-password-modal{,-overlay} to keep the
+   selectors independent of the provider modal. */
+.change-password-modal-overlay{
+  position:fixed;inset:0;
+  background:rgba(7,12,19,.62);
+  backdrop-filter:blur(6px);
+  display:flex;align-items:center;justify-content:center;
+  z-index:1100;padding:24px;
+}
+.change-password-modal{
+  width:min(420px,100%);
+  background:linear-gradient(180deg,rgba(21,31,45,.98),rgba(13,20,31,.98));
+  border:1px solid var(--accent-bg-strong,var(--border));
+  border-radius:18px;
+  box-shadow:0 18px 60px rgba(0,0,0,.45);
+  padding:20px 22px 16px;
+  color:var(--text);
+  box-sizing:border-box;
+}
+:root:not(.dark) .change-password-modal{
+  background:linear-gradient(180deg,#fff,#f5f0e8);
+  border-color:rgba(0,0,0,.18);
+}
+.change-password-modal h3{
+  margin:0 0 14px;font-size:15px;font-weight:650;color:var(--text);
+}
+.change-password-modal .form-row{margin-bottom:10px;}
+.change-password-modal .form-row label{
+  display:block;font-size:11px;color:var(--muted);
+  margin-bottom:3px;font-weight:500;
+}
+.change-password-modal input[type="password"]{
+  width:100%;background:var(--input-bg);border:1px solid var(--border);
+  border-radius:8px;color:var(--text);padding:8px 10px;
+  font:inherit;font-size:13px;box-sizing:border-box;
+  transition:border-color .15s,box-shadow .15s;
+}
+.change-password-modal input[type="password"]:focus{
+  outline:none;border-color:var(--accent);
+  box-shadow:0 0 0 3px var(--accent-bg);
+}
+.change-password-modal input[type="password"][readonly]{opacity:.7;cursor:not-allowed;}
+
+.change-password-modal .error-banner{
+  margin-top:10px;padding:8px 12px;border-radius:8px;
+  font-size:12px;font-weight:500;line-height:1.4;
+  background:color-mix(in srgb,var(--error,#f87171) 12%,transparent);
+  border:1px solid color-mix(in srgb,var(--error,#f87171) 30%,transparent);
+  color:var(--error,#f87171);
+}
+.change-password-modal .actions{
+  display:flex;justify-content:flex-end;gap:8px;
+  margin-top:16px;padding-top:12px;border-top:1px solid var(--border);
+}
+.change-password-modal .btn-primary{
+  background:var(--accent);color:var(--strong);border:1px solid var(--accent);
+  border-radius:8px;padding:8px 16px;cursor:pointer;
+  font-weight:600;font-size:13px;
+  transition:background .15s,border-color .15s,color .15s;
+}
+.change-password-modal .btn-primary:hover{background:var(--accent-hover);border-color:var(--accent-hover);}
+.change-password-modal .btn-primary[disabled]{opacity:.6;cursor:not-allowed;}
+.change-password-modal .btn-primary.is-busy{position:relative;color:transparent;}
+.change-password-modal .btn-primary.is-busy::after{
+  content:'';position:absolute;left:50%;top:50%;
+  width:14px;height:14px;margin:-7px 0 0 -7px;
+  border:2px solid var(--strong);border-top-color:transparent;
+  border-radius:50%;animation:spin .6s linear infinite;
+}
+.change-password-modal .btn-ghost{
+  background:transparent;color:var(--muted);border:1px solid transparent;
+  border-radius:8px;padding:8px 12px;cursor:pointer;font-size:13px;
+  transition:background .15s,color .15s;
+}
+.change-password-modal .btn-ghost:hover{background:var(--accent-bg);color:var(--text);}
+.change-password-modal .btn-ghost[disabled]{opacity:.5;cursor:not-allowed;}
 
 /* === Composer quick-add ================================================== */
 .composer-quickadd-overlay{

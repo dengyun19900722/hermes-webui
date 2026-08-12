@@ -61,9 +61,26 @@ def _workspaces_file() -> Path:
     return _profile_state_dir() / 'workspaces.json'
 
 
-def _last_workspace_file() -> Path:
-    """Return the last_workspace.txt path for the active profile."""
-    return _profile_state_dir() / 'last_workspace.txt'
+def _last_workspace_file(user_id: str | None = None) -> Path:
+    """Return the per-user (or profile-global) last_workspace.txt path.
+
+    ``user_id`` triggers a per-user file under the profile state dir so that
+    user A's most-recent workspace doesn't leak into user B's composer chip
+    (cross-user state bleed, see RBAC plan §1.1 / Task 9 follow-up). The
+    legacy ``last_workspace.txt`` is still read as a fallback for any code
+    path that calls without a user_id, and is still WRITTEN by callers
+    that pass ``user_id=None`` for backwards compatibility (admin/global
+    flows that legitimately want shared state).
+    """
+    base = _profile_state_dir()
+    if user_id:
+        # Defensive sanitize: the user id is uuid4 hex so the regex is a
+        # belt-and-suspenders guard against any future caller passing an
+        # unsanitized value. Anything weird falls back to the global file.
+        safe = ''.join(ch for ch in str(user_id) if ch.isalnum() or ch in '-_')
+        if safe:
+            return base / f'last_workspace_{safe}.txt'
+    return base / 'last_workspace.txt'
 
 
 def _expanduser_path(path: str | Path) -> Path:
@@ -277,7 +294,12 @@ def _clean_workspace_list(workspaces: list) -> list:
         # Rename confusing 'default' label to 'Home'
         if name.lower() == 'default':
             name = 'Home'
-        result.append({'path': str(p), 'name': name})
+        # Preserve all keys (owner, members, etc.) — _clean_workspace_list must
+        # not strip RBAC fields. Earlier versions emitted only {path, name},
+        # which caused the next _migrate_workspace_access() pass to backfill
+        # owner/members with [admin] only — silently wiping non-admin members
+        # added via the workspace.member.add endpoint.
+        result.append({**w, 'path': str(p), 'name': name})
     return result
 
 
@@ -335,6 +357,9 @@ def _migrate_global_workspaces() -> list:
 
 
 def load_workspaces() -> list:
+    # STATE_DIR is imported locally to avoid a circular import (config.py loads
+    # at server bootstrap and workspace.py is imported during that bootstrap).
+    from api.config import STATE_DIR as _STATE_DIR
     ws_file = _workspaces_file()
     if ws_file.exists():
         try:
@@ -348,7 +373,10 @@ def load_workspaces() -> list:
                     )
                 except Exception:
                     logger.debug("Failed to persist cleaned workspace list")
-            return cleaned or [{'path': _profile_default_workspace(), 'name': 'Home'}]
+            return _migrate_workspace_access(
+                cleaned,
+                Path(_STATE_DIR),
+            )
         except Exception:
             logger.debug("Failed to load workspaces from %s", ws_file)
     # No profile-local file yet.
@@ -362,15 +390,146 @@ def load_workspaces() -> list:
     if is_default:
         migrated = _migrate_global_workspaces()
         if migrated:
-            return migrated
-    # Fresh start: single entry from the profile's configured workspace, labeled "Home"
-    return [{'path': _profile_default_workspace(), 'name': 'Home'}]
+            return _migrate_workspace_access(migrated, Path(_STATE_DIR))
+    # Fresh start: single entry from the profile's configured workspace, labeled "Home".
+    # Run RBAC migration so even the synthetic default gets an owner set.
+    return _migrate_workspace_access(
+        [{'path': _profile_default_workspace(), 'name': 'Home'}],
+        Path(_STATE_DIR),
+    )
 
 
 def save_workspaces(workspaces: list) -> None:
     ws_file = _workspaces_file()
     ws_file.parent.mkdir(parents=True, exist_ok=True)
     ws_file.write_text(json.dumps(workspaces, ensure_ascii=False, indent=2), encoding='utf-8')
+
+
+# ── Workspace RBAC (visibility, permission gate, owner/members backfill) ────
+
+class WorkspacePermissionError(PermissionError):
+    """Raised when a user lacks permission to perform a workspace operation.
+
+    Subclasses :class:`PermissionError` so callers that already handle
+    ``PermissionError`` (HTTP handlers wrapping routes) don't need a separate
+    catch path. Used by :func:`_require_workspace_op` to gate mutating
+    workspace endpoints on RBAC.
+    """
+
+
+def visible_workspaces(user_id, is_admin, all_ws):
+    """Filter *all_ws* to those *user_id* is allowed to see.
+
+    Admins see everything (the picker UI must show the full list). Regular
+    users see only workspaces where they are the ``owner`` or appear in
+    ``members``. Workspaces missing both fields (legacy state from before
+    :func:`_migrate_workspace_access` runs) are hidden from non-admins —
+    the load path always runs that helper first, so by the time HTTP
+    handlers call this every workspace should have a valid ``owner``.
+
+    Returns a new list; does not mutate *all_ws*.
+    """
+    if is_admin:
+        return list(all_ws)
+    out = []
+    for w in all_ws:
+        if not isinstance(w, dict):
+            continue
+        owner = w.get("owner")
+        members = w.get("members")
+        if owner is None and members is None:
+            # No RBAC fields — migration will backfill on next load. Treat as
+            # invisible to non-admins so a fresh server doesn't leak workspace
+            # paths to users with no membership record.
+            continue
+        if owner == user_id:
+            out.append(w)
+            continue
+        if isinstance(members, list) and user_id in members:
+            out.append(w)
+    return out
+
+
+def _require_workspace_op(ws, user, op):
+    """Raise :class:`WorkspacePermissionError` unless *user* may perform *op*.
+
+    *user* is a user record (must have ``id`` and ``role``). Owners and
+    admins always pass. Everyone else is rejected. *op* is a short verb
+    phrase used in the error message (e.g. ``"delete"``, ``"modify members
+    of"``).
+    """
+    if isinstance(user, dict) and user.get("role") == "admin":
+        return
+    user_id = user.get("id") if isinstance(user, dict) else None
+    owner = ws.get("owner") if isinstance(ws, dict) else None
+    if user_id and owner == user_id:
+        return
+    raise WorkspacePermissionError(f"Only owner or admin can {op} workspace")
+
+
+def _migrate_workspace_access(workspaces, state_dir):
+    """Idempotently backfill ``owner`` and ``members`` on every workspace.
+
+    For each entry missing either field, the earliest-created admin (by
+    ``created_at`` ascending; ties broken by import order from
+    :func:`api.user_store.load_users`) becomes the owner and the sole
+    member. Workspaces that already have both fields are left untouched
+    — this is the idempotency guarantee that lets us call the function on
+    every load without churn.
+
+    Picks "skip + warn" over "guess wrong" when no admin exists: better to
+    leave a workspace unowned (and thus invisible to non-admins) than to
+    assign a random user. Persists via :func:`save_workspaces` on change
+    and writes one audit entry under ``category='rbac',
+    action='workspace.migration'`` (best-effort; both persist and audit
+    are swallowed on failure so migration never blocks workspace loading).
+    """
+    from api.user_store import load_users
+
+    users = load_users(state_dir)
+    admins = sorted(
+        [u for u in users if u.get("role") == "admin"],
+        key=lambda u: u.get("created_at") or "",
+    )
+    if not admins:
+        logger.warning(
+            "RBAC workspace migration skipped: no admin user found in %s",
+            state_dir,
+        )
+        return workspaces
+
+    first_admin_id = admins[0].get("id")
+    if not first_admin_id:
+        logger.warning("RBAC workspace migration skipped: admin record missing id")
+        return workspaces
+
+    migrated_count = 0
+    for w in workspaces:
+        if not isinstance(w, dict):
+            continue
+        if "owner" not in w or "members" not in w:
+            w["owner"] = first_admin_id
+            w["members"] = [first_admin_id]
+            migrated_count += 1
+
+    if migrated_count:
+        try:
+            save_workspaces(workspaces)
+        except Exception:
+            logger.debug("Failed to persist RBAC-migrated workspaces", exc_info=True)
+        try:
+            from api.audit import write as audit_write
+
+            audit_write(
+                category="rbac",
+                action="workspace.migration",
+                owner_default=first_admin_id,
+                count=migrated_count,
+            )
+        except Exception:
+            logger.debug("audit write failed for workspace.migration", exc_info=True)
+
+    return workspaces
 
 
 def get_profile_default_workspace() -> str:
@@ -412,16 +571,26 @@ def get_profile_default_workspace() -> str:
     return _profile_default_workspace()
 
 
-def get_last_workspace() -> str:
+def get_last_workspace(user_id: str | None = None, *, allowed_paths: set[str] | None = None) -> str:
+    """Read the most recently used workspace.
+
+    Per-user file (``last_workspace_<user_id>.txt``) is preferred over the
+    profile-global ``last_workspace.txt`` so user A's state doesn't leak
+    into user B's composer / new-session default. Both fall through to
+    ``_profile_default_workspace()`` if neither exists or is unusable.
+
+    ``allowed_paths`` optionally restricts the returned path to a set of
+    workspace paths the caller is permitted to see. This is the second
+    line of defense against cross-user leakage (the first being the
+    per-user file): even if the per-user file somehow points at a
+    workspace the user has lost access to, we won't surface it.
+    """
     remote_cwd = _remote_terminal_cwd()
 
     def valid_last_workspace(raw: str) -> str | None:
         if not raw:
             return None
         if remote_cwd:
-            # For remote/SSH profiles, last_workspace is target-side state. Do
-            # not accept stale server-local paths merely because they exist on
-            # the WebUI host; require the value to stay under terminal.cwd.
             if _remote_terminal_workspace_candidate(raw) is not None:
                 return raw
             return None
@@ -429,28 +598,52 @@ def get_last_workspace() -> str:
             return raw
         return None
 
+    def _filter(p: str | None) -> str | None:
+        if not p:
+            return None
+        if allowed_paths is not None and p not in allowed_paths:
+            return None
+        return p
+
+    # Per-user file first
+    if user_id:
+        lw_user = _last_workspace_file(user_id)
+        if lw_user.exists():
+            try:
+                p = _filter(valid_last_workspace(lw_user.read_text(encoding='utf-8').strip()))
+                if p:
+                    return p
+            except Exception:
+                logger.debug("Failed to read per-user last workspace from %s", lw_user)
+    # Profile-global file (legacy / shared flows)
     lw_file = _last_workspace_file()
     if lw_file.exists():
         try:
-            p = valid_last_workspace(lw_file.read_text(encoding='utf-8').strip())
+            p = _filter(valid_last_workspace(lw_file.read_text(encoding='utf-8').strip()))
             if p:
                 return p
         except Exception:
             logger.debug("Failed to read last workspace from %s", lw_file)
-    # Fallback: try global file
     if _GLOBAL_LW_FILE.exists():
         try:
-            p = valid_last_workspace(_GLOBAL_LW_FILE.read_text(encoding='utf-8').strip())
+            p = _filter(valid_last_workspace(_GLOBAL_LW_FILE.read_text(encoding='utf-8').strip()))
             if p:
                 return p
         except Exception:
             logger.debug("Failed to read global last workspace")
-    return _profile_default_workspace()
+    fallback = _profile_default_workspace()
+    return _filter(fallback) or ""
 
 
-def set_last_workspace(path: str) -> None:
+def set_last_workspace(path: str, user_id: str | None = None) -> None:
+    """Persist the most-recently used workspace.
+
+    With ``user_id``, writes a per-user file; without it, falls back to the
+    legacy profile-global file (kept for admin/global flows that genuinely
+    want shared state).
+    """
     try:
-        lw_file = _last_workspace_file()
+        lw_file = _last_workspace_file(user_id) if user_id else _last_workspace_file()
         lw_file.parent.mkdir(parents=True, exist_ok=True)
         lw_file.write_text(str(path), encoding='utf-8')
     except Exception:

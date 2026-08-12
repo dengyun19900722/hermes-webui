@@ -65,6 +65,14 @@ class TestBfcacheLayoutRestore:
             "pageshow handler must restart gateway SSE (bfcache-persisted connections are dead)"
         )
 
+    def test_pageshow_refreshes_workspace_scope(self):
+        """BFCache account restores must reload the current user's workspace list."""
+        src = _boot_js()
+        handler_body = _pageshow_handler(src)
+        assert "loadWorkspaceList" in handler_body, (
+            "pageshow handler must refresh RBAC-scoped workspaces after an account switch"
+        )
+
     def test_pageshow_still_clears_session_search(self):
         """pageshow handler must still clear #sessionSearch (original #822 fix preserved)."""
         src = _boot_js()
@@ -96,7 +104,7 @@ class TestBfcacheLayoutRestore:
         src = _boot_js()
         handler_body = _pageshow_handler(src)
         # Each of the new calls must be guarded
-        for fn in ("syncTopbar", "syncWorkspacePanelState", "startGatewaySSE",
+        for fn in ("syncTopbar", "syncWorkspacePanelState", "startGatewaySSE", "loadWorkspaceList",
                    "closeModelDropdown", "closeReasoningDropdown", "closeWsDropdown", "closeProfileDropdown"):
             assert f"typeof {fn} === 'function'" in handler_body, (
                 f"{fn}() call in pageshow handler must be guarded with typeof === 'function'"
@@ -121,4 +129,3 @@ class TestBfcacheLayoutRestore:
         assert close_idx < sync_idx, (
             "Dropdown close calls must appear before layout sync calls in the pageshow handler"
         )
-

@@ -539,18 +539,33 @@ def _current_rbac_user(handler) -> dict | None:
     """Return the RBAC user dict for this request, or None for legacy/no-RBAC auth."""
     if handler is None:
         return None
+    token = None
+    try:
+        from api.auth import parse_cookie
+
+        token = parse_cookie(handler)
+    except Exception:
+        token = None
+    request_marker = getattr(handler, "_req_t0", None)
     handler_dict = getattr(handler, "__dict__", None)
-    if isinstance(handler_dict, dict) and "_hermes_current_rbac_user" in handler_dict:
+    if (
+        isinstance(handler_dict, dict)
+        and "_hermes_current_rbac_user" in handler_dict
+        and handler_dict.get("_hermes_current_rbac_user_token") == token
+        and handler_dict.get("_hermes_current_rbac_user_request") == request_marker
+    ):
         return handler_dict.get("_hermes_current_rbac_user")
     user = None
     try:
-        from api.auth import get_user_from_session, parse_cookie
-        token = parse_cookie(handler)
+        from api.auth import get_user_from_session
+
         user = get_user_from_session(token) if token else None
     except Exception:
         user = None
     try:
         setattr(handler, "_hermes_current_rbac_user", user)
+        setattr(handler, "_hermes_current_rbac_user_token", token)
+        setattr(handler, "_hermes_current_rbac_user_request", request_marker)
     except Exception:
         pass
     return user
@@ -560,14 +575,29 @@ def _current_rbac_user_id(handler) -> str | None:
     """Return the RBAC user id for this request, or None for legacy/no-RBAC auth."""
     if handler is None:
         return None
+    token = None
+    try:
+        from api.auth import parse_cookie
+
+        token = parse_cookie(handler)
+    except Exception:
+        token = None
+    request_marker = getattr(handler, "_req_t0", None)
     handler_dict = getattr(handler, "__dict__", None)
-    if isinstance(handler_dict, dict) and "_hermes_current_rbac_user_id" in handler_dict:
+    if (
+        isinstance(handler_dict, dict)
+        and "_hermes_current_rbac_user_id" in handler_dict
+        and handler_dict.get("_hermes_current_rbac_user_id_token") == token
+        and handler_dict.get("_hermes_current_rbac_user_id_request") == request_marker
+    ):
         return handler_dict.get("_hermes_current_rbac_user_id") or None
     user = _current_rbac_user(handler)
     user_id = str(user.get("id")).strip() if user and user.get("id") else None
     user_id = user_id or None
     try:
         setattr(handler, "_hermes_current_rbac_user_id", user_id)
+        setattr(handler, "_hermes_current_rbac_user_id_token", token)
+        setattr(handler, "_hermes_current_rbac_user_id_request", request_marker)
     except Exception:
         pass
     return user_id
@@ -2012,6 +2042,7 @@ def _session_list_cache_key(
     sidebar_source: str | None = None,
     archived_limit: int | None = None,
     archived_offset: int = 0,
+    session_limit: int | None = None,
     show_claude_code_sessions: bool = True,
     rbac_user_id: str | None = None,
     rbac_scope_enabled: bool = False,
@@ -2031,6 +2062,7 @@ def _session_list_cache_key(
         sidebar_source=sidebar_source,
         archived_limit=archived_limit,
         archived_offset=archived_offset,
+        session_limit=session_limit,
     ) + (bool(show_claude_code_sessions), str(rbac_user_id or ""), bool(rbac_scope_enabled), bool(rbac_is_admin))
 
 _ROUTE_SESSION_LIST_CACHE_DYNAMIC_EXPORTS = {
@@ -2281,6 +2313,7 @@ def _build_session_list_cache_payload(
     sidebar_source: str | None = None,
     archived_limit: int | None = None,
     archived_offset: int = 0,
+    session_limit: int | None = None,
     rbac_user_id: str | None = None,
     rbac_scope_enabled: bool = False,
     rbac_is_admin: bool = False,
@@ -2313,9 +2346,22 @@ def _build_session_list_cache_payload(
             or session.get("has_pending_user_message")
         )
 
+    state_db_metadata: dict[str, dict] = {}
+
     def _all_sessions_for_sidebar():
+        state_db_metadata.clear()
         if _callable_accepts_kwarg(all_sessions, "include_lineage_metadata"):
-            return all_sessions(diag=diag, include_lineage_metadata=False)
+            kwargs = {"diag": diag, "include_lineage_metadata": False}
+            if _callable_accepts_kwarg(all_sessions, "state_db_metadata_out"):
+                kwargs["state_db_metadata_out"] = state_db_metadata
+            # The initial sidebar request carries an explicit visible limit.
+            # Use it as a bounded state.db COUNT/MAX budget; the legacy no-limit
+            # contract keeps the existing environment-controlled top-N behavior.
+            if session_limit is not None and _callable_accepts_kwarg(
+                all_sessions, "state_db_override_top_n"
+            ):
+                kwargs["state_db_override_top_n"] = session_limit
+            return all_sessions(**kwargs)
         # Focused tests and third-party callers sometimes monkeypatch
         # routes.all_sessions with the historical diag-only signature.
         return all_sessions(diag=diag)
@@ -2640,10 +2686,22 @@ def _build_session_list_cache_payload(
             visible_scoped_filtered,
             archived_scoped_filtered,
         )
+        if session_limit is not None:
+            try:
+                normalized_session_limit = max(0, int(session_limit))
+            except (TypeError, ValueError):
+                normalized_session_limit = None
+            if normalized_session_limit is not None:
+                scoped = scoped[:normalized_session_limit]
     if not include_archived:
         diag_stage("filter_archived_sessions")
     diag_stage("visible_lineage_metadata")
-    _enrich_sidebar_lineage_metadata(scoped)
+    if state_db_metadata and _callable_accepts_kwarg(
+        _enrich_sidebar_lineage_metadata, "state_db_metadata"
+    ):
+        _enrich_sidebar_lineage_metadata(scoped, state_db_metadata=state_db_metadata)
+    else:
+        _enrich_sidebar_lineage_metadata(scoped)
     # Delegated subagent children (#5307) are view-only, owned by the delegate
     # runner. Coerce their sidebar rows to read_only=True + is_cli_session=False
     # so the UI never offers delete / edit / truncate / pin affordances on them
@@ -2663,8 +2721,16 @@ def _build_session_list_cache_payload(
             # a delegated child can't surface as a writable/CLI sidebar row.
             if not _is_sa and not _r.get("read_only"):
                 _sid = str(_r.get("session_id") or "").strip()
-                if _sid and _is_subagent_child_session_id(_sid):
-                    _is_sa = True
+                if _sid:
+                    # all_sessions() already fetched the state.db source map for
+                    # this render. Reuse it to avoid opening SQLite once per row
+                    # on a cold sidebar request; keep the per-row probe only for
+                    # rows absent from that map (legacy/minimal test stores).
+                    _state_entry = state_db_metadata.get(_sid) if state_db_metadata else None
+                    if _state_entry is not None:
+                        _is_sa = str(_state_entry.get("_state_db_source") or "").strip().lower() == "subagent"
+                    elif _is_subagent_child_session_id(_sid):
+                        _is_sa = True
             if _is_sa:
                 _r["read_only"] = True
                 _r["is_cli_session"] = False
@@ -2688,6 +2754,7 @@ def _build_session_list_cache_payload(
         "include_archived": include_archived,
         "archived_limit": archived_limit,
         "archived_offset": archived_offset,
+        "session_limit": session_limit,
         "all_profiles": all_profiles,
         "active_profile": active_profile,
         "other_profile_count": other_profile_count,
@@ -2746,6 +2813,8 @@ def _session_list_payload_to_response(payload: dict) -> dict:
     if payload.get("archived_limit") is not None:
         response["archived_limit"] = int(payload.get("archived_limit") or 0)
         response["archived_offset"] = int(payload.get("archived_offset") or 0)
+    if payload.get("session_limit") is not None:
+        response["session_limit"] = int(payload.get("session_limit") or 0)
     return response
 
 
@@ -9073,7 +9142,17 @@ from api.workspace import (
     _strip_surrounding_quotes,
     _is_remote_terminal_backend,
     _workspace_blocked_roots,
+    visible_workspaces,
+    _require_workspace_op,
+    WorkspacePermissionError,
 )
+# Workspace RBAC support (Task 5). Imported at module level — not lazily inside
+# the handlers — so tests can patch them as module attributes
+# (``patch.object(routes, "find_user_by_id", ...)``) and so a broken RBAC
+# dependency fails loudly at import time instead of at first mutation.
+from api import audit as _audit
+from api.user_store import find_user_by_id
+from api.auth import _state_dir as _get_state_dir
 from api.upload import (
     handle_upload,
     handle_upload_extract,
@@ -11952,7 +12031,9 @@ def _render_index_shell_base() -> str:
             return cached[1]
     from urllib.parse import quote
 
-    version_token = quote(WEBad_text(encoding="utf-8")
+    version_token = quote(WEBUI_VERSION, safe="")
+    base = (
+        _INDEX_HTML_PATH.read_text(encoding="utf-8")
         .replace("__WEBUI_VERSION__", version_token)
         .replace("__MAX_UPLOAD_BYTES__", str(MAX_UPLOAD_BYTES))
     )
@@ -11980,7 +12061,7 @@ def _require_license(handler, parsed) -> bool | None:
         or path.startswith("/session/static/")
         or path == "/license"
         or path.startswith("/license/")
-        or path in ("/login", "/api/csp-report", "/api/shutdown")
+        or path in ("/health", "/login", "/api/csp-report", "/api/shutdown")
         or path in ("/manifest.json", "/manifest.webmanifest")
         or path in ("/session/manifest.json", "/session/manifest.webmanifest")
     ):
@@ -12028,12 +12109,8 @@ def handle_get(handler, parsed) -> bool:
     if proxy_result is not False:
         return proxy_result
 
-    # License check (blocks API calls if license invalid)
-    blocked = _require_license(handler, parsed)
-    if blocked is True:
-        return True
-
-    # RBAC routes (must come after license gate; auth check happens inside handlers)
+    # Platform License gating is enforced once in server.py before auth dispatch.
+    # Keep route handlers directly callable for focused tests and in-process users.
     from api.rbac_routes import try_handle_rbac
     if try_handle_rbac("GET", parsed, handler):
         return True
@@ -13292,12 +13369,15 @@ def handle_get(handler, parsed) -> bool:
         return j(handler, {"results": get_results(sid)})
 
     if parsed.path == "/api/sessions":
-        diag = RequestDiagnostics.maybe_start("GET", parsed.path, logger=logger)
+        diag = getattr(handler, "_request_diagnostics", None) or RequestDiagnostics.maybe_start(
+            "GET", parsed.path, logger=logger
+        )
         try:
             from api import profiles as profiles_api
 
             diag.stage("load_settings")
             settings = load_settings()
+            diag.stage("session_list_settings")
             show_cli_sessions = bool(settings.get("show_cli_sessions"))
             show_claude_code_sessions = bool(settings.get("show_claude_code_sessions"))
             show_previous_messaging_sessions = bool(
@@ -13306,12 +13386,15 @@ def handle_get(handler, parsed) -> bool:
             show_cron_sessions = bool(settings.get("show_cron_sessions"))
             show_webhook_sessions = bool(settings.get("show_webhook_sessions"))
             agent_session_source_filter = settings.get("agent_session_source_filter")
+            diag.stage("resolve_active_profile")
             active_profile = profiles_api.get_active_profile_name()
+            diag.stage("parse_session_list_scope")
             all_profiles = _all_profiles_enabled(parsed)
             include_archived = _query_flag(parsed, "include_archived")
             exclude_hidden = _query_flag(parsed, "exclude_hidden")
             archived_limit = _query_positive_int(parsed, "archived_limit", default=None, maximum=2000)
             archived_offset = _query_positive_int(parsed, "archived_offset", default=0, maximum=200000)
+            session_limit = _query_positive_int(parsed, "limit", default=None, maximum=2000)
             sidebar_source = parse_qs(parsed.query).get("sidebar_source", [""])[0].strip().lower() or None
             if sidebar_source not in ("webui", "cli"):
                 sidebar_source = None
@@ -13338,6 +13421,7 @@ def handle_get(handler, parsed) -> bool:
                 sidebar_source=sidebar_source,
                 archived_limit=archived_limit,
                 archived_offset=archived_offset,
+                session_limit=session_limit,
             )
             # Keep the visible /api/sessions contract unchanged even though the
             # heavy lifting now lives in the cache builder: profile scoping via
@@ -13363,6 +13447,7 @@ def handle_get(handler, parsed) -> bool:
                     sidebar_source=sidebar_source,
                     archived_limit=archived_limit,
                     archived_offset=archived_offset,
+                    session_limit=session_limit,
                     diag=diag,
                 ),
                 diag=diag,
@@ -13413,14 +13498,7 @@ def handle_get(handler, parsed) -> bool:
         return _handle_session_export(handler, parsed)
 
     if parsed.path == "/api/workspaces":
-        return j(
-            handler,
-            {
-                "workspaces": load_workspaces(),
-                "last": get_last_workspace(),
-                "terminal_remote_backend": _terminal_remote_backend_enabled(),
-            },
-        )
+        return _handle_workspaces_list(handler, parsed)
 
     if parsed.path == "/api/workspaces/suggest":
         qs = parse_qs(parsed.query)
@@ -14036,6 +14114,11 @@ def handle_get(handler, parsed) -> bool:
                     handler.wfile.write(html_content)
                     return True
 
+    # ── 引导中心（实施助手 2.1）GET 路由 ───────────────────────────────────────
+    if parsed.path.startswith("/api/guidance/implementation"):
+        from api.guidance_http import handle_guidance_get
+        return handle_guidance_get(handler, parsed)
+
     return False  # 404
 
 
@@ -14073,7 +14156,9 @@ def _validate_session_toolsets_shape(toolsets):
 
 def handle_post(handler, parsed) -> bool:
     """Handle all POST routes. Returns True if handled, False for 404."""
-    diag = RequestDiagnostics.maybe_start("POST", parsed.path, logger=logger)
+    diag = getattr(handler, "_request_diagnostics", None) or RequestDiagnostics.maybe_start(
+        "POST", parsed.path, logger=logger
+    )
     # RBAC login must be dispatched before the legacy single-password route.
     # Both endpoints historically used this path, but RBAC needs a username.
     if parsed.path == "/api/auth/login":
@@ -14213,14 +14298,7 @@ def handle_post(handler, parsed) -> bool:
                     platform_id, mac_address, expires_at, len(license_string))
         return j(handler, {"ok": True, "license_string": license_string})
 
-    # License gate: block non-license POST endpoints when not activated
-    blocked = _require_license(handler, parsed)
-    if blocked is True:
-        if diag:
-            diag.finish()
-        return True
-
-    # RBAC routes (must come after license gate; auth check happens inside handlers)
+    # Platform License gating is enforced once in server.py before auth dispatch.
     from api.rbac_routes import try_handle_rbac
     if try_handle_rbac("POST", parsed, handler):
         if diag:
@@ -14288,6 +14366,15 @@ def handle_post(handler, parsed) -> bool:
         if diag:
             diag.stage("read_client_event_body")
         return _handle_client_event_log(handler, _read_client_event_payload(handler))
+
+    # ── 引导中心（实施助手 2.1）POST 路由 ──────────────────────────────────────
+    # 必须在 read_body() 之前处理：<task_id>/note 与 CSV 导入都需要原始 rfile
+    # （multipart 由本模块自行解析）。
+    if parsed.path.startswith("/api/guidance/implementation"):
+        from api.guidance_http import handle_guidance_post
+        if diag:
+            diag.finish()
+        return handle_guidance_post(handler, parsed)
 
     if diag:
         diag.stage("read_body")
@@ -15085,7 +15172,7 @@ def handle_post(handler, parsed) -> bool:
                 close_terminal(body["session_id"])
             except Exception:
                 logger.debug("Failed to close workspace terminal after workspace update")
-        set_last_workspace(new_ws)
+        set_last_workspace(new_ws, _current_rbac_user_id(handler))
         return j(handler, {"session": s.compact() | {"messages": s.messages}})
     if parsed.path == "/api/session/worktree/remove":
         sid = body.get("session_id", "")
@@ -15696,6 +15783,12 @@ def handle_post(handler, parsed) -> bool:
 
     if parsed.path == "/api/workspaces/reorder":
         return _handle_workspace_reorder(handler, body)
+
+    if parsed.path == "/api/workspaces/members/add":
+        return _handle_workspace_member_add(handler, body)
+
+    if parsed.path == "/api/workspaces/members/remove":
+        return _handle_workspace_member_remove(handler, body)
 
     # ── Approval (POST) ──
     if parsed.path == "/api/approval/respond":
@@ -16748,6 +16841,10 @@ def handle_patch(handler, parsed) -> bool:
     body = read_body(handler)
     if not _guard_request_session_visibility(handler, parsed, body=body, method="PATCH"):
         return True
+    # ── Guidance Center (实施助手 2.1) ──
+    if parsed.path.startswith("/api/guidance/implementation/"):
+        from api.guidance_http import handle_guidance_patch
+        return handle_guidance_patch(handler, parsed, body)
     if parsed.path.startswith("/api/mcp/servers/"):
         name = parsed.path[len("/api/mcp/servers/"):]
         return _handle_mcp_server_toggle(handler, name, body)
@@ -16819,6 +16916,10 @@ def handle_delete(handler, parsed) -> bool:
         if result is False:
             return bad(handler, f"unknown notes endpoint: DELETE {parsed.path}", status=404)
         return True
+    # ── 引导中心（实施助手 2.1）DELETE 路由 ────────────────────────────────────
+    if parsed.path == "/api/guidance/implementation":
+        from api.guidance_http import handle_guidance_delete
+        return handle_guidance_delete(handler, parsed)
     return False
 
 
@@ -23486,6 +23587,101 @@ def _handle_file_open_vscode(handler, body):
         return bad(handler, _sanitize_error(e))
 
 
+def _workspace_scope_for_caller(handler, all_ws):
+    """Return raw workspace rows visible to the current RBAC caller."""
+    caller = _current_rbac_user(handler)
+    rbac_user_id = (
+        str(caller.get("id")).strip()
+        if isinstance(caller, dict) and caller.get("id")
+        else None
+    )
+    caller_is_admin = _current_rbac_user_is_admin(handler)
+    if not _rbac_users_configured():
+        return list(all_ws), rbac_user_id
+    return visible_workspaces(rbac_user_id, caller_is_admin, all_ws), rbac_user_id
+
+
+def _augment_workspace_usernames(workspaces):
+    """Add display-only owner/member names without changing stored rows."""
+    try:
+        from api.user_store import load_users
+
+        user_by_id = {
+            str(u.get("id")): u.get("username")
+            for u in load_users(_get_state_dir())
+            if u.get("id")
+        }
+    except Exception:
+        user_by_id = {}
+    augmented = []
+    for workspace in workspaces:
+        if not isinstance(workspace, dict):
+            augmented.append(workspace)
+            continue
+        owner_uid = str(workspace.get("owner") or "")
+        member_ids = [str(member) for member in (workspace.get("members") or []) if member]
+        augmented.append({
+            **workspace,
+            "owner_username": user_by_id.get(owner_uid),
+            "members_username": [user_by_id.get(uid) for uid in member_ids],
+        })
+    return augmented
+
+
+def _workspace_mutation_response(handler, all_ws):
+    """Send a mutation result scoped exactly like GET /api/workspaces."""
+    workspaces, rbac_user_id = _workspace_scope_for_caller(handler, all_ws)
+    return j(handler, {
+        "ok": True,
+        "workspaces": _augment_workspace_usernames(workspaces),
+        "scope_user_id": rbac_user_id,
+    })
+
+
+def _handle_workspaces_list(handler, parsed):
+    """GET /api/workspaces — RBAC-filtered workspace list.
+
+    Default: only workspaces the caller owns or is a member of. ``?view=all``
+    is an admin-only escape hatch that returns the unfiltered list (used by the
+    admin console to manage workspaces it isn't a member of).
+
+    Deployments with no RBAC users configured (legacy / single-user) are NOT
+    filtered — otherwise every workspace would vanish, since ``visible_workspaces``
+    hides entries whose owner it can't match.
+    """
+    qs = parse_qs(parsed.query)
+    view = (qs.get("view", [""])[0] or "").strip().lower()
+    all_ws = load_workspaces()
+    caller_is_admin = _current_rbac_user_is_admin(handler)
+    if view == "all":
+        if not caller_is_admin:
+            return bad(handler, "Admin role required", 403)
+        return j(
+            handler,
+            {
+                "workspaces": _augment_workspace_usernames(all_ws),
+                "last": get_last_workspace(_current_rbac_user_id(handler)),
+                "scope_user_id": _current_rbac_user_id(handler),
+                "view": "all",
+                "terminal_remote_backend": _terminal_remote_backend_enabled(),
+            },
+        )
+    workspaces, rbac_user_id = _workspace_scope_for_caller(handler, all_ws)
+    # Restrict "last" to the caller's accessible paths so user A's
+    # last-used workspace never bleeds into user B's composer chip
+    # (see api/workspace.py:_last_workspace_file).
+    allowed_paths = {str(w.get("path")) for w in workspaces if isinstance(w, dict)}
+    return j(
+        handler,
+        {
+            "workspaces": _augment_workspace_usernames(workspaces),
+            "last": get_last_workspace(rbac_user_id, allowed_paths=allowed_paths),
+            "scope_user_id": rbac_user_id,
+            "terminal_remote_backend": _terminal_remote_backend_enabled(),
+        },
+    )
+
+
 def _handle_workspace_add(handler, body):
     # Strip surrounding paired quotes BEFORE any further processing — macOS
     # Finder's "Copy as Pathname" wraps paths in single quotes, and users
@@ -23534,35 +23730,155 @@ def _handle_workspace_add(handler, body):
     wss = load_workspaces()
     if any(w["path"] == str(p) for w in wss):
         return bad(handler, "Workspace already in list")
-    wss.append({"path": str(p), "name": name or p.name})
+    # RBAC: the creator becomes owner and sole member. When no RBAC user is
+    # resolved (legacy/no-auth deployments) the entry is written WITHOUT
+    # owner/members so _migrate_workspace_access() can backfill it on the next
+    # load rather than us inventing an owner here.
+    caller = _current_rbac_user(handler)
+    caller_id = caller.get("id") if isinstance(caller, dict) else None
+    entry = {"path": str(p), "name": name or p.name}
+    if caller_id:
+        entry["owner"] = caller_id
+        entry["members"] = [caller_id]
+    wss.append(entry)
     save_workspaces(wss)
-    return j(handler, {"ok": True, "workspaces": wss})
+    _audit_workspace_op("workspace.add", caller_id, str(p))
+    return _workspace_mutation_response(handler, wss)
+
+
+def _audit_workspace_op(action, actor_id, path, **extra):
+    """Best-effort RBAC audit entry for a workspace mutation.
+
+    Swallows failures: an unwritable audit log must never turn a successful
+    workspace mutation into a 500 (the state file has already been saved by
+    the time we get here).
+    """
+    try:
+        _audit.write(
+            category="rbac",
+            action=action,
+            actor_id=actor_id,
+            path=path,
+            **extra,
+        )
+    except Exception:
+        logger.debug("audit write failed for %s", action, exc_info=True)
+
+
+def _resolve_workspace_for_op(handler, body, op):
+    """Look up the workspace named by ``body['path']`` and gate *op* on RBAC.
+
+    Returns ``(wss, target, handled)``. When ``handled`` is True the error
+    response has already been sent and the caller must return immediately.
+
+    ``handled`` is a boolean rather than "the response object" on purpose:
+    ``bad()`` delegates to ``j()``, which sends the reply and returns ``None``,
+    so an ``if err is not None`` guard would silently never fire and let a 403
+    fall through into a 500.
+    """
+    path_str = (body.get("path") or "").strip()
+    if not path_str:
+        bad(handler, "path is required")
+        return None, None, True
+    wss = load_workspaces()
+    target = next((w for w in wss if isinstance(w, dict) and w.get("path") == path_str), None)
+    if target is None:
+        bad(handler, "Workspace not found", 404)
+        return None, None, True
+    caller = _current_rbac_user(handler)
+    try:
+        _require_workspace_op(target, caller if isinstance(caller, dict) else {}, op)
+    except WorkspacePermissionError as e:
+        bad(handler, str(e), 403)
+        return None, None, True
+    return wss, target, False
 
 
 def _handle_workspace_remove(handler, body):
-    path_str = body.get("path", "").strip()
-    if not path_str:
-        return bad(handler, "path is required")
-    wss = load_workspaces()
-    wss = [w for w in wss if w["path"] != path_str]
+    wss, target, handled = _resolve_workspace_for_op(handler, body, "delete")
+    if handled:
+        return None
+    path_str = target["path"]
+    wss = [w for w in wss if not (isinstance(w, dict) and w.get("path") == path_str)]
     save_workspaces(wss)
-    return j(handler, {"ok": True, "workspaces": wss})
+    _audit_workspace_op("workspace.remove", _current_rbac_user_id(handler), path_str)
+    return _workspace_mutation_response(handler, wss)
 
 
 def _handle_workspace_rename(handler, body):
-    path_str = body.get("path", "").strip()
-    name = body.get("name", "").strip()
-    if not path_str or not name:
+    name = (body.get("name") or "").strip()
+    if not name:
+        # Mirror the pre-RBAC contract: a missing name is a 400 before any
+        # workspace lookup or permission check.
         return bad(handler, "path and name are required")
-    wss = load_workspaces()
-    for w in wss:
-        if w["path"] == path_str:
-            w["name"] = name
-            break
-    else:
-        return bad(handler, "Workspace not found", 404)
+    wss, target, handled = _resolve_workspace_for_op(handler, body, "rename")
+    if handled:
+        return None
+    old_name = target.get("name")
+    target["name"] = name
     save_workspaces(wss)
-    return j(handler, {"ok": True, "workspaces": wss})
+    _audit_workspace_op(
+        "workspace.rename",
+        _current_rbac_user_id(handler),
+        target["path"],
+        old_name=old_name,
+        new_name=name,
+    )
+    return _workspace_mutation_response(handler, wss)
+
+
+def _handle_workspace_member_add(handler, body):
+    """POST /api/workspaces/members/add — owner or admin grants a user access."""
+    user_id = (body.get("user_id") or "").strip()
+    if not user_id:
+        return bad(handler, "user_id is required")
+    wss, target, handled = _resolve_workspace_for_op(handler, body, "modify members of")
+    if handled:
+        return None
+    # Existence check runs AFTER the permission gate on purpose: a non-member
+    # must not be able to probe which user ids exist.
+    if find_user_by_id(_get_state_dir(), user_id) is None:
+        return bad(handler, "User not found", 404)
+    members = target.get("members")
+    if not isinstance(members, list):
+        members = []
+    if user_id not in members:
+        members.append(user_id)
+    target["members"] = members
+    save_workspaces(wss)
+    _audit_workspace_op(
+        "workspace.member_add",
+        _current_rbac_user_id(handler),
+        target["path"],
+        member_id=user_id,
+    )
+    return _workspace_mutation_response(handler, wss)
+
+
+def _handle_workspace_member_remove(handler, body):
+    """POST /api/workspaces/members/remove — owner or admin revokes access."""
+    user_id = (body.get("user_id") or "").strip()
+    if not user_id:
+        return bad(handler, "user_id is required")
+    wss, target, handled = _resolve_workspace_for_op(handler, body, "modify members of")
+    if handled:
+        return None
+    if target.get("owner") == user_id:
+        # Removing the owner would orphan the workspace (invisible to everyone
+        # but admins, and unmanageable). Transfer ownership first.
+        return bad(handler, "Cannot remove the workspace owner", 400)
+    members = target.get("members")
+    if not isinstance(members, list):
+        members = []
+    target["members"] = [m for m in members if m != user_id]
+    save_workspaces(wss)
+    _audit_workspace_op(
+        "workspace.member_remove",
+        _current_rbac_user_id(handler),
+        target["path"],
+        member_id=user_id,
+    )
+    return _workspace_mutation_response(handler, wss)
 
 
 def _handle_workspace_reorder(handler, body):
@@ -23576,21 +23892,40 @@ def _handle_workspace_reorder(handler, body):
     if not paths or not isinstance(paths, list):
         return bad(handler, "paths is required and must be a list")
     wss = load_workspaces()
-    by_path = {w["path"]: w for w in wss}
-    # Build reordered list: given order first, then any omitted entries
-    reordered = []
+    scoped, _ = _workspace_scope_for_caller(handler, wss)
+    visible_paths = {
+        workspace.get("path")
+        for workspace in scoped
+        if isinstance(workspace, dict) and workspace.get("path")
+    }
+    by_path = {
+        workspace["path"]: workspace
+        for workspace in scoped
+        if isinstance(workspace, dict) and workspace.get("path")
+    }
+    # Reorder only the caller's visible rows. Hidden rows stay in their original
+    # slots so one user cannot perturb another user's workspace ordering.
+    ordered_visible = []
     seen = set()
     for p in paths:
+        if not isinstance(p, str):
+            continue
         p = p.strip()
         if p in by_path and p not in seen:
-            reordered.append(by_path[p])
+            ordered_visible.append(by_path[p])
             seen.add(p)
-    # Append any workspaces not mentioned (safety net)
-    for w in wss:
-        if w["path"] not in seen:
-            reordered.append(w)
+    for workspace in scoped:
+        path = workspace.get("path") if isinstance(workspace, dict) else None
+        if path and path not in seen:
+            ordered_visible.append(workspace)
+            seen.add(path)
+    visible_iter = iter(ordered_visible)
+    reordered = [
+        next(visible_iter) if isinstance(workspace, dict) and workspace.get("path") in visible_paths else workspace
+        for workspace in wss
+    ]
     save_workspaces(reordered)
-    return j(handler, {"ok": True, "workspaces": reordered})
+    return _workspace_mutation_response(handler, reordered)
 
 
 def _resolve_approval_legacy(sid: str, approval_id: str, choice: str) -> bool:
@@ -26454,3 +26789,104 @@ def _handle_mcp_server_update(handler, name, body):
     _save_yaml_config_file(_get_config_path(), cfg)
     reload_config()
     return j(handler, {"ok": True, "server": _server_summary(name, server_cfg)})
+
+
+# ── 引导中心（实施助手 2.1）路由注册 ──────────────────────────────────────────
+# 调用方式：在 server.py 中执行 register_guidance_routes(app)
+
+
+def register_guidance_routes(app):
+    """Register 5 endpoints for 2.1 implementation assistant.
+
+    Endpoints:
+      GET    /api/guidance/implementation
+      PATCH  /api/guidance/implementation/<task_id>
+      POST   /api/guidance/implementation/<task_id>/note
+      GET    /api/guidance/implementation/report
+      POST   /api/guidance/implementation/import-business-entities
+      DELETE /api/guidance/implementation
+
+    All endpoints require role ∈ {admin, ops}. 403 otherwise.
+    """
+    from flask import jsonify, request, send_file, session, abort
+    import io
+    from datetime import datetime
+
+    from api import guidance_progress as _gp
+
+    def _require_admin_or_ops():
+        user = session.get("user") or {}
+        if user.get("role") not in ("admin", "ops"):
+            abort(403)
+
+    def _current_username():
+        return (session.get("user") or {}).get("username", "unknown")
+
+    @app.route("/api/guidance/implementation", methods=["GET"])
+    def _get_implementation():
+        _require_admin_or_ops()
+        return jsonify(_gp.get_full_state())
+
+    @app.route("/api/guidance/implementation", methods=["DELETE"])
+    def _delete_implementation():
+        _require_admin_or_ops()
+        _gp.reset_progress()
+        return jsonify({"ok": True})
+
+    @app.route("/api/guidance/implementation/<task_id>", methods=["PATCH"])
+    def _patch_implementation(task_id):
+        _require_admin_or_ops()
+        body = request.get_json() or {}
+        try:
+            task = _gp.mark_task(
+                task_id,
+                done=bool(body.get("done", False)),
+                by=_current_username(),
+                note=body.get("note"),
+            )
+        except ValueError as e:
+            return jsonify({"error": "unknown_task", "task_id": task_id, "detail": str(e)}), 400
+        return jsonify({"ok": True, "task": task})
+
+    @app.route("/api/guidance/implementation/<task_id>/note", methods=["POST"])
+    def _post_note(task_id):
+        _require_admin_or_ops()
+        body = request.get_json() or {}
+        note = body.get("note", "")
+        try:
+            task = _gp.update_note(task_id, note=note)
+        except ValueError as e:
+            return jsonify({"error": "unknown_task", "task_id": task_id, "detail": str(e)}), 400
+        return jsonify({"ok": True, "task": task})
+
+    @app.route("/api/guidance/implementation/report", methods=["GET"])
+    def _get_report():
+        _require_admin_or_ops()
+        md = _gp.render_report()
+        buf = io.BytesIO(md.encode("utf-8"))
+        filename = f"implementation-report-{datetime.now().strftime('%Y%m%d')}.md"
+        return send_file(
+            buf,
+            mimetype="text/markdown",
+            as_attachment=True,
+            download_name=filename,
+        )
+
+    @app.route(
+        "/api/guidance/implementation/import-business-entities",
+        methods=["POST"],
+    )
+    def _post_import():
+        _require_admin_or_ops()
+        upload = request.files.get("file")
+        if not upload:
+            return jsonify({"error": "no_file"}), 400
+        content = upload.read().decode("utf-8")
+        result = _gp.import_business_entities(
+            content,
+            filename=upload.filename or "upload.csv",
+            by=_current_username(),
+        )
+        if not result["ok"]:
+            return jsonify(result), 400
+        return jsonify(result)

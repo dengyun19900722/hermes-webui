@@ -1,0 +1,3177 @@
+{
+  "base_url": "http://127.0.0.1:18812",
+  "client": {
+    "agent_health": {
+      "body_bytes": {
+        "count": 30,
+        "max": 291.0,
+        "p50": 291.0,
+        "p95": 291.0,
+        "p99": 291.0
+      },
+      "connect_ms": {
+        "count": 30,
+        "max": 0.685,
+        "p50": 0.0,
+        "p95": 0.621,
+        "p99": 0.685
+      },
+      "errors": {},
+      "read_ms": {
+        "count": 30,
+        "max": 1.327,
+        "p50": 0.038,
+        "p95": 1.121,
+        "p99": 1.327
+      },
+      "request_ms": {
+        "count": 30,
+        "max": 0.308,
+        "p50": 0.082,
+        "p95": 0.167,
+        "p99": 0.308
+      },
+      "statuses": {
+        "200": 30
+      },
+      "total_ms": {
+        "count": 30,
+        "max": 37.056,
+        "p50": 25.675,
+        "p95": 33.147,
+        "p99": 37.056
+      },
+      "ttfb_ms": {
+        "count": 30,
+        "max": 36.901,
+        "p50": 25.48,
+        "p95": 32.525,
+        "p99": 36.901
+      }
+    },
+    "auth_status": {
+      "body_bytes": {
+        "count": 30,
+        "max": 281.0,
+        "p50": 281.0,
+        "p95": 281.0,
+        "p99": 281.0
+      },
+      "connect_ms": {
+        "count": 30,
+        "max": 2.168,
+        "p50": 0.0,
+        "p95": 0.768,
+        "p99": 2.168
+      },
+      "errors": {},
+      "read_ms": {
+        "count": 30,
+        "max": 3.269,
+        "p50": 0.109,
+        "p95": 1.624,
+        "p99": 3.269
+      },
+      "request_ms": {
+        "count": 30,
+        "max": 0.573,
+        "p50": 0.124,
+        "p95": 0.272,
+        "p99": 0.573
+      },
+      "statuses": {
+        "200": 30
+      },
+      "total_ms": {
+        "count": 30,
+        "max": 89.443,
+        "p50": 23.14,
+        "p95": 88.528,
+        "p99": 89.443
+      },
+      "ttfb_ms": {
+        "count": 30,
+        "max": 89.185,
+        "p50": 22.265,
+        "p95": 88.018,
+        "p99": 89.185
+      }
+    },
+    "cron_recent": {
+      "body_bytes": {
+        "count": 30,
+        "max": 39.0,
+        "p50": 39.0,
+        "p95": 39.0,
+        "p99": 39.0
+      },
+      "connect_ms": {
+        "count": 30,
+        "max": 1.527,
+        "p50": 0.0,
+        "p95": 0.982,
+        "p99": 1.527
+      },
+      "errors": {},
+      "read_ms": {
+        "count": 30,
+        "max": 0.891,
+        "p50": 0.062,
+        "p95": 0.647,
+        "p99": 0.891
+      },
+      "request_ms": {
+        "count": 30,
+        "max": 0.822,
+        "p50": 0.136,
+        "p95": 0.422,
+        "p99": 0.822
+      },
+      "statuses": {
+        "200": 30
+      },
+      "total_ms": {
+        "count": 30,
+        "max": 37.623,
+        "p50": 24.947,
+        "p95": 36.646,
+        "p99": 37.623
+      },
+      "ttfb_ms": {
+        "count": 30,
+        "max": 37.315,
+        "p50": 24.163,
+        "p95": 36.482,
+        "p99": 37.315
+      }
+    },
+    "dashboard_status": {
+      "body_bytes": {
+        "count": 30,
+        "max": 43.0,
+        "p50": 43.0,
+        "p95": 43.0,
+        "p99": 43.0
+      },
+      "connect_ms": {
+        "count": 30,
+        "max": 0.884,
+        "p50": 0.0,
+        "p95": 0.705,
+        "p99": 0.884
+      },
+      "errors": {},
+      "read_ms": {
+        "count": 30,
+        "max": 1.301,
+        "p50": 0.036,
+        "p95": 1.071,
+        "p99": 1.301
+      },
+      "request_ms": {
+        "count": 30,
+        "max": 0.48,
+        "p50": 0.09,
+        "p95": 0.23,
+        "p99": 0.48
+      },
+      "statuses": {
+        "200": 30
+      },
+      "total_ms": {
+        "count": 30,
+        "max": 81.495,
+        "p50": 37.563,
+        "p95": 75.657,
+        "p99": 81.495
+      },
+      "ttfb_ms": {
+        "count": 30,
+        "max": 80.84,
+        "p50": 37.427,
+        "p95": 74.774,
+        "p99": 80.84
+      }
+    },
+    "license_status": {
+      "body_bytes": {
+        "count": 30,
+        "max": 228.0,
+        "p50": 228.0,
+        "p95": 228.0,
+        "p99": 228.0
+      },
+      "connect_ms": {
+        "count": 30,
+        "max": 0.866,
+        "p50": 0.0,
+        "p95": 0.656,
+        "p99": 0.866
+      },
+      "errors": {},
+      "read_ms": {
+        "count": 30,
+        "max": 3.226,
+        "p50": 0.059,
+        "p95": 1.437,
+        "p99": 3.226
+      },
+      "request_ms": {
+        "count": 30,
+        "max": 0.648,
+        "p50": 0.126,
+        "p95": 0.377,
+        "p99": 0.648
+      },
+      "statuses": {
+        "200": 30
+      },
+      "total_ms": {
+        "count": 30,
+        "max": 32.069,
+        "p50": 12.991,
+        "p95": 31.802,
+        "p99": 32.069
+      },
+      "ttfb_ms": {
+        "count": 30,
+        "max": 32.003,
+        "p50": 12.308,
+        "p95": 30.89,
+        "p99": 32.003
+      }
+    },
+    "sessions": {
+      "body_bytes": {
+        "count": 30,
+        "max": 10902.0,
+        "p50": 10901.0,
+        "p95": 10902.0,
+        "p99": 10902.0
+      },
+      "connect_ms": {
+        "count": 30,
+        "max": 1.753,
+        "p50": 0.0,
+        "p95": 1.231,
+        "p99": 1.753
+      },
+      "errors": {},
+      "read_ms": {
+        "count": 30,
+        "max": 8.871,
+        "p50": 0.542,
+        "p95": 3.665,
+        "p99": 8.871
+      },
+      "request_ms": {
+        "count": 30,
+        "max": 0.789,
+        "p50": 0.141,
+        "p95": 0.319,
+        "p99": 0.789
+      },
+      "statuses": {
+        "200": 30
+      },
+      "total_ms": {
+        "count": 30,
+        "max": 227.252,
+        "p50": 103.733,
+        "p95": 225.59,
+        "p99": 227.252
+      },
+      "ttfb_ms": {
+        "count": 30,
+        "max": 227.121,
+        "p50": 102.35,
+        "p95": 223.55,
+        "p99": 227.121
+      }
+    },
+    "sessions_discovery": {
+      "body_bytes": {
+        "count": 1,
+        "max": 10902.0,
+        "p50": 10902.0,
+        "p95": 10902.0,
+        "p99": 10902.0
+      },
+      "connect_ms": {
+        "count": 1,
+        "max": 12.216,
+        "p50": 12.216,
+        "p95": 12.216,
+        "p99": 12.216
+      },
+      "errors": {},
+      "read_ms": {
+        "count": 1,
+        "max": 0.039,
+        "p50": 0.039,
+        "p95": 0.039,
+        "p99": 0.039
+      },
+      "request_ms": {
+        "count": 1,
+        "max": 0.27,
+        "p50": 0.27,
+        "p95": 0.27,
+        "p99": 0.27
+      },
+      "statuses": {
+        "200": 1
+      },
+      "total_ms": {
+        "count": 1,
+        "max": 410.668,
+        "p50": 410.668,
+        "p95": 410.668,
+        "p99": 410.668
+      },
+      "ttfb_ms": {
+        "count": 1,
+        "max": 398.093,
+        "p50": 398.093,
+        "p95": 398.093,
+        "p99": 398.093
+      }
+    }
+  },
+  "concurrency": 5,
+  "expected_identity_checked": false,
+  "requests_per_endpoint": 30,
+  "samples": [
+    {
+      "body_bytes": 10902,
+      "connect_ms": 12.216,
+      "endpoint": "sessions_discovery",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 0.039,
+      "request_ms": 0.27,
+      "status": 200,
+      "total_ms": 410.668,
+      "ttfb_ms": 398.093
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 2.168,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 0.028,
+      "request_ms": 0.115,
+      "status": 200,
+      "total_ms": 29.94,
+      "ttfb_ms": 27.612
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.0,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 1.624,
+      "request_ms": 0.143,
+      "status": 200,
+      "total_ms": 13.311,
+      "ttfb_ms": 11.513
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.0,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 0.038,
+      "request_ms": 0.573,
+      "status": 200,
+      "total_ms": 21.575,
+      "ttfb_ms": 20.953
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.0,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 0.023,
+      "request_ms": 0.132,
+      "status": 200,
+      "total_ms": 18.982,
+      "ttfb_ms": 18.815
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.0,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 0.102,
+      "request_ms": 0.148,
+      "status": 200,
+      "total_ms": 89.443,
+      "ttfb_ms": 89.185
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.0,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 0.165,
+      "request_ms": 0.11,
+      "status": 200,
+      "total_ms": 14.85,
+      "ttfb_ms": 14.569
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.411,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 0.116,
+      "request_ms": 0.1,
+      "status": 200,
+      "total_ms": 15.621,
+      "ttfb_ms": 14.977
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.0,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 0.012,
+      "request_ms": 0.095,
+      "status": 200,
+      "total_ms": 24.071,
+      "ttfb_ms": 23.959
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.0,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 0.569,
+      "request_ms": 0.051,
+      "status": 200,
+      "total_ms": 30.156,
+      "ttfb_ms": 29.53
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.0,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 1.402,
+      "request_ms": 0.197,
+      "status": 200,
+      "total_ms": 25.983,
+      "ttfb_ms": 24.375
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.0,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 0.048,
+      "request_ms": 0.089,
+      "status": 200,
+      "total_ms": 87.938,
+      "ttfb_ms": 87.793
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.0,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 0.409,
+      "request_ms": 0.106,
+      "status": 200,
+      "total_ms": 9.719,
+      "ttfb_ms": 9.199
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.768,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 1.122,
+      "request_ms": 0.048,
+      "status": 200,
+      "total_ms": 25.423,
+      "ttfb_ms": 23.443
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.0,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 0.587,
+      "request_ms": 0.193,
+      "status": 200,
+      "total_ms": 13.768,
+      "ttfb_ms": 12.975
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.0,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 3.269,
+      "request_ms": 0.071,
+      "status": 200,
+      "total_ms": 23.49,
+      "ttfb_ms": 20.096
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.0,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 0.333,
+      "request_ms": 0.249,
+      "status": 200,
+      "total_ms": 28.214,
+      "ttfb_ms": 27.625
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.0,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 0.04,
+      "request_ms": 0.101,
+      "status": 200,
+      "total_ms": 86.776,
+      "ttfb_ms": 86.627
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.0,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 0.045,
+      "request_ms": 0.152,
+      "status": 200,
+      "total_ms": 15.047,
+      "ttfb_ms": 14.842
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.354,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 0.017,
+      "request_ms": 0.244,
+      "status": 200,
+      "total_ms": 29.159,
+      "ttfb_ms": 28.537
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.0,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 0.055,
+      "request_ms": 0.181,
+      "status": 200,
+      "total_ms": 19.53,
+      "ttfb_ms": 19.278
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.0,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 0.022,
+      "request_ms": 0.146,
+      "status": 200,
+      "total_ms": 22.797,
+      "ttfb_ms": 22.625
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.0,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 1.373,
+      "request_ms": 0.1,
+      "status": 200,
+      "total_ms": 18.166,
+      "ttfb_ms": 16.679
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.0,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 0.029,
+      "request_ms": 0.122,
+      "status": 200,
+      "total_ms": 11.039,
+      "ttfb_ms": 10.871
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.0,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 0.269,
+      "request_ms": 0.064,
+      "status": 200,
+      "total_ms": 85.865,
+      "ttfb_ms": 85.527
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.347,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 0.664,
+      "request_ms": 0.126,
+      "status": 200,
+      "total_ms": 31.44,
+      "ttfb_ms": 30.292
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.0,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 0.034,
+      "request_ms": 0.229,
+      "status": 200,
+      "total_ms": 23.482,
+      "ttfb_ms": 23.207
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.0,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 0.048,
+      "request_ms": 0.272,
+      "status": 200,
+      "total_ms": 18.495,
+      "ttfb_ms": 18.165
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.0,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 0.19,
+      "request_ms": 0.17,
+      "status": 200,
+      "total_ms": 22.281,
+      "ttfb_ms": 21.904
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.0,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 0.442,
+      "request_ms": 0.061,
+      "status": 200,
+      "total_ms": 88.528,
+      "ttfb_ms": 88.018
+    },
+    {
+      "body_bytes": 281,
+      "connect_ms": 0.0,
+      "endpoint": "auth_status",
+      "error": "",
+      "path": "/api/auth/status",
+      "read_ms": 0.016,
+      "request_ms": 0.083,
+      "status": 200,
+      "total_ms": 8.299,
+      "ttfb_ms": 8.19
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.367,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 1.076,
+      "request_ms": 0.127,
+      "status": 200,
+      "total_ms": 8.433,
+      "ttfb_ms": 6.847
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.0,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 0.115,
+      "request_ms": 0.033,
+      "status": 200,
+      "total_ms": 10.16,
+      "ttfb_ms": 9.999
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.0,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 0.037,
+      "request_ms": 0.132,
+      "status": 200,
+      "total_ms": 17.787,
+      "ttfb_ms": 17.608
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.0,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 0.829,
+      "request_ms": 0.071,
+      "status": 200,
+      "total_ms": 31.802,
+      "ttfb_ms": 30.89
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.0,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 0.01,
+      "request_ms": 0.377,
+      "status": 200,
+      "total_ms": 16.084,
+      "ttfb_ms": 15.678
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.0,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 0.013,
+      "request_ms": 0.204,
+      "status": 200,
+      "total_ms": 5.349,
+      "ttfb_ms": 5.127
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.866,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 3.226,
+      "request_ms": 0.3,
+      "status": 200,
+      "total_ms": 12.497,
+      "ttfb_ms": 8.094
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.0,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 0.031,
+      "request_ms": 0.3,
+      "status": 200,
+      "total_ms": 14.419,
+      "ttfb_ms": 14.072
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.0,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 0.899,
+      "request_ms": 0.346,
+      "status": 200,
+      "total_ms": 5.234,
+      "ttfb_ms": 3.98
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.0,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 0.753,
+      "request_ms": 0.056,
+      "status": 200,
+      "total_ms": 12.532,
+      "ttfb_ms": 11.702
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.0,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 1.285,
+      "request_ms": 0.14,
+      "status": 200,
+      "total_ms": 19.436,
+      "ttfb_ms": 17.999
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.0,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 0.03,
+      "request_ms": 0.075,
+      "status": 200,
+      "total_ms": 8.902,
+      "ttfb_ms": 8.791
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.493,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 0.015,
+      "request_ms": 0.053,
+      "status": 200,
+      "total_ms": 6.566,
+      "ttfb_ms": 5.998
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.0,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 1.437,
+      "request_ms": 0.046,
+      "status": 200,
+      "total_ms": 20.385,
+      "ttfb_ms": 18.892
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.0,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 0.095,
+      "request_ms": 0.064,
+      "status": 200,
+      "total_ms": 27.714,
+      "ttfb_ms": 27.496
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.0,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 0.037,
+      "request_ms": 0.204,
+      "status": 200,
+      "total_ms": 16.016,
+      "ttfb_ms": 15.77
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.0,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 0.377,
+      "request_ms": 0.148,
+      "status": 200,
+      "total_ms": 13.45,
+      "ttfb_ms": 12.915
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.0,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 0.127,
+      "request_ms": 0.125,
+      "status": 200,
+      "total_ms": 4.063,
+      "ttfb_ms": 3.805
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.656,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 0.012,
+      "request_ms": 0.13,
+      "status": 200,
+      "total_ms": 7.771,
+      "ttfb_ms": 6.967
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.0,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 0.023,
+      "request_ms": 0.035,
+      "status": 200,
+      "total_ms": 32.069,
+      "ttfb_ms": 32.003
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.0,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 0.055,
+      "request_ms": 0.169,
+      "status": 200,
+      "total_ms": 15.601,
+      "ttfb_ms": 15.343
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.0,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 0.063,
+      "request_ms": 0.192,
+      "status": 200,
+      "total_ms": 14.13,
+      "ttfb_ms": 13.856
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.0,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 0.043,
+      "request_ms": 0.112,
+      "status": 200,
+      "total_ms": 10.67,
+      "ttfb_ms": 10.507
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.0,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 0.2,
+      "request_ms": 0.089,
+      "status": 200,
+      "total_ms": 7.18,
+      "ttfb_ms": 6.879
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.298,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 0.104,
+      "request_ms": 0.04,
+      "status": 200,
+      "total_ms": 5.994,
+      "ttfb_ms": 5.54
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.0,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 0.018,
+      "request_ms": 0.058,
+      "status": 200,
+      "total_ms": 17.447,
+      "ttfb_ms": 17.362
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.0,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 1.202,
+      "request_ms": 0.122,
+      "status": 200,
+      "total_ms": 11.809,
+      "ttfb_ms": 10.474
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.0,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 0.012,
+      "request_ms": 0.648,
+      "status": 200,
+      "total_ms": 14.624,
+      "ttfb_ms": 13.958
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.0,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 0.048,
+      "request_ms": 0.077,
+      "status": 200,
+      "total_ms": 10.822,
+      "ttfb_ms": 10.685
+    },
+    {
+      "body_bytes": 228,
+      "connect_ms": 0.0,
+      "endpoint": "license_status",
+      "error": "",
+      "path": "/api/license/status",
+      "read_ms": 0.008,
+      "request_ms": 0.158,
+      "status": 200,
+      "total_ms": 19.667,
+      "ttfb_ms": 19.495
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.549,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.01,
+      "request_ms": 0.038,
+      "status": 200,
+      "total_ms": 24.921,
+      "ttfb_ms": 24.298
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.0,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.482,
+      "request_ms": 0.073,
+      "status": 200,
+      "total_ms": 25.54,
+      "ttfb_ms": 24.979
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.0,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.331,
+      "request_ms": 0.069,
+      "status": 200,
+      "total_ms": 21.886,
+      "ttfb_ms": 21.451
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.0,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.046,
+      "request_ms": 0.114,
+      "status": 200,
+      "total_ms": 28.841,
+      "ttfb_ms": 28.667
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.0,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.019,
+      "request_ms": 0.118,
+      "status": 200,
+      "total_ms": 19.603,
+      "ttfb_ms": 19.46
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.0,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.036,
+      "request_ms": 0.129,
+      "status": 200,
+      "total_ms": 27.012,
+      "ttfb_ms": 26.84
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.269,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.041,
+      "request_ms": 0.167,
+      "status": 200,
+      "total_ms": 24.17,
+      "ttfb_ms": 23.657
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.0,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.01,
+      "request_ms": 0.135,
+      "status": 200,
+      "total_ms": 37.056,
+      "ttfb_ms": 36.901
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.0,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.179,
+      "request_ms": 0.108,
+      "status": 200,
+      "total_ms": 19.171,
+      "ttfb_ms": 18.879
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.0,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.264,
+      "request_ms": 0.094,
+      "status": 200,
+      "total_ms": 29.468,
+      "ttfb_ms": 29.104
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.0,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 1.327,
+      "request_ms": 0.088,
+      "status": 200,
+      "total_ms": 24.597,
+      "ttfb_ms": 23.175
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.0,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.02,
+      "request_ms": 0.056,
+      "status": 200,
+      "total_ms": 19.773,
+      "ttfb_ms": 19.691
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.621,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.496,
+      "request_ms": 0.053,
+      "status": 200,
+      "total_ms": 30.934,
+      "ttfb_ms": 29.755
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.0,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.756,
+      "request_ms": 0.103,
+      "status": 200,
+      "total_ms": 28.8,
+      "ttfb_ms": 27.93
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.0,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.011,
+      "request_ms": 0.308,
+      "status": 200,
+      "total_ms": 24.384,
+      "ttfb_ms": 24.056
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.0,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.3,
+      "request_ms": 0.096,
+      "status": 200,
+      "total_ms": 30.157,
+      "ttfb_ms": 29.73
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.0,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.013,
+      "request_ms": 0.061,
+      "status": 200,
+      "total_ms": 20.203,
+      "ttfb_ms": 20.125
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.0,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.012,
+      "request_ms": 0.031,
+      "status": 200,
+      "total_ms": 25.371,
+      "ttfb_ms": 25.324
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.685,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.064,
+      "request_ms": 0.078,
+      "status": 200,
+      "total_ms": 29.409,
+      "ttfb_ms": 28.567
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.0,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.029,
+      "request_ms": 0.073,
+      "status": 200,
+      "total_ms": 24.462,
+      "ttfb_ms": 24.353
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.0,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.033,
+      "request_ms": 0.059,
+      "status": 200,
+      "total_ms": 23.505,
+      "ttfb_ms": 23.39
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.0,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.071,
+      "request_ms": 0.096,
+      "status": 200,
+      "total_ms": 25.81,
+      "ttfb_ms": 25.636
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.0,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 1.121,
+      "request_ms": 0.056,
+      "status": 200,
+      "total_ms": 29.292,
+      "ttfb_ms": 28.103
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.0,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.011,
+      "request_ms": 0.052,
+      "status": 200,
+      "total_ms": 26.922,
+      "ttfb_ms": 26.854
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.573,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.03,
+      "request_ms": 0.047,
+      "status": 200,
+      "total_ms": 26.39,
+      "ttfb_ms": 25.731
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.0,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.535,
+      "request_ms": 0.079,
+      "status": 200,
+      "total_ms": 33.147,
+      "ttfb_ms": 32.525
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.0,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.017,
+      "request_ms": 0.085,
+      "status": 200,
+      "total_ms": 28.28,
+      "ttfb_ms": 28.17
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.0,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.673,
+      "request_ms": 0.09,
+      "status": 200,
+      "total_ms": 21.252,
+      "ttfb_ms": 20.478
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.0,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.016,
+      "request_ms": 0.098,
+      "status": 200,
+      "total_ms": 19.491,
+      "ttfb_ms": 19.372
+    },
+    {
+      "body_bytes": 291,
+      "connect_ms": 0.0,
+      "endpoint": "agent_health",
+      "error": "",
+      "path": "/api/health/agent",
+      "read_ms": 0.009,
+      "request_ms": 0.057,
+      "status": 200,
+      "total_ms": 26.01,
+      "ttfb_ms": 25.939
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.324,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.49,
+      "request_ms": 0.086,
+      "status": 200,
+      "total_ms": 73.211,
+      "ttfb_ms": 72.292
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.0,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.013,
+      "request_ms": 0.115,
+      "status": 200,
+      "total_ms": 40.215,
+      "ttfb_ms": 40.081
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.0,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.048,
+      "request_ms": 0.127,
+      "status": 200,
+      "total_ms": 21.962,
+      "ttfb_ms": 21.734
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.0,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.282,
+      "request_ms": 0.131,
+      "status": 200,
+      "total_ms": 32.472,
+      "ttfb_ms": 32.053
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.0,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 1.301,
+      "request_ms": 0.48,
+      "status": 200,
+      "total_ms": 28.617,
+      "ttfb_ms": 26.819
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.0,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.02,
+      "request_ms": 0.175,
+      "status": 200,
+      "total_ms": 56.366,
+      "ttfb_ms": 56.164
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.884,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.018,
+      "request_ms": 0.076,
+      "status": 200,
+      "total_ms": 72.089,
+      "ttfb_ms": 71.1
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.0,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.04,
+      "request_ms": 0.101,
+      "status": 200,
+      "total_ms": 42.848,
+      "ttfb_ms": 42.69
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.0,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.036,
+      "request_ms": 0.134,
+      "status": 200,
+      "total_ms": 36.916,
+      "ttfb_ms": 36.728
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.0,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.025,
+      "request_ms": 0.075,
+      "status": 200,
+      "total_ms": 29.495,
+      "ttfb_ms": 29.385
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.0,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.039,
+      "request_ms": 0.046,
+      "status": 200,
+      "total_ms": 24.422,
+      "ttfb_ms": 24.318
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.0,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.03,
+      "request_ms": 0.23,
+      "status": 200,
+      "total_ms": 50.781,
+      "ttfb_ms": 50.516
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.514,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.077,
+      "request_ms": 0.043,
+      "status": 200,
+      "total_ms": 81.495,
+      "ttfb_ms": 80.84
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.0,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 1.071,
+      "request_ms": 0.163,
+      "status": 200,
+      "total_ms": 33.192,
+      "ttfb_ms": 31.947
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.0,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.036,
+      "request_ms": 0.066,
+      "status": 200,
+      "total_ms": 33.596,
+      "ttfb_ms": 33.486
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.0,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.061,
+      "request_ms": 0.122,
+      "status": 200,
+      "total_ms": 31.029,
+      "ttfb_ms": 30.835
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.0,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.082,
+      "request_ms": 0.143,
+      "status": 200,
+      "total_ms": 41.767,
+      "ttfb_ms": 41.532
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.0,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.006,
+      "request_ms": 0.165,
+      "status": 200,
+      "total_ms": 36.614,
+      "ttfb_ms": 36.433
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.705,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.125,
+      "request_ms": 0.04,
+      "status": 200,
+      "total_ms": 75.657,
+      "ttfb_ms": 74.774
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.0,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.007,
+      "request_ms": 0.084,
+      "status": 200,
+      "total_ms": 39.09,
+      "ttfb_ms": 38.989
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.0,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.022,
+      "request_ms": 0.055,
+      "status": 200,
+      "total_ms": 26.407,
+      "ttfb_ms": 26.322
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.0,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.14,
+      "request_ms": 0.07,
+      "status": 200,
+      "total_ms": 32.733,
+      "ttfb_ms": 32.508
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.0,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.011,
+      "request_ms": 0.091,
+      "status": 200,
+      "total_ms": 39.99,
+      "ttfb_ms": 39.876
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.0,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.035,
+      "request_ms": 0.054,
+      "status": 200,
+      "total_ms": 43.22,
+      "ttfb_ms": 43.123
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.076,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.012,
+      "request_ms": 0.051,
+      "status": 200,
+      "total_ms": 61.537,
+      "ttfb_ms": 61.11
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.0,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.2,
+      "request_ms": 0.127,
+      "status": 200,
+      "total_ms": 55.148,
+      "ttfb_ms": 54.814
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.0,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.042,
+      "request_ms": 0.089,
+      "status": 200,
+      "total_ms": 35.574,
+      "ttfb_ms": 35.419
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.0,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.018,
+      "request_ms": 0.083,
+      "status": 200,
+      "total_ms": 31.331,
+      "ttfb_ms": 31.224
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.0,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.009,
+      "request_ms": 0.066,
+      "status": 200,
+      "total_ms": 38.211,
+      "ttfb_ms": 38.125
+    },
+    {
+      "body_bytes": 43,
+      "connect_ms": 0.0,
+      "endpoint": "dashboard_status",
+      "error": "",
+      "path": "/api/dashboard/status",
+      "read_ms": 0.017,
+      "request_ms": 0.143,
+      "status": 200,
+      "total_ms": 36.309,
+      "ttfb_ms": 36.14
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.959,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.031,
+      "request_ms": 0.177,
+      "status": 200,
+      "total_ms": 25.416,
+      "ttfb_ms": 24.234
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.0,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.068,
+      "request_ms": 0.056,
+      "status": 200,
+      "total_ms": 16.639,
+      "ttfb_ms": 16.506
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.0,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.038,
+      "request_ms": 0.091,
+      "status": 200,
+      "total_ms": 22.705,
+      "ttfb_ms": 22.568
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.0,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.647,
+      "request_ms": 0.121,
+      "status": 200,
+      "total_ms": 29.36,
+      "ttfb_ms": 28.587
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.0,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.114,
+      "request_ms": 0.076,
+      "status": 200,
+      "total_ms": 24.244,
+      "ttfb_ms": 23.996
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.0,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.083,
+      "request_ms": 0.192,
+      "status": 200,
+      "total_ms": 37.623,
+      "ttfb_ms": 37.315
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.646,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.013,
+      "request_ms": 0.196,
+      "status": 200,
+      "total_ms": 23.304,
+      "ttfb_ms": 22.438
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.0,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.577,
+      "request_ms": 0.038,
+      "status": 200,
+      "total_ms": 24.27,
+      "ttfb_ms": 23.647
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.0,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.239,
+      "request_ms": 0.233,
+      "status": 200,
+      "total_ms": 26.454,
+      "ttfb_ms": 25.972
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.0,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.23,
+      "request_ms": 0.201,
+      "status": 200,
+      "total_ms": 26.397,
+      "ttfb_ms": 25.957
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.0,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.112,
+      "request_ms": 0.151,
+      "status": 200,
+      "total_ms": 21.955,
+      "ttfb_ms": 21.664
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.0,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.012,
+      "request_ms": 0.134,
+      "status": 200,
+      "total_ms": 36.646,
+      "ttfb_ms": 36.482
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 1.527,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.005,
+      "request_ms": 0.298,
+      "status": 200,
+      "total_ms": 29.026,
+      "ttfb_ms": 27.159
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.0,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.033,
+      "request_ms": 0.047,
+      "status": 200,
+      "total_ms": 23.485,
+      "ttfb_ms": 23.395
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.0,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.891,
+      "request_ms": 0.096,
+      "status": 200,
+      "total_ms": 17.622,
+      "ttfb_ms": 16.618
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.0,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.082,
+      "request_ms": 0.305,
+      "status": 200,
+      "total_ms": 32.956,
+      "ttfb_ms": 32.561
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.0,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.127,
+      "request_ms": 0.167,
+      "status": 200,
+      "total_ms": 24.074,
+      "ttfb_ms": 23.773
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.0,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.035,
+      "request_ms": 0.174,
+      "status": 200,
+      "total_ms": 29.345,
+      "ttfb_ms": 29.129
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.982,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.116,
+      "request_ms": 0.126,
+      "status": 200,
+      "total_ms": 26.799,
+      "ttfb_ms": 25.564
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.0,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.015,
+      "request_ms": 0.039,
+      "status": 200,
+      "total_ms": 27.731,
+      "ttfb_ms": 27.673
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.0,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.07,
+      "request_ms": 0.11,
+      "status": 200,
+      "total_ms": 24.286,
+      "ttfb_ms": 24.092
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.0,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.136,
+      "request_ms": 0.225,
+      "status": 200,
+      "total_ms": 26.089,
+      "ttfb_ms": 25.721
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.0,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.056,
+      "request_ms": 0.061,
+      "status": 200,
+      "total_ms": 29.548,
+      "ttfb_ms": 29.404
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.0,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.042,
+      "request_ms": 0.822,
+      "status": 200,
+      "total_ms": 24.478,
+      "ttfb_ms": 23.601
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.274,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.032,
+      "request_ms": 0.422,
+      "status": 200,
+      "total_ms": 20.699,
+      "ttfb_ms": 19.956
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.0,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.048,
+      "request_ms": 0.051,
+      "status": 200,
+      "total_ms": 12.523,
+      "ttfb_ms": 12.409
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.0,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.014,
+      "request_ms": 0.165,
+      "status": 200,
+      "total_ms": 23.279,
+      "ttfb_ms": 23.089
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.0,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.144,
+      "request_ms": 0.037,
+      "status": 200,
+      "total_ms": 29.013,
+      "ttfb_ms": 28.822
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.0,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.02,
+      "request_ms": 0.11,
+      "status": 200,
+      "total_ms": 22.779,
+      "ttfb_ms": 22.633
+    },
+    {
+      "body_bytes": 39,
+      "connect_ms": 0.0,
+      "endpoint": "cron_recent",
+      "error": "",
+      "path": "/api/crons/recent",
+      "read_ms": 0.029,
+      "request_ms": 0.137,
+      "status": 200,
+      "total_ms": 36.205,
+      "ttfb_ms": 36.032
+    },
+    {
+      "body_bytes": 10901,
+      "connect_ms": 1.231,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 0.102,
+      "request_ms": 0.173,
+      "status": 200,
+      "total_ms": 94.083,
+      "ttfb_ms": 92.551
+    },
+    {
+      "body_bytes": 10901,
+      "connect_ms": 0.0,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 1.272,
+      "request_ms": 0.319,
+      "status": 200,
+      "total_ms": 140.644,
+      "ttfb_ms": 139.021
+    },
+    {
+      "body_bytes": 10900,
+      "connect_ms": 0.0,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 0.859,
+      "request_ms": 0.314,
+      "status": 200,
+      "total_ms": 146.93,
+      "ttfb_ms": 145.629
+    },
+    {
+      "body_bytes": 10901,
+      "connect_ms": 0.0,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 0.445,
+      "request_ms": 0.265,
+      "status": 200,
+      "total_ms": 45.667,
+      "ttfb_ms": 44.948
+    },
+    {
+      "body_bytes": 10902,
+      "connect_ms": 0.0,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 8.871,
+      "request_ms": 0.065,
+      "status": 200,
+      "total_ms": 126.02,
+      "ttfb_ms": 117.035
+    },
+    {
+      "body_bytes": 10902,
+      "connect_ms": 0.0,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 0.846,
+      "request_ms": 0.205,
+      "status": 200,
+      "total_ms": 93.194,
+      "ttfb_ms": 92.136
+    },
+    {
+      "body_bytes": 10902,
+      "connect_ms": 0.414,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 1.332,
+      "request_ms": 0.152,
+      "status": 200,
+      "total_ms": 108.469,
+      "ttfb_ms": 106.544
+    },
+    {
+      "body_bytes": 10901,
+      "connect_ms": 0.0,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 0.023,
+      "request_ms": 0.102,
+      "status": 200,
+      "total_ms": 227.252,
+      "ttfb_ms": 227.121
+    },
+    {
+      "body_bytes": 10901,
+      "connect_ms": 0.0,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 0.058,
+      "request_ms": 0.082,
+      "status": 200,
+      "total_ms": 33.592,
+      "ttfb_ms": 33.444
+    },
+    {
+      "body_bytes": 10902,
+      "connect_ms": 0.0,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 0.624,
+      "request_ms": 0.075,
+      "status": 200,
+      "total_ms": 62.082,
+      "ttfb_ms": 61.377
+    },
+    {
+      "body_bytes": 10901,
+      "connect_ms": 0.0,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 0.082,
+      "request_ms": 0.043,
+      "status": 200,
+      "total_ms": 112.004,
+      "ttfb_ms": 111.867
+    },
+    {
+      "body_bytes": 10901,
+      "connect_ms": 0.0,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 0.02,
+      "request_ms": 0.789,
+      "status": 200,
+      "total_ms": 103.694,
+      "ttfb_ms": 102.879
+    },
+    {
+      "body_bytes": 10901,
+      "connect_ms": 1.753,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 0.711,
+      "request_ms": 0.077,
+      "status": 200,
+      "total_ms": 106.835,
+      "ttfb_ms": 104.274
+    },
+    {
+      "body_bytes": 10901,
+      "connect_ms": 0.0,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 0.07,
+      "request_ms": 0.172,
+      "status": 200,
+      "total_ms": 223.803,
+      "ttfb_ms": 223.55
+    },
+    {
+      "body_bytes": 10902,
+      "connect_ms": 0.0,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 2.102,
+      "request_ms": 0.121,
+      "status": 200,
+      "total_ms": 33.013,
+      "ttfb_ms": 30.784
+    },
+    {
+      "body_bytes": 10901,
+      "connect_ms": 0.0,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 0.386,
+      "request_ms": 0.13,
+      "status": 200,
+      "total_ms": 66.478,
+      "ttfb_ms": 65.941
+    },
+    {
+      "body_bytes": 10900,
+      "connect_ms": 0.0,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 3.665,
+      "request_ms": 0.079,
+      "status": 200,
+      "total_ms": 93.285,
+      "ttfb_ms": 89.525
+    },
+    {
+      "body_bytes": 10902,
+      "connect_ms": 0.0,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 0.096,
+      "request_ms": 0.159,
+      "status": 200,
+      "total_ms": 119.411,
+      "ttfb_ms": 119.136
+    },
+    {
+      "body_bytes": 10901,
+      "connect_ms": 0.305,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 0.035,
+      "request_ms": 0.252,
+      "status": 200,
+      "total_ms": 109.368,
+      "ttfb_ms": 108.734
+    },
+    {
+      "body_bytes": 10901,
+      "connect_ms": 0.0,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 0.484,
+      "request_ms": 0.106,
+      "status": 200,
+      "total_ms": 219.569,
+      "ttfb_ms": 218.966
+    },
+    {
+      "body_bytes": 10901,
+      "connect_ms": 0.0,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 0.103,
+      "request_ms": 0.228,
+      "status": 200,
+      "total_ms": 34.231,
+      "ttfb_ms": 33.886
+    },
+    {
+      "body_bytes": 10900,
+      "connect_ms": 0.0,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 0.909,
+      "request_ms": 0.056,
+      "status": 200,
+      "total_ms": 65.103,
+      "ttfb_ms": 64.132
+    },
+    {
+      "body_bytes": 10901,
+      "connect_ms": 0.0,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 0.269,
+      "request_ms": 0.1,
+      "status": 200,
+      "total_ms": 126.398,
+      "ttfb_ms": 126.009
+    },
+    {
+      "body_bytes": 10901,
+      "connect_ms": 0.0,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 0.632,
+      "request_ms": 0.219,
+      "status": 200,
+      "total_ms": 90.117,
+      "ttfb_ms": 89.246
+    },
+    {
+      "body_bytes": 10901,
+      "connect_ms": 0.582,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 1.268,
+      "request_ms": 0.083,
+      "status": 200,
+      "total_ms": 103.771,
+      "ttfb_ms": 101.822
+    },
+    {
+      "body_bytes": 10899,
+      "connect_ms": 0.0,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 1.99,
+      "request_ms": 0.158,
+      "status": 200,
+      "total_ms": 225.59,
+      "ttfb_ms": 223.426
+    },
+    {
+      "body_bytes": 10901,
+      "connect_ms": 0.0,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 0.061,
+      "request_ms": 0.154,
+      "status": 200,
+      "total_ms": 28.627,
+      "ttfb_ms": 28.386
+    },
+    {
+      "body_bytes": 10901,
+      "connect_ms": 0.0,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 0.059,
+      "request_ms": 0.059,
+      "status": 200,
+      "total_ms": 61.832,
+      "ttfb_ms": 61.708
+    },
+    {
+      "body_bytes": 10901,
+      "connect_ms": 0.0,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 0.707,
+      "request_ms": 0.153,
+      "status": 200,
+      "total_ms": 42.929,
+      "ttfb_ms": 42.06
+    },
+    {
+      "body_bytes": 10902,
+      "connect_ms": 0.0,
+      "endpoint": "sessions",
+      "error": "",
+      "path": "/api/sessions",
+      "read_ms": 0.599,
+      "request_ms": 0.125,
+      "status": 200,
+      "total_ms": 111.991,
+      "ttfb_ms": 111.256
+    }
+  ],
+  "server": {
+    "/api/auth/status": {
+      "elapsed_ms": {
+        "count": 30,
+        "max": 88.0,
+        "p50": 20.7,
+        "p95": 85.2,
+        "p99": 88.0
+      },
+      "p50_stage_share_percent": {
+        "auth_middleware": 4.35,
+        "handler": 7.25,
+        "license_middleware": 58.7,
+        "request_entry": 0.0,
+        "response_serialize": 4.35,
+        "response_write": 3.86,
+        "start": 0.0
+      },
+      "stages_ms": {
+        "auth_middleware": {
+          "count": 30,
+          "max": 6.1,
+          "p50": 0.9,
+          "p95": 3.6,
+          "p99": 6.1
+        },
+        "handler": {
+          "count": 30,
+          "max": 13.2,
+          "p50": 1.5,
+          "p95": 11.4,
+          "p99": 13.2
+        },
+        "license_middleware": {
+          "count": 30,
+          "max": 83.6,
+          "p50": 12.15,
+          "p95": 79.3,
+          "p99": 83.6
+        },
+        "request_entry": {
+          "count": 30,
+          "max": 0.1,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.1
+        },
+        "response_serialize": {
+          "count": 30,
+          "max": 70.5,
+          "p50": 0.9,
+          "p95": 4.4,
+          "p99": 70.5
+        },
+        "response_write": {
+          "count": 30,
+          "max": 4.5,
+          "p50": 0.8,
+          "p95": 3.6,
+          "p99": 4.5
+        },
+        "start": {
+          "count": 30,
+          "max": 0.1,
+          "p50": 0.0,
+          "p95": 0.1,
+          "p99": 0.1
+        }
+      }
+    },
+    "/api/crons/recent": {
+      "elapsed_ms": {
+        "count": 30,
+        "max": 35.8,
+        "p50": 23.65,
+        "p95": 35.3,
+        "p99": 35.8
+      },
+      "p50_stage_share_percent": {
+        "auth_middleware": 2.11,
+        "handler": 62.79,
+        "license_middleware": 26.43,
+        "request_entry": 0.0,
+        "response_serialize": 1.9,
+        "response_write": 2.11,
+        "start": 0.0
+      },
+      "stages_ms": {
+        "auth_middleware": {
+          "count": 30,
+          "max": 3.0,
+          "p50": 0.5,
+          "p95": 2.4,
+          "p99": 3.0
+        },
+        "handler": {
+          "count": 30,
+          "max": 25.8,
+          "p50": 14.85,
+          "p95": 23.9,
+          "p99": 25.8
+        },
+        "license_middleware": {
+          "count": 30,
+          "max": 18.5,
+          "p50": 6.25,
+          "p95": 14.2,
+          "p99": 18.5
+        },
+        "request_entry": {
+          "count": 30,
+          "max": 0.1,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.1
+        },
+        "response_serialize": {
+          "count": 30,
+          "max": 1.3,
+          "p50": 0.45,
+          "p95": 1.3,
+          "p99": 1.3
+        },
+        "response_write": {
+          "count": 30,
+          "max": 2.2,
+          "p50": 0.5,
+          "p95": 2.0,
+          "p99": 2.2
+        },
+        "start": {
+          "count": 30,
+          "max": 0.2,
+          "p50": 0.0,
+          "p95": 0.1,
+          "p99": 0.2
+        }
+      }
+    },
+    "/api/dashboard/status": {
+      "elapsed_ms": {
+        "count": 30,
+        "max": 71.9,
+        "p50": 35.85,
+        "p95": 70.8,
+        "p99": 71.9
+      },
+      "p50_stage_share_percent": {
+        "auth_middleware": 1.95,
+        "handler": 67.64,
+        "license_middleware": 23.85,
+        "request_entry": 0.0,
+        "response_serialize": 1.95,
+        "response_write": 1.39,
+        "start": 0.0
+      },
+      "stages_ms": {
+        "auth_middleware": {
+          "count": 30,
+          "max": 2.9,
+          "p50": 0.7,
+          "p95": 2.4,
+          "p99": 2.9
+        },
+        "handler": {
+          "count": 30,
+          "max": 60.5,
+          "p50": 24.25,
+          "p95": 52.8,
+          "p99": 60.5
+        },
+        "license_middleware": {
+          "count": 30,
+          "max": 20.7,
+          "p50": 8.55,
+          "p95": 20.4,
+          "p99": 20.7
+        },
+        "request_entry": {
+          "count": 30,
+          "max": 0.0,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0
+        },
+        "response_serialize": {
+          "count": 30,
+          "max": 8.3,
+          "p50": 0.7,
+          "p95": 3.6,
+          "p99": 8.3
+        },
+        "response_write": {
+          "count": 30,
+          "max": 3.0,
+          "p50": 0.5,
+          "p95": 2.5,
+          "p99": 3.0
+        },
+        "start": {
+          "count": 30,
+          "max": 0.1,
+          "p50": 0.0,
+          "p95": 0.1,
+          "p99": 0.1
+        }
+      }
+    },
+    "/api/health/agent": {
+      "elapsed_ms": {
+        "count": 30,
+        "max": 36.3,
+        "p50": 24.5,
+        "p95": 31.8,
+        "p99": 36.3
+      },
+      "p50_stage_share_percent": {
+        "auth_middleware": 2.24,
+        "handler": 57.76,
+        "license_middleware": 32.04,
+        "request_entry": 0.0,
+        "response_serialize": 1.84,
+        "response_write": 2.45,
+        "start": 0.0
+      },
+      "stages_ms": {
+        "auth_middleware": {
+          "count": 30,
+          "max": 1.9,
+          "p50": 0.55,
+          "p95": 1.8,
+          "p99": 1.9
+        },
+        "handler": {
+          "count": 30,
+          "max": 23.0,
+          "p50": 14.15,
+          "p95": 21.3,
+          "p99": 23.0
+        },
+        "license_middleware": {
+          "count": 30,
+          "max": 12.8,
+          "p50": 7.85,
+          "p95": 11.6,
+          "p99": 12.8
+        },
+        "request_entry": {
+          "count": 30,
+          "max": 0.1,
+          "p50": 0.0,
+          "p95": 0.1,
+          "p99": 0.1
+        },
+        "response_serialize": {
+          "count": 30,
+          "max": 3.0,
+          "p50": 0.45,
+          "p95": 1.6,
+          "p99": 3.0
+        },
+        "response_write": {
+          "count": 30,
+          "max": 2.4,
+          "p50": 0.6,
+          "p95": 1.9,
+          "p99": 2.4
+        },
+        "start": {
+          "count": 30,
+          "max": 0.1,
+          "p50": 0.0,
+          "p95": 0.1,
+          "p99": 0.1
+        }
+      }
+    },
+    "/api/license/status": {
+      "elapsed_ms": {
+        "count": 30,
+        "max": 31.5,
+        "p50": 10.95,
+        "p95": 27.8,
+        "p99": 31.5
+      },
+      "p50_stage_share_percent": {
+        "auth_middleware": 5.02,
+        "handler": 65.75,
+        "license_middleware": 3.65,
+        "request_entry": 0.0,
+        "response_serialize": 4.57,
+        "response_write": 5.48,
+        "start": 0.0
+      },
+      "stages_ms": {
+        "auth_middleware": {
+          "count": 30,
+          "max": 3.7,
+          "p50": 0.55,
+          "p95": 3.5,
+          "p99": 3.7
+        },
+        "handler": {
+          "count": 30,
+          "max": 28.5,
+          "p50": 7.2,
+          "p95": 24.3,
+          "p99": 28.5
+        },
+        "license_middleware": {
+          "count": 30,
+          "max": 3.8,
+          "p50": 0.4,
+          "p95": 3.6,
+          "p99": 3.8
+        },
+        "request_entry": {
+          "count": 30,
+          "max": 0.1,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.1
+        },
+        "response_serialize": {
+          "count": 30,
+          "max": 3.6,
+          "p50": 0.5,
+          "p95": 2.0,
+          "p99": 3.6
+        },
+        "response_write": {
+          "count": 30,
+          "max": 3.7,
+          "p50": 0.6,
+          "p95": 3.6,
+          "p99": 3.7
+        },
+        "start": {
+          "count": 30,
+          "max": 0.1,
+          "p50": 0.0,
+          "p95": 0.1,
+          "p99": 0.1
+        }
+      }
+    },
+    "/api/sessions": {
+      "elapsed_ms": {
+        "count": 30,
+        "max": 224.0,
+        "p50": 95.55,
+        "p95": 222.6,
+        "p99": 224.0
+      },
+      "p50_stage_share_percent": {
+        "all_sessions": 0.1,
+        "all_sessions.active_streams": 0.0,
+        "all_sessions.index_exists": 0.1,
+        "all_sessions.lineage_metadata_skipped": 0.0,
+        "all_sessions.mark_streaming": 0.0,
+        "all_sessions.overlay_lock": 0.0,
+        "all_sessions.prune_index": 1.47,
+        "all_sessions.read_index": 0.63,
+        "all_sessions.refresh_sidecar_metadata": 0.0,
+        "all_sessions.sort_filter": 0.0,
+        "all_sessions.state_db_overrides": 0.73,
+        "auth_middleware": 0.89,
+        "cli_cap": 1.05,
+        "filter_archived_sessions": 0.0,
+        "get_cli_sessions": 48.25,
+        "handler": 14.02,
+        "license_middleware": 7.85,
+        "load_settings": 0.63,
+        "merge_cli_sessions": 0.31,
+        "messaging_dedupe": 1.99,
+        "normalize_cli_rows": 0.0,
+        "profile_scope": 0.42,
+        "reconcile_stale_stream_state": 0.0,
+        "request_entry": 0.0,
+        "response_serialize": 0.84,
+        "response_write": 1.26,
+        "session_list_cache_fallback_rebuild": 0.0,
+        "session_list_cache_hit": 0.0,
+        "session_list_cache_lookup": 9.99,
+        "session_list_cache_rebuild_owner": 0.0,
+        "session_list_cache_stored": 0.1,
+        "session_list_cache_wait": 41.08,
+        "session_list_cache_wait_stale": 31.61,
+        "session_list_cache_wait_stale_fallback": 0.0,
+        "sort_sessions": 0.0,
+        "start": 0.0,
+        "visible_lineage_metadata": 14.13
+      },
+      "stages_ms": {
+        "all_sessions": {
+          "count": 15,
+          "max": 0.3,
+          "p50": 0.1,
+          "p95": 0.3,
+          "p99": 0.3
+        },
+        "all_sessions.active_streams": {
+          "count": 15,
+          "max": 0.2,
+          "p50": 0.0,
+          "p95": 0.2,
+          "p99": 0.2
+        },
+        "all_sessions.index_exists": {
+          "count": 15,
+          "max": 1.1,
+          "p50": 0.1,
+          "p95": 1.1,
+          "p99": 1.1
+        },
+        "all_sessions.lineage_metadata_skipped": {
+          "count": 15,
+          "max": 0.1,
+          "p50": 0.0,
+          "p95": 0.1,
+          "p99": 0.1
+        },
+        "all_sessions.mark_streaming": {
+          "count": 15,
+          "max": 0.0,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0
+        },
+        "all_sessions.overlay_lock": {
+          "count": 15,
+          "max": 0.2,
+          "p50": 0.0,
+          "p95": 0.2,
+          "p99": 0.2
+        },
+        "all_sessions.prune_index": {
+          "count": 15,
+          "max": 5.9,
+          "p50": 1.4,
+          "p95": 5.9,
+          "p99": 5.9
+        },
+        "all_sessions.read_index": {
+          "count": 15,
+          "max": 5.0,
+          "p50": 0.6,
+          "p95": 5.0,
+          "p99": 5.0
+        },
+        "all_sessions.refresh_sidecar_metadata": {
+          "count": 15,
+          "max": 0.0,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0
+        },
+        "all_sessions.sort_filter": {
+          "count": 15,
+          "max": 0.0,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0
+        },
+        "all_sessions.state_db_overrides": {
+          "count": 15,
+          "max": 2.2,
+          "p50": 0.7,
+          "p95": 2.2,
+          "p99": 2.2
+        },
+        "auth_middleware": {
+          "count": 30,
+          "max": 6.8,
+          "p50": 0.85,
+          "p95": 4.2,
+          "p99": 6.8
+        },
+        "cli_cap": {
+          "count": 15,
+          "max": 2.3,
+          "p50": 1.0,
+          "p95": 2.3,
+          "p99": 2.3
+        },
+        "filter_archived_sessions": {
+          "count": 15,
+          "max": 0.0,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0
+        },
+        "get_cli_sessions": {
+          "count": 15,
+          "max": 80.5,
+          "p50": 46.1,
+          "p95": 80.5,
+          "p99": 80.5
+        },
+        "handler": {
+          "count": 30,
+          "max": 43.3,
+          "p50": 13.4,
+          "p95": 28.9,
+          "p99": 43.3
+        },
+        "license_middleware": {
+          "count": 30,
+          "max": 21.2,
+          "p50": 7.5,
+          "p95": 21.1,
+          "p99": 21.2
+        },
+        "load_settings": {
+          "count": 30,
+          "max": 5.8,
+          "p50": 0.6,
+          "p95": 2.2,
+          "p99": 5.8
+        },
+        "merge_cli_sessions": {
+          "count": 15,
+          "max": 0.7,
+          "p50": 0.3,
+          "p95": 0.7,
+          "p99": 0.7
+        },
+        "messaging_dedupe": {
+          "count": 15,
+          "max": 11.8,
+          "p50": 1.9,
+          "p95": 11.8,
+          "p99": 11.8
+        },
+        "normalize_cli_rows": {
+          "count": 15,
+          "max": 0.0,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0
+        },
+        "profile_scope": {
+          "count": 15,
+          "max": 2.8,
+          "p50": 0.4,
+          "p95": 2.8,
+          "p99": 2.8
+        },
+        "reconcile_stale_stream_state": {
+          "count": 15,
+          "max": 0.0,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0
+        },
+        "request_entry": {
+          "count": 30,
+          "max": 0.2,
+          "p50": 0.0,
+          "p95": 0.1,
+          "p99": 0.2
+        },
+        "response_serialize": {
+          "count": 30,
+          "max": 7.4,
+          "p50": 0.8,
+          "p95": 6.4,
+          "p99": 7.4
+        },
+        "response_write": {
+          "count": 60,
+          "max": 12.2,
+          "p50": 1.2,
+          "p95": 5.1,
+          "p99": 12.2
+        },
+        "session_list_cache_fallback_rebuild": {
+          "count": 8,
+          "max": 0.1,
+          "p50": 0.0,
+          "p95": 0.1,
+          "p99": 0.1
+        },
+        "session_list_cache_hit": {
+          "count": 4,
+          "max": 0.0,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0
+        },
+        "session_list_cache_lookup": {
+          "count": 30,
+          "max": 19.8,
+          "p50": 9.55,
+          "p95": 18.5,
+          "p99": 19.8
+        },
+        "session_list_cache_rebuild_owner": {
+          "count": 7,
+          "max": 0.1,
+          "p50": 0.0,
+          "p95": 0.1,
+          "p99": 0.1
+        },
+        "session_list_cache_stored": {
+          "count": 7,
+          "max": 0.4,
+          "p50": 0.1,
+          "p95": 0.4,
+          "p99": 0.4
+        },
+        "session_list_cache_wait": {
+          "count": 8,
+          "max": 80.3,
+          "p50": 39.25,
+          "p95": 80.3,
+          "p99": 80.3
+        },
+        "session_list_cache_wait_stale": {
+          "count": 11,
+          "max": 68.2,
+          "p50": 30.2,
+          "p95": 68.2,
+          "p99": 68.2
+        },
+        "session_list_cache_wait_stale_fallback": {
+          "count": 11,
+          "max": 0.1,
+          "p50": 0.0,
+          "p95": 0.1,
+          "p99": 0.1
+        },
+        "sort_sessions": {
+          "count": 15,
+          "max": 0.1,
+          "p50": 0.0,
+          "p95": 0.1,
+          "p99": 0.1
+        },
+        "start": {
+          "count": 30,
+          "max": 0.1,
+          "p50": 0.0,
+          "p95": 0.1,
+          "p99": 0.1
+        },
+        "visible_lineage_metadata": {
+          "count": 15,
+          "max": 35.6,
+          "p50": 13.5,
+          "p95": 35.6,
+          "p99": 35.6
+        }
+      }
+    }
+  },
+  "server_log_start_offset": 2248938,
+  "session_status_endpoints_included": false,
+  "validation_failures": []
+}

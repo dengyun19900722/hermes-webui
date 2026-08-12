@@ -22,6 +22,20 @@ document.addEventListener('DOMContentLoaded', function () {
   var invalidPw = form.getAttribute('data-invalid-pw') || 'Invalid password';
   var connFailed = form.getAttribute('data-conn-failed') || 'Connection failed';
 
+  // Map English error strings returned by the server into the localized
+  // strings already injected into the form via data-* attributes. Keeps the
+  // client-facing message in the user's UI language even when the /api/auth
+  // /login endpoint returns a hard-coded English body (e.g. rbac_routes.py
+  // returns {"error":"Invalid credentials"} on 401). Keys we don't recognize
+  // fall through and display as-is so the user always sees some signal.
+  function _translateAuthError(err) {
+    if (!err) return invalidPw;
+    var key = String(err).toLowerCase();
+    if (key === 'invalid credentials' || key === 'invalid password' || key === 'invalid_pw') return invalidPw;
+    if (key === 'connection failed' || key === 'network error' || key === 'conn_failed') return connFailed;
+    return err;
+  }
+
   function showErr(msg) {
     var err = document.getElementById('err');
     if (err) { err.textContent = msg; err.style.display = 'block'; }
@@ -68,6 +82,7 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   var AUTH_SCOPE_STORAGE_KEY = 'hermes-webui-auth-user-id';
+  var AUTH_ROLE_STORAGE_KEY = 'hermes-webui-auth-role';
 
   function _authIdentityFromUser(user) {
     if (!user) return '';
@@ -84,6 +99,7 @@ document.addEventListener('DOMContentLoaded', function () {
         localStorage.removeItem('hermes-webui-session');
       }
       if (identity) localStorage.setItem(AUTH_SCOPE_STORAGE_KEY, identity);
+      if (user && user.role) localStorage.setItem(AUTH_ROLE_STORAGE_KEY, String(user.role));
     } catch (_) {}
   }
 
@@ -208,7 +224,7 @@ document.addEventListener('DOMContentLoaded', function () {
         _rememberLoggedInUser(data.user);
         window.location.href = _safeNextPath();
       } else {
-        showErr(data.error || invalidPw);
+        showErr(_translateAuthError(data.error) || invalidPw);
       }
     } catch (ex) {
       showErr(connFailed);
@@ -269,7 +285,7 @@ document.addEventListener('DOMContentLoaded', function () {
         _rememberLoggedInUser(data.user);
         window.location.href = _safeNextPath();
       }
-      else showErr(data.error || invalidPw);
+      else showErr(_translateAuthError(data.error) || invalidPw);
     } catch (ex) {
       showErr(ex && ex.message ? ex.message : connFailed);
     } finally {

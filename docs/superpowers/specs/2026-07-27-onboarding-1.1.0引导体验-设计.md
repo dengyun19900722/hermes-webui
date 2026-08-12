@@ -999,7 +999,7 @@ test('2.4 技能中心首次 popover')
 
 ## 13. 参考
 
-- 现有 spec：`docs/superpowers/specs/2026-07-15-custom-model-config-design.md`（格式参考）
+- 现有 spec：`docs/superpowers/specs/2026-07-15-custom-provider-自定义Provider配置-设计.md`（格式参考）
 - 现有 onboarding：`static/onboarding.js`（不要改动，仅参考）
 - 现有技能后端：`api/skill_usage.py`、`api/plugins.py`
 - RBAC：`api/auth.py`、`api/admin.py`

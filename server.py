@@ -161,6 +161,7 @@ from api.helpers import (
 )
 from api.profiles import set_request_profile, clear_request_profile
 from api.routes import handle_delete, handle_get, handle_patch, handle_post, handle_put, apply_cors_preflight_headers
+from api.request_diagnostics import RequestDiagnostics
 from api.startup import auto_install_agent_deps, fix_credential_permissions
 from api.updates import WEBUI_VERSION
 from api.crash_visibility import install_crash_visibility
@@ -523,10 +524,27 @@ class Handler(BaseHTTPRequestHandler):
         cookie_profile = get_profile_cookie(self)
         if cookie_profile:
             set_request_profile(cookie_profile)
+        diag = RequestDiagnostics.maybe_start("GET", urlparse(self.path).path, logger=logger)
+        self._request_diagnostics = diag
+        request_number = getattr(self, "_request_count", 0) + 1
+        self._request_count = request_number
+        if diag:
+            diag.bind_context(
+                profile=cookie_profile,
+                auth_cookie=self._header_value("Cookie"),
+                connection_request_number=request_number,
+            )
+            diag.stage("request_entry")
         try:
             parsed = urlparse(self.path)
+            if diag:
+                diag.stage("license_middleware")
             if not _check_license_middleware(self, parsed): return
+            if diag:
+                diag.stage("auth_middleware")
             if not check_auth(self, parsed): return
+            if diag:
+                diag.stage("handler")
             result = handle_get(self, parsed)
             if result is False:
                 return j(self, {'error': 'not found'}, status=404)
@@ -542,6 +560,9 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 self._safe_webui_print(traceback.format_exc())
         finally:
+            if diag:
+                diag.finish()
+            self._request_diagnostics = None
             clear_request_profile()
 
     def _handle_write(self, route_func) -> None:
@@ -550,13 +571,30 @@ class Handler(BaseHTTPRequestHandler):
         cookie_profile = get_profile_cookie(self)
         if cookie_profile:
             set_request_profile(cookie_profile)
+        diag = RequestDiagnostics.maybe_start(self.command, urlparse(self.path).path, logger=logger)
+        self._request_diagnostics = diag
+        request_number = getattr(self, "_request_count", 0) + 1
+        self._request_count = request_number
+        if diag:
+            diag.bind_context(
+                profile=cookie_profile,
+                auth_cookie=self._header_value("Cookie"),
+                connection_request_number=request_number,
+            )
+            diag.stage("request_entry")
         try:
             parsed = urlparse(self.path)
             _is_csp_report_post = (
                 parsed.path == "/api/csp-report" and self.command == "POST"
             )
+            if diag:
+                diag.stage("license_middleware")
             if not _check_license_middleware(self, parsed): return
+            if diag:
+                diag.stage("auth_middleware")
             if not _is_csp_report_post and not check_auth(self, parsed): return
+            if diag:
+                diag.stage("handler")
             result = route_func(self, parsed)
             if result is False:
                 return j(self, {'error': 'not found'}, status=404)
@@ -572,6 +610,9 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 self._safe_webui_print(traceback.format_exc())
         finally:
+            if diag:
+                diag.finish()
+            self._request_diagnostics = None
             clear_request_profile()
 
     def do_POST(self) -> None:

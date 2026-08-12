@@ -69,6 +69,7 @@
   }
 })()</script>
 <link rel="stylesheet" href="static/style.css?v=__WEBUI_VERSION__">
+<link rel="stylesheet" href="static/guidance.css?v=__WEBUI_VERSION__">
 <link rel="stylesheet" href="static/users_panel.css?v=__WEBUI_VERSION__">
   <!-- KaTeX math rendering CSS (loaded eagerly from vendored assets to prevent font CSP noise) -->
   <link rel="stylesheet" href="static/vendor/katex/0.16.22/katex.min.css">
@@ -151,6 +152,11 @@
       <line x1="5" y1="12" x2="19" y2="12"/>
     </svg>
   </button>
+  <button class="app-titlebar-account app-titlebar-guidance" id="titlebarGuidanceBtn" onclick="window.__openGuidanceCenter&&window.__openGuidanceCenter()" type="button" aria-label="引导中心" title="引导中心">
+    <span class="app-titlebar-account-icon" aria-hidden="true">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+    </span>
+  </button>
   <button class="app-titlebar-account" id="titlebarAccountBtn" onclick="toggleTitlebarAccountMenu(event)" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="账号菜单" title="账号">
     <span class="app-titlebar-account-icon" aria-hidden="true">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
@@ -182,6 +188,7 @@
         <option value="xlarge">特大</option>
       </select>
     </label>
+    <button class="app-titlebar-account-action" id="titlebarChangePasswordBtn" data-action="change-password" type="button" role="menuitem">修改密码</button>
     <button class="app-titlebar-account-signout" id="titlebarSignOutBtn" onclick="titlebarSignOut()" type="button" role="menuitem">退出登录</button>
   </div>
   <button class="app-titlebar-reload" id="btnReload" onclick="window.location.reload()" type="button" aria-label="Reload" title="Reload page">
@@ -611,6 +618,10 @@
           <button type="button" class="side-menu-item" data-settings-section="users" onclick="switchSettingsSection('users',{fromSidebarItem:true})">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
             <span data-i18n="settings_tab_users">Users</span>
+          </button>
+          <button type="button" class="side-menu-item" data-settings-section="guidance" onclick="switchSettingsSection('guidance',{fromSidebarItem:true})">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+            <span data-i18n="guidance_sidebar_entry">引导中心</span>
           </button>
           <button type="button" class="side-menu-item" data-settings-section="providers" onclick="switchSettingsSection('providers',{fromSidebarItem:true})">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
@@ -1684,6 +1695,7 @@
             <div id="settingsPreferencesAutosaveStatus" class="settings-autosave-status" aria-live="polite"></div>
           </div>
           <div class="settings-pane" id="settingsPaneUsers"></div>
+          <div class="settings-pane" id="settingsPaneGuidance"></div>
           <div class="settings-pane" id="settingsPaneProviders">
             <div class="settings-section-head">
               <div>
@@ -2026,6 +2038,7 @@
 <script src="static/assistant_turn_anchors.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/ui.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/workspace.js?v=__WEBUI_VERSION__" defer></script>
+<script src="static/workspace_empty.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/terminal.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/sessions.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/session_sharing.js?v=__WEBUI_VERSION__" defer></script>
@@ -2036,6 +2049,8 @@
 <script src="static/obsidian_notes.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/panels.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/users_panel.js?v=__WEBUI_VERSION__" defer></script>
+<script src="static/change_password_dialog.js?v=__WEBUI_VERSION__" defer></script>
+<script src="static/guidance_panel.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/onboarding.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/vendor/cytoscape.min.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/graph_view_graph.js?v=__WEBUI_VERSION__" defer></script>
@@ -2045,6 +2060,7 @@
 <script src="static/graph_dict.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/graph_main.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/boot.js?v=__WEBUI_VERSION__" defer></script>
+<script src="static/guidance.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/outline.js?v=__WEBUI_VERSION__" defer></script>
 
 <!-- Kanban: create/rename board modal — used for both flows. -->
@@ -2214,6 +2230,58 @@
     <p id="licenseError" class="license-error" style="display:none;"></p>
   </div>
 </div>
+
+<!-- 2.1 实施助手引导页模板 -->
+<template id="tpl-guidance-2-1">
+  <div class="guidance-overlay-21" id="guidanceOverlay21">
+    <div class="guidance-page-21" role="dialog" aria-labelledby="gp21-title">
+      <header class="gp21-header">
+        <h1 id="gp21-title">📋 实施助手</h1>
+        <div class="gp21-progress-bar">
+          <div class="gp21-progress-fill" id="gp21ProgressFill" style="width:0%"></div>
+        </div>
+        <span class="gp21-progress-label" id="gp21ProgressLabel">0/12</span>
+        <span class="gp21-current-user" id="gp21CurrentUser"></span>
+        <div class="gp21-actions">
+          <button class="gp21-btn" id="gp21ImportBtn" title="快速上传 CSV">📤 上传 CSV</button>
+          <button class="gp21-btn" id="gp21ExportBtn">导出报告</button>
+          <button class="gp21-btn" id="gp21ResetBtn">重置进度</button>
+          <button class="gp21-btn" id="gp21CloseBtn">关闭</button>
+        </div>
+        <input type="file" id="gp21ImportFile" accept=".csv" style="display:none">
+      </header>
+      <div class="gp21-body">
+        <aside class="gp21-sidebar" id="gp21Sidebar"></aside>
+        <main class="gp21-main">
+          <div class="gp21-tasks" id="gp21Tasks"></div>
+        </main>
+      </div>
+    </div>
+  </div>
+</template>
+
+<template id="tpl-guidance-2-1-errors">
+  <div class="guidance-overlay-21" id="guidanceErrors21">
+    <div class="guidance-page-21" style="max-width:720px">
+      <header class="gp21-header">
+        <h1>导入错误</h1>
+        <button class="gp21-btn" id="gp21ErrorsClose">关闭</button>
+      </header>
+      <div class="gp21-tasks">
+        <p id="gp21ErrorsSummary"></p>
+        <div style="max-height:400px;overflow:auto">
+          <table id="gp21ErrorsTable" style="width:100%;font-size:13px">
+            <thead><tr><th>行号</th><th>字段</th><th>原因</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <footer class="gp21-footer">
+        <button class="gp21-btn gp21-btn-primary" id="gp21ErrorsDownload">下载错误报告</button>
+      </footer>
+    </div>
+  </div>
+</template>
 
 </body>
 </html>
