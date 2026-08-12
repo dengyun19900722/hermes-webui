@@ -1,0 +1,34 @@
+# Dockerfile.code
+# 代码镜像（频繁更新）
+# 基础镜像：hermes-webui:base
+# 镜像名：hermes-webui:code
+FROM hermes-webui:base
+
+LABEL maintainer="nesquena"
+LABEL description="Hermes WebUI code image"
+LABEL image.type="code"
+
+WORKDIR /apptoo
+
+# — 代码复制 —
+COPY --chown=root:root . /apptoo
+
+ARG HERMES_VERSION=unknown
+RUN echo "__version__ = '${HERMES_VERSION}'" > /apptoo/api/_version.py
+
+ENV HERMES_WEBUI_HOST=0.0.0.0
+ENV HERMES_WEBUI_PORT=8787
+
+EXPOSE 8787
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+CMD curl -f http://localhost:8787/health || exit 1
+
+COPY docker_init.bash /hermeswebui_init.bash
+RUN chmod 555 /hermeswebui_init.bash
+
+# 离线whl包安装（当前注释，按需开启）
+#COPY hermes-pkgs/*.whl /tmp/hermes-pkgs/
+#RUN /app/venv/bin/pip install --no-deps /tmp/hermes-pkgs/*.whl
+
+CMD ["/hermeswebui_init.bash"]

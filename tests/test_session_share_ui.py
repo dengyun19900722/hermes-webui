@@ -150,6 +150,12 @@ def test_settings_user_panel_localization_and_license_fallback():
     assert "'/api/license/status'" in src
     assert "'/api/admin/license/status'" in src
     assert "findLicenseValueNode('状态')" not in src
+    assert "document.getElementById('mainSettings')" in src
+    assert "document.getElementById('settingsPaneUsers')" in src
+    assert "document.getElementById('adminLicenseStatus')" not in src
+    assert "['状态','adminLicenseStatus']" in src
+    assert "observer.observe(settingsRoot" in src
+    assert "observer.observe(document.documentElement" not in src
 
 
 def test_license_activation_page_refetches_machine_info_when_na():

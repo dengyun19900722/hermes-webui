@@ -8371,6 +8371,17 @@ function _installSettingsLocalizationAndLicenseFallback(){
     ['username','用户名'],
     ['password (>=8 chars)','密码（至少 8 位）'],
   ]);
+  const settingsRoot=document.getElementById('mainSettings');
+  const usersPane=document.getElementById('settingsPaneUsers');
+  const systemPane=document.getElementById('settingsPaneSystem');
+  const licenseValueIds=new Map([
+    ['状态','adminLicenseStatus'],
+    ['平台 ID','adminPlatformId'],
+    ['MAC 地址','adminMacAddress'],
+    ['过期时间','adminExpiresAt'],
+    ['剩余天数','adminDaysRemaining'],
+    ['导入时间','adminImportedAt'],
+  ]);
   const normalizeLicensePayload = (payload)=>{
     const data = payload && typeof payload === 'object'
       ? (payload.license || payload.status || payload.data || payload)
@@ -8400,24 +8411,17 @@ function _installSettingsLocalizationAndLicenseFallback(){
   };
   const findLicenseValueNode = (labelText)=>{
     const wanted = String(labelText||'').replace(/[:：]\s*$/,'');
-    const all = Array.from(document.querySelectorAll('div,span,dt,td,th,label,p'));
-    for(const el of all){
-      const text = String(el.textContent||'').trim().replace(/[:：]\s*$/,'');
-      if(text !== wanted) continue;
-      const parent = el.parentElement;
-      if(!parent) continue;
-      const candidates = Array.from(parent.children).filter(child=>child!==el);
-      const value = candidates.find(child=>String(child.textContent||'').trim()==='-' || !String(child.textContent||'').trim());
-      if(value) return value;
-      if(el.nextElementSibling) return el.nextElementSibling;
-    }
-    return null;
+    const id=licenseValueIds.get(wanted);
+    if(!id) return null;
+    const node=document.getElementById(id);
+    const panel=document.getElementById('licenseAdminPanel');
+    return node&&panel&&panel.contains(node)?node:null;
   };
   let licenseFetchInFlight = false;
   const hydrateLicensePanel = async()=>{
     if(licenseFetchInFlight) return;
-    const bodyText = String(document.body&&document.body.textContent||'');
-    if(bodyText.indexOf('License 管理')===-1 && bodyText.indexOf('License')===-1) return;
+    if(!systemPane||!systemPane.classList.contains('active')) return;
+    if(!document.getElementById('licenseAdminPanel')) return;
     const hasEmptyLicenseRows = ['状态','平台 ID','MAC 地址','过期时间','剩余天数','导入时间'].some(label=>{
       const node = findLicenseValueNode(label);
       return node && String(node.textContent||'').trim()==='-';
@@ -8449,11 +8453,12 @@ function _installSettingsLocalizationAndLicenseFallback(){
   };
   const localizeSettings = ()=>{
     try{
-      document.querySelectorAll('input,textarea').forEach(el=>{
+      if(!usersPane) return;
+      usersPane.querySelectorAll('input,textarea').forEach(el=>{
         const ph = el.getAttribute('placeholder');
         if(placeholderMap.has(ph)) el.setAttribute('placeholder', placeholderMap.get(ph));
       });
-      document.querySelectorAll('button,span,div,h1,h2,h3,h4,th,td,label,option').forEach(el=>{
+      usersPane.querySelectorAll('button,span,div,h1,h2,h3,h4,th,td,label,option').forEach(el=>{
         if(el.children&&el.children.length) return;
         const text = String(el.textContent||'').trim();
         if(textMap.has(text)) el.textContent = textMap.get(text);
@@ -8462,8 +8467,17 @@ function _installSettingsLocalizationAndLicenseFallback(){
     }catch(_){}
   };
   localizeSettings();
-  const observer = new MutationObserver(()=>localizeSettings());
-  observer.observe(document.documentElement,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['placeholder']});
+  if(!settingsRoot) return;
+  let localizationTimer=0;
+  const scheduleLocalization=()=>{
+    if(localizationTimer) return;
+    localizationTimer=setTimeout(()=>{
+      localizationTimer=0;
+      localizeSettings();
+    },50);
+  };
+  const observer = new MutationObserver(scheduleLocalization);
+  observer.observe(settingsRoot,{subtree:true,childList:true,attributes:true,attributeFilter:['placeholder','class']});
 }
 _installSettingsLocalizationAndLicenseFallback();
 
