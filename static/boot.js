@@ -2805,6 +2805,13 @@ function _setTitlebarAccountName(name){
 }
 
 const AUTH_SCOPE_STORAGE_KEY='hermes-webui-auth-user-id';
+const AUTH_ROLE_STORAGE_KEY='hermes-webui-auth-role';
+const AUTH_SCOPE_SNAPSHOT_TTL_MS=1500;
+let _authIdentityStatusPromise=null;
+let _authIdentityStatusPromiseGeneration=0;
+let _authIdentityStatusSnapshot=null;
+let _authIdentityStatusSnapshotAt=0;
+let _authIdentityStatusGeneration=0;
 
 function _authIdentityFromStatus(status){
   const user=status&&status.user;
@@ -2839,21 +2846,55 @@ function _applyAuthIdentityScope(status,{clearOnChange=true}={}){
   try{
     if(identity) localStorage.setItem(AUTH_SCOPE_STORAGE_KEY,identity);
     else localStorage.removeItem(AUTH_SCOPE_STORAGE_KEY);
+    const role=status&&status.user&&status.user.role?String(status.user.role):'';
+    if(role) localStorage.setItem(AUTH_ROLE_STORAGE_KEY,role);
+    else localStorage.removeItem(AUTH_ROLE_STORAGE_KEY);
   }catch(_){}
   return identity;
 }
 
 async function syncAuthIdentityScope(options={}){
-  const status=await api('/api/auth/status',{redirect401:false});
-  _applyAuthIdentityScope(status,options);
-  return status;
+  const force=options&&options.force===true;
+  const now=Date.now();
+  let statusPromise=force?null:_authIdentityStatusPromise;
+  let statusGeneration=force?0:_authIdentityStatusPromiseGeneration;
+  if(!statusPromise&&!force&&_authIdentityStatusSnapshot&&(now-_authIdentityStatusSnapshotAt)<AUTH_SCOPE_SNAPSHOT_TTL_MS){
+    statusPromise=Promise.resolve(_authIdentityStatusSnapshot);
+    statusGeneration=_authIdentityStatusGeneration;
+  }
+  if(!statusPromise){
+    statusGeneration=++_authIdentityStatusGeneration;
+    const requestGeneration=statusGeneration;
+    const requestPromise=Promise.resolve(api('/api/auth/status',{redirect401:false})).then(status=>{
+      if(requestGeneration===_authIdentityStatusGeneration){
+        _authIdentityStatusSnapshot=status;
+        _authIdentityStatusSnapshotAt=Date.now();
+      }
+      return status;
+    });
+    _authIdentityStatusPromise=requestPromise;
+    _authIdentityStatusPromiseGeneration=requestGeneration;
+    statusPromise=requestPromise;
+  }
+  try{
+    const status=await statusPromise;
+    if(statusGeneration===_authIdentityStatusGeneration){
+      _applyAuthIdentityScope(status,options);
+    }
+    return status;
+  }finally{
+    if(_authIdentityStatusPromise===statusPromise){
+      _authIdentityStatusPromise=null;
+      _authIdentityStatusPromiseGeneration=0;
+    }
+  }
 }
 
-async function loadTitlebarAccountMenu(){
+async function loadTitlebarAccountMenu(statusPromise=null){
   _syncTitlebarAppearanceControls();
   const signOutBtn=$('titlebarSignOutBtn');
   try{
-    const status=await syncAuthIdentityScope();
+    const status=statusPromise ? await statusPromise : await syncAuthIdentityScope();
     const user=status&&status.user;
     const username=user&&user.username?user.username:(status&&status.logged_in?'账号':'本地用户');
     _setTitlebarAccountName(username);
@@ -2927,6 +2968,7 @@ async function titlebarSignOut(){
   try{
     await api('/api/auth/logout',{method:'POST',body:'{}'});
     try{localStorage.removeItem(AUTH_SCOPE_STORAGE_KEY);}catch(_){}
+    try{localStorage.removeItem(AUTH_ROLE_STORAGE_KEY);}catch(_){}
     try{localStorage.removeItem('hermes-webui-session');}catch(_){}
     try{if(typeof resetSessionStateForAuthChange==='function')resetSessionStateForAuthChange('');}catch(_){}
     try{if(typeof _resetShareCurrentUser==='function')_resetShareCurrentUser();}catch(_){}
@@ -2936,7 +2978,7 @@ async function titlebarSignOut(){
   }
 }
 
-function initTitlebarAccountMenu(){
+function initTitlebarAccountMenu(statusPromise=null){
   const themeSel=$('titlebarThemeSelect');
   if(themeSel) themeSel.addEventListener('change',_handleTitlebarThemeChange);
   const fontSel=$('titlebarFontSizeSelect');
@@ -2951,7 +2993,7 @@ function initTitlebarAccountMenu(){
   document.addEventListener('keydown',(event)=>{
     if(event.key==='Escape') _closeTitlebarAccountMenu();
   });
-  loadTitlebarAccountMenu();
+  loadTitlebarAccountMenu(statusPromise);
 }
 window.loadTitlebarAccountMenu=loadTitlebarAccountMenu;
 window.toggleTitlebarAccountMenu=toggleTitlebarAccountMenu;
@@ -3034,8 +3076,36 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
   // Load send key preference
   let _bootSettings={};
   const prefillIntent=(typeof _composerPrefillIntentFromLocation==='function')?_composerPrefillIntentFromLocation():null;
+  // Identity is the only prerequisite for applying account-scoped sidebar data.
+  // Start it before settings/profile initialization so the first WebUI session
+  // list can load while the remaining boot chrome is being configured.
+  const _bootAuthStatusReady=(typeof syncAuthIdentityScope==='function')
+    ? syncAuthIdentityScope({clearOnChange:true})
+    : Promise.resolve(null);
+  const _canStartSessionListEarly=(typeof window._canStartInitialSessionListBeforeSettings==='function')
+    && window._canStartInitialSessionListBeforeSettings();
+  let _bootAuthRoleHint='';
+  try{_bootAuthRoleHint=String(localStorage.getItem(AUTH_ROLE_STORAGE_KEY)||'');}catch(_){}
+  const _bootSessionListReady=_canStartSessionListEarly
+    ? renderSessionList({
+        authScopeAlreadySynced:true,
+        authScopeReady:_bootAuthStatusReady,
+        authRoleHint:_bootAuthRoleHint,
+        refetchWhenAuthScopeChanges:true,
+      })
+    : null;
+  // A later boot stage awaits this promise and reports the failure. Attach a
+  // handler now as well so an early auth rejection is never reported as an
+  // unhandled promise while settings initialization is still synchronous.
+  if(_bootSessionListReady) void _bootSessionListReady.catch(()=>{});
   try{
     const s=await api('/api/settings');
+    // Both requests start together, but their completion tasks can be scheduled
+    // in either order. Let the already-registered auth continuation dispatch
+    // /api/sessions before settings applies locale/theme/composer DOM updates;
+    // on large branded pages that synchronous work can otherwise delay the
+    // first sidebar request by several seconds after auth already completed.
+    try{ await _bootAuthStatusReady; }catch(_){}
     _bootSettings=s;
     if(typeof checkWebUIVersionSkew==='function'){try{checkWebUIVersionSkew(s);}catch(_){}}
     window._sendKey=s.send_key||'enter';
@@ -3251,7 +3321,7 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
     _applyComposerFooterVisibilitySettings();
     if(typeof _applyTtsEnabled==='function') _applyTtsEnabled(localStorage.getItem('hermes-tts-enabled')==='true');
   }
-  if(typeof initTitlebarAccountMenu==='function') initTitlebarAccountMenu();
+  if(typeof initTitlebarAccountMenu==='function') initTitlebarAccountMenu(_bootAuthStatusReady);
   // Non-blocking update check (fire-and-forget, once per tab session)
   // ?test_updates=1 in URL forces banner display for testing (bypasses sessionStorage guards)
   const _testUpdates=new URLSearchParams(location.search).get('test_updates')==='1';
@@ -3434,12 +3504,15 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
   // metadata settles in parallel.
   const _workspaceListReady=loadWorkspaceList();
   const _onboardingReady=_bootSettings.onboarding_completed?Promise.resolve(false):loadOnboardingWizard();
-  try{
-    if(typeof syncAuthIdentityScope==='function') await syncAuthIdentityScope();
-  }catch(_){}
+  try{ await _bootAuthStatusReady; }catch(_){}
   // Render the session list before restoring the saved conversation so a stale
   // saved-session/client-side boot error cannot leave the sidebar empty forever.
-  try{ await renderSessionList(); }catch(_rse){ try{console.warn('[boot] renderSessionList failed', _rse);}catch(_){} }
+  try{
+    if(_bootSessionListReady) await _bootSessionListReady;
+    else await renderSessionList({authScopeAlreadySynced:true});
+  }catch(_rse){
+    try{console.warn('[boot] renderSessionList failed', _rse);}catch(_){}
+  }
   try{ await _workspaceListReady; }catch(_wle){ try{console.warn('[boot] workspace list load failed', _wle);}catch(_){} }
   // RBAC: if the user has no accessible workspaces and they're landing on a
   // chat-style route, show the dedicated "no workspace" empty state instead
@@ -3457,7 +3530,7 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
     S._bootReady=true;
     try{syncTopbar();}catch(_){}
     try{syncWorkspacePanelState();}catch(_){}
-    try{if(typeof renderSessionList==='function') void renderSessionList();}catch(_){}
+    try{if(typeof renderSessionListFromCache==='function') renderSessionListFromCache();}catch(_){}
     try{await _finalizeComposerPrefillOnBoot(prefillIntent);}catch(_){}
     try{if(typeof startGatewaySSE==='function') startGatewaySSE();}catch(_){}
     return;
@@ -3507,12 +3580,9 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
         try{Promise.resolve(_startBootModelDropdown()).catch(()=>{});}catch(_){}
       }
       S._bootReady=true;
-      syncTopbar();syncWorkspacePanelState();await renderSessionList();await _finalizeComposerPrefillOnBoot(prefillIntent);if(typeof startGatewaySSE==='function')startGatewaySSE();return;
+      syncTopbar();syncWorkspacePanelState();if(typeof renderSessionListFromCache==='function')renderSessionListFromCache();await _finalizeComposerPrefillOnBoot(prefillIntent);if(typeof startGatewaySSE==='function')startGatewaySSE();return;
     }catch(e){console.warn('[pwa] new-chat launch action failed', e);}
   }
-  try{
-    if(typeof syncAuthIdentityScope==='function') await syncAuthIdentityScope();
-  }catch(_){}
   const savedLocal=localStorage.getItem('hermes-webui-session');
   const saved=urlSession||savedLocal;
   if(saved){
@@ -3528,7 +3598,7 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
         S._bootReady=true;
         syncTopbar();syncWorkspacePanelState();
         $('emptyState').style.display='';
-        await renderSessionList();await _finalizeComposerPrefillOnBoot(prefillIntent);if(typeof startGatewaySSE==='function')startGatewaySSE();
+        if(typeof renderSessionListFromCache==='function')renderSessionListFromCache();await _finalizeComposerPrefillOnBoot(prefillIntent);if(typeof startGatewaySSE==='function')startGatewaySSE();
         return;
       }
       if(_rootPrefillNeedsFreshComposer(urlSession, savedLocal, prefillIntent)){
@@ -3540,7 +3610,7 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
         await _maybeBindFreshDefaultWorkspaceSession(prefillIntent);
         syncTopbar();syncWorkspacePanelState();
         $('emptyState').style.display='';
-        await renderSessionList();await _finalizeComposerPrefillOnBoot(prefillIntent);if(typeof startGatewaySSE==='function')startGatewaySSE();
+        if(typeof renderSessionListFromCache==='function')renderSessionListFromCache();await _finalizeComposerPrefillOnBoot(prefillIntent);if(typeof startGatewaySSE==='function')startGatewaySSE();
         return;
       }
       await loadSession(saved, {preserveActiveInput:true});
@@ -3578,7 +3648,7 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
         await _maybeBindFreshDefaultWorkspaceSession(prefillIntent);
         syncTopbar();syncWorkspacePanelState();
         $('emptyState').style.display='';
-        await renderSessionList();await _finalizeComposerPrefillOnBoot(prefillIntent);if(typeof startGatewaySSE==='function')startGatewaySSE();
+        if(typeof renderSessionListFromCache==='function')renderSessionListFromCache();await _finalizeComposerPrefillOnBoot(prefillIntent);if(typeof startGatewaySSE==='function')startGatewaySSE();
         return;
       }
       // Restore the panel from localStorage when the session has a workspace.
@@ -3590,7 +3660,7 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
         _workspacePanelMode='browse';
       }
       S._bootReady=true;
-      syncTopbar();syncWorkspacePanelState();await renderSessionList();if(typeof startGatewaySSE==='function')startGatewaySSE();await checkInflightOnBoot(saved);await _finalizeComposerPrefillOnBoot(prefillIntent);return;}
+      syncTopbar();syncWorkspacePanelState();if(typeof renderSessionListFromCache==='function')renderSessionListFromCache();if(typeof startGatewaySSE==='function')startGatewaySSE();await checkInflightOnBoot(saved);await _finalizeComposerPrefillOnBoot(prefillIntent);return;}
     catch(e){localStorage.removeItem('hermes-webui-session');}
   }
   // no saved session - show empty state, wait for user to hit +
@@ -3604,7 +3674,7 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
   await _maybeBindFreshDefaultWorkspaceSession(prefillIntent);
   syncWorkspacePanelState();
   $('emptyState').style.display='';
-  await renderSessionList();await _finalizeComposerPrefillOnBoot(prefillIntent);
+  if(typeof renderSessionListFromCache==='function')renderSessionListFromCache();await _finalizeComposerPrefillOnBoot(prefillIntent);
   // Start real-time gateway session sync if setting is enabled
   if(typeof startGatewaySSE==='function') startGatewaySSE();
 })().catch(e=>{
@@ -3635,7 +3705,7 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
 window.addEventListener('pageshow', async (event) => {
   if (!event.persisted) return;  // fresh loads are handled by the IIFE above
   try{
-    if(typeof syncAuthIdentityScope==='function') await syncAuthIdentityScope();
+    if(typeof syncAuthIdentityScope==='function') await syncAuthIdentityScope({force:true});
   }catch(_){}
   try{
     if(typeof loadTitlebarAccountMenu==='function') await loadTitlebarAccountMenu();

@@ -21,7 +21,9 @@
     if (_currentUserPromise) return _currentUserPromise;
     _currentUserPromise = (async () => {
       try {
-        const status = await api('/api/auth/status', { redirect401: false, timeoutMs: 5000, timeoutToast: false });
+        const status = typeof syncAuthIdentityScope === 'function'
+          ? await syncAuthIdentityScope({ clearOnChange: true })
+          : await api('/api/auth/status', { redirect401: false, timeoutMs: 5000, timeoutToast: false });
         _currentUser = (status && status.user) || null;
       } catch (_) {
         _currentUser = null;
@@ -620,11 +622,22 @@
     _captureDefaultPlaceholder();
     _wrapLoadSession();
     _wrapRenderSessionList();
+  }
+
+  let _initialSharedSessionsStarted = false;
+  function _startInitialSharedSessions() {
+    if (_initialSharedSessionsStarted) return;
+    _initialSharedSessionsStarted = true;
     loadSharedSessions(false).then(() => {
       _renderSharedSection();
     }).catch(() => {});
     _subscribeSessionEvents();
   }
+
+  // Shared rows are secondary sidebar content. Keep their auth request and
+  // independent EventSource out of the six-connection initial-load budget.
+  window.addEventListener('hermes:session-list-ready', _startInitialSharedSessions, { once: true });
+  setTimeout(_startInitialSharedSessions, 8000);
 
   // Public API
   window.openShareDialog = openShareDialog;

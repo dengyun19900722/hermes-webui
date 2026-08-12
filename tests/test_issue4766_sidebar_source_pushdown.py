@@ -467,6 +467,7 @@ global._serverTz = null;
 global._optimisticallyRemovedSessionIds = new Set();
 global._allSessions = [];
 global._allSessionsScope = null;
+global._sidebarReferenceSessions = [];
 global._allProjects = [];
 global._sessionListLoadError = null;
 global._sessionListHasLoadedOnce = false;
@@ -481,6 +482,12 @@ global._sessionSourceFilter = 'webui';
 global._renamingSid = null;
 global._sessionActionMenu = null;
 global.S = {{ activeProfile: 'default' }};
+global.$ = () => ({{
+  removeAttribute: () => {{}},
+  dataset: {{}},
+}});
+global._rbacScopeFromSessionPayload = () => ({{ userId: null, enabled: false }});
+global._sessionRowVisibleForRbacScope = () => true;
 global._reconcileActiveSessionIdleStateFromList = rows => rows;
 global._mergeOptimisticFirstTurnSessions = rows => rows;
 global._sessionListRenderSignature = () => '';
@@ -681,7 +688,7 @@ global._contentSearchResults = ['stale'];
 global._activeProject = null;
 global.NO_PROJECT_FILTER = '__none__';
 global.S = {{ activeProfile: 'default' }};
-global.$ = () => ({{ value: '' }});
+global.$ = () => ({{ value: '', removeAttribute: () => {{}}, dataset: {{}} }});
 global._isSessionListUserInteracting = () => false;
 global._schedulePendingSessionListApply = () => {{}};
 global._showSessionListLoadError = error => {{
@@ -753,6 +760,7 @@ async function runCase(requestedSource, cachedSource) {{
     assert body["mismatch"]["sessions"] == []
     assert body["mismatch"]["scope"] == {
         "profile": "default",
+        "rbacUserId": "",
         "allProfiles": False,
         "sidebarSource": "cli",
         "excludeHidden": True,

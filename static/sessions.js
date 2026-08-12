@@ -2121,6 +2121,16 @@ function _sessionListQueryString() {
   return `?${qs.toString()}`;
 }
 
+function _canStartInitialSessionListBeforeSettings() {
+  // The WebUI source is independent of the server-side show_cli_sessions
+  // preference. A restored CLI-only tab must wait for settings so its first
+  // response cannot be painted with the wrong source contract.
+  return _sessionSourceFilter === 'webui';
+}
+if(typeof window!=='undefined'){
+  window._canStartInitialSessionListBeforeSettings=_canStartInitialSessionListBeforeSettings;
+}
+
 function _sessionSourceTabCount(filter, renderedWebuiSessionCount, renderedCliSessionCount) {
   const serverCount = filter === 'cli' ? _serverCliSessionCount : _serverWebuiSessionCount;
   if (Number.isFinite(serverCount)) return serverCount;
@@ -4655,6 +4665,7 @@ function _sessionListRenderSignature(){
   }catch(_){ return null; }
 }
 function _applySessionListPayload(sessData, projData){
+  const firstSuccessfulLoad=!_sessionListHasLoadedOnce;
   // Server's other_profile_count tells us how many sessions exist outside the
   // active profile so the "Show N from other profiles" toggle can render
   // without a second round-trip. Stashed on the module for renderSessionListFromCache.
@@ -4726,6 +4737,9 @@ function _applySessionListPayload(sessData, projData){
   const _hadSessionListLoadError = !!_sessionListLoadError;
   _sessionListLoadError = null;
   _sessionListHasLoadedOnce = true;
+  if(firstSuccessfulLoad&&typeof window!=='undefined'&&typeof window.dispatchEvent==='function'){
+    try{window.dispatchEvent(new CustomEvent('hermes:session-list-ready'));}catch(_){ }
+  }
   _markPollingCompletionUnreadTransitions(_allSessions);
   const isStreaming = _allSessions.some(s => _isSessionEffectivelyStreaming(s));
   if (isStreaming) {
@@ -4869,9 +4883,12 @@ function _renderSessionListLoadErrorNote(){
 
 async function _runRenderSessionListRefresh(opts, _gen){
   const deferWhileInteracting=Boolean(opts&&opts.deferWhileInteracting);
+  const authScopeReady=opts&&opts.authScopeReady;
   if(!deferWhileInteracting) _pendingSessionListPayload=null;
   try{
-    await _syncAuthScopeBeforeSessionListRefresh();
+    if(!authScopeReady&&!(opts&&opts.authScopeAlreadySynced===true)&&typeof _syncAuthScopeBeforeSessionListRefresh==='function'){
+      await _syncAuthScopeBeforeSessionListRefresh();
+    }
     if (_gen !== _renderSessionListGen) {
       if(!_renderSessionListQueuedRequest){
         _renderSessionListQueuedRequest={opts:opts||{},gen:++_renderSessionListGen};
@@ -4883,7 +4900,9 @@ async function _runRenderSessionListRefresh(opts, _gen){
     }
     if(!($('sessionSearch').value||'').trim()) _contentSearchResults = [];
     let sessionListQS = _sessionListQueryString();
-    const _isAdminInitialSessionList = String((typeof window!=='undefined'&&window._currentAuthRole) || '').toLowerCase() === 'admin'
+    const _isAdminInitialSessionList = String(
+      (typeof window!=='undefined'&&window._currentAuthRole) || (opts&&opts.authRoleHint) || ''
+    ).toLowerCase() === 'admin'
       && !_sessionListHasLoadedOnce;
     if(_isAdminInitialSessionList && sessionListQS.indexOf('limit=')===-1){
       sessionListQS += (sessionListQS.indexOf('?')===-1 ? '?' : '&') + 'limit=120';
@@ -4903,9 +4922,20 @@ async function _runRenderSessionListRefresh(opts, _gen){
       sessionRequestOpts.timeoutMs=_SESSION_LIST_BOOT_TIMEOUT_MS;
       sessionRequestOpts.retryTimeouts=true;
     }
-    const {sessData, projData}=await _loadSidebarSessionListPayload(sessionListQS, sessionRequestOpts);
+    const payloadReady=_loadSidebarSessionListPayload(sessionListQS, sessionRequestOpts);
+    const [{sessData, projData}]=authScopeReady
+      ? await Promise.all([payloadReady, Promise.resolve(authScopeReady).catch(()=>null)])
+      : [await payloadReady];
     // Discard stale response — a newer renderSessionList() call superseded us.
-    if (_gen !== _renderSessionListGen) return;
+    if (_gen !== _renderSessionListGen) {
+      if(opts&&opts.refetchWhenAuthScopeChanges&&!_renderSessionListQueuedRequest){
+        _renderSessionListQueuedRequest={
+          opts:{...opts,authScopeReady:null,authRoleHint:'',refetchWhenAuthScopeChanges:false},
+          gen:++_renderSessionListGen,
+        };
+      }
+      return;
+    }
     // #4671: while a profile switch is mid-flight, drop ANY payload — even one whose
     // generation still matches — because a render that STARTED after the skeleton showed
     // but before the switch response set the new-profile cookie fetched the OLD profile's

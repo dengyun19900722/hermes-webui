@@ -68,6 +68,8 @@ def test_session_sidebar_cache_is_scoped_by_authenticated_user():
     assert "if(!_sessionRowVisibleForRbacScope(local)) continue" in sessions_src
     assert "_syncAuthScopeBeforeSessionListRefresh" in sessions_src
     assert "await _syncAuthScopeBeforeSessionListRefresh()" in sessions_src
+    assert "opts&&opts.authScopeAlreadySynced===true" in sessions_src
+    assert "new CustomEvent('hermes:session-list-ready')" in sessions_src
     assert "hermes-webui-auth-user-id" in sessions_src
     assert "_cachedRbacUserId !== _currentRbacUserId" in sessions_src
     assert "_invalidateSessionListRenders();" in sessions_src
@@ -87,8 +89,34 @@ def test_session_sidebar_cache_is_scoped_by_authenticated_user():
     assert "await renderSessionList({deferWhileInteracting:false})" in boot_src
     assert "refreshSharedSessionsSection(true)" in boot_src
     assert "await syncAuthIdentityScope()" in boot_src
+    assert "AUTH_SCOPE_SNAPSHOT_TTL_MS=1500" in boot_src
+    assert "_authIdentityStatusPromise" in boot_src
+    assert "_authIdentityStatusGeneration" in boot_src
+    assert "statusGeneration===_authIdentityStatusGeneration" in boot_src
+    assert "renderSessionList({authScopeAlreadySynced:true})" in boot_src
+    assert "_bootAuthStatusReady" in boot_src
+    assert "_bootSessionListReady" in boot_src
+    assert "authScopeReady:_bootAuthStatusReady" in boot_src
+    assert "refetchWhenAuthScopeChanges:true" in boot_src
+    assert "Promise.all([payloadReady, Promise.resolve(authScopeReady).catch(()=>null)])" in sessions_src
+    assert "_canStartInitialSessionListBeforeSettings" in sessions_src
+    assert "syncAuthIdentityScope({force:true})" in boot_src
+    settings_ready = boot_src.index("const s=await api('/api/settings');")
+    auth_dispatch = boot_src.index("await _bootAuthStatusReady;", settings_ready)
+    settings_apply = boot_src.index("_bootSettings=s;", settings_ready)
+    assert settings_ready < auth_dispatch < settings_apply
     assert "hermes-webui-auth-user-id" in login_src
+    assert "hermes-webui-auth-role" in login_src
     assert "localStorage.removeItem('hermes-webui-session')" in login_src
+
+
+def test_shared_sessions_wait_until_primary_sidebar_is_ready():
+    src = Path("static/session_sharing.js").read_text(encoding="utf-8")
+    assert "hermes:session-list-ready" in src
+    assert "_startInitialSharedSessions" in src
+    init = src[src.index("function init()") : src.index("// Public API")]
+    assert "loadSharedSessions(false)" not in init.split("let _initialSharedSessionsStarted", 1)[0]
+    assert "_subscribeSessionEvents();" not in init.split("let _initialSharedSessionsStarted", 1)[0]
 
 
 def test_session_sharing_js_has_escape_html_helper():

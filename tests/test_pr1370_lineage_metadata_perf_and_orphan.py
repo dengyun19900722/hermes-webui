@@ -111,6 +111,101 @@ def test_does_not_full_scan_sessions_table(tmp_path, monkeypatch):
     )
 
 
+def test_reuses_preloaded_message_aggregates(tmp_path, monkeypatch):
+    """The sidebar override pass must satisfy lineage message stats for known ids."""
+    from api import agent_sessions
+
+    db = tmp_path / "state.db"
+    conn = _make_db(db)
+    conn.execute("CREATE TABLE messages (session_id TEXT, timestamp REAL)")
+    _insert(conn, "wanted")
+    conn.execute("INSERT INTO messages (session_id, timestamp) VALUES (?, ?)", ("wanted", 123.0))
+    conn.commit()
+    conn.close()
+
+    message_queries = []
+    real_connect = sqlite3.connect
+
+    class _TrackingConn:
+        def __init__(self, *args, **kwargs):
+            self._real = real_connect(*args, **kwargs)
+
+        def cursor(self):
+            return _TrackingCursor(self._real.cursor())
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return self._real.__exit__(*args)
+
+        @property
+        def row_factory(self):
+            return self._real.row_factory
+
+        @row_factory.setter
+        def row_factory(self, value):
+            self._real.row_factory = value
+
+    class _TrackingCursor:
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *args):
+            if "FROM messages" in sql:
+                message_queries.append(sql)
+            return self._real.execute(sql, *args)
+
+        def fetchall(self):
+            return self._real.fetchall()
+
+        def fetchone(self):
+            return self._real.fetchone()
+
+    monkeypatch.setattr(sqlite3, "connect", _TrackingConn)
+
+    agent_sessions.read_session_lineage_metadata(
+        db,
+        ["wanted"],
+        message_metadata={
+            "wanted": {
+                "_state_db_actual_message_count": 1,
+                "_state_db_actual_last_message_at": 123.0,
+            }
+        },
+    )
+
+    assert message_queries == []
+
+
+def test_sidebar_lineage_read_can_fail_fast_while_state_db_is_locked(tmp_path):
+    """Sidebar callers may cap lock waits without changing the default API."""
+    from api.agent_sessions import read_session_lineage_metadata
+
+    db = tmp_path / "state.db"
+    conn = _make_db(db)
+    _insert(conn, "root", end_reason="compression")
+    _insert(conn, "tip", parent="root")
+    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.execute("BEGIN EXCLUSIVE")
+
+    started = time.monotonic()
+    result = read_session_lineage_metadata(
+        db,
+        ["tip"],
+        sqlite_timeout_seconds=0.05,
+    )
+    elapsed = time.monotonic() - started
+
+    assert result == {}
+    assert elapsed < 0.5, f"locked sidebar lineage read blocked for {elapsed:.3f}s"
+
+    conn.rollback()
+    conn.close()
+    recovered = read_session_lineage_metadata(db, ["tip"])
+    assert recovered["tip"]["_lineage_root_id"] == "root"
+
+
 def test_orphan_parent_reference_not_exposed_in_metadata(tmp_path):
     """If a session row references a parent that doesn't exist in state.db
     (orphan), the API output must NOT include `parent_session_id` — because

@@ -37,7 +37,7 @@ def test_ensure_cron_project_creates_per_profile(tmp_path, monkeypatch):
     monkeypatch.setattr(models, '_projects_migrated', True)
     monkeypatch.setattr(models, '_CRON_PROJECT_LOCK', threading.Lock())
     profiles._invalidate_root_profile_cache()
-    monkeypatch.setattr(profiles, 'list_profiles_api', lambda: [])
+    monkeypatch.setattr(profiles, '_list_root_profile_names_fast', lambda: {'default'})
 
     monkeypatch.setattr(profiles, '_active_profile', 'haku')
     pid_haku = models.ensure_cron_project()
@@ -65,7 +65,7 @@ def test_ensure_cron_project_idempotent_per_profile(tmp_path, monkeypatch):
     monkeypatch.setattr(models, '_projects_migrated', True)
     monkeypatch.setattr(models, '_CRON_PROJECT_LOCK', threading.Lock())
     profiles._invalidate_root_profile_cache()
-    monkeypatch.setattr(profiles, 'list_profiles_api', lambda: [])
+    monkeypatch.setattr(profiles, '_list_root_profile_names_fast', lambda: {'default'})
     monkeypatch.setattr(profiles, '_active_profile', 'haku')
 
     pid1 = models.ensure_cron_project()
@@ -90,7 +90,7 @@ def test_ensure_cron_project_back_tags_legacy_untagged(tmp_path, monkeypatch):
     monkeypatch.setattr(models, '_projects_migrated', True)  # skip the load_projects auto-migration
     monkeypatch.setattr(models, '_CRON_PROJECT_LOCK', threading.Lock())
     profiles._invalidate_root_profile_cache()
-    monkeypatch.setattr(profiles, 'list_profiles_api', lambda: [])
+    monkeypatch.setattr(profiles, '_list_root_profile_names_fast', lambda: {'default'})
     monkeypatch.setattr(profiles, '_active_profile', 'haku')
 
     returned = models.ensure_cron_project()
@@ -119,9 +119,7 @@ def test_ensure_cron_project_renamed_root_matches_default(tmp_path, monkeypatch)
     monkeypatch.setattr(models, '_projects_migrated', True)
     monkeypatch.setattr(models, '_CRON_PROJECT_LOCK', threading.Lock())
 
-    monkeypatch.setattr(profiles, 'list_profiles_api', lambda: [
-        {'name': 'kinni', 'is_default': True, 'path': str(tmp_path)},
-    ])
+    monkeypatch.setattr(profiles, '_list_root_profile_names_fast', lambda: {'default', 'kinni'})
     profiles._invalidate_root_profile_cache()
     monkeypatch.setattr(profiles, '_active_profile', 'kinni')
 

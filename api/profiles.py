@@ -312,21 +312,83 @@ def _read_active_profile_file() -> str:
 # is the canonical replacement for scattered `if name == 'default':` checks
 # in switch_profile, get_active_hermes_home, _validate_profile_name, etc.
 #
-# Cost note: list_profiles_api() shells out via hermes_cli (non-trivial), so
-# we memoize the lookup. The cache is invalidated whenever profiles are
-# created, deleted, renamed, or cloned — i.e. on every mutation site we
-# control.
+# Cost note: list_profiles_api() includes model, gateway, and skills metadata.
+# It is far too expensive to call from session/project visibility checks, so
+# root identity has its own lightweight cache. The cache is invalidated whenever
+# profiles are created, deleted, renamed, or cloned.
 _root_profile_name_cache: set[str] = {'default'}
 _root_profile_name_cache_lock = threading.Lock()
 _root_profile_name_cache_loaded = False
+
+
+def _root_profile_names_from_rows(rows) -> set[str]:
+    """Extract root aliases from already-built profile rows."""
+    names = {'default'}
+    for row in rows or ():
+        try:
+            if row.get('is_default') and row.get('name'):
+                names.add(str(row['name']))
+        except (AttributeError, TypeError):
+            continue
+    return names
+
+
+def _list_root_profile_names_fast() -> set[str]:
+    """Return root-profile aliases without building full profile rows.
+
+    Reuse an existing profile-list cache when one is available. On a cold
+    process, read only the root profile's small metadata file. In particular,
+    this path must not inspect skills, probe gateway state, or call
+    ``list_profiles_api()``.
+
+    Current Hermes Agent versions use the literal ``default`` root name. Older
+    versions allowed a renamed root and stored that identity in profile.yaml;
+    accept the historical ``name``/``profile_name`` keys for compatibility.
+    A later explicit /api/profiles load also refreshes this cache from its
+    authoritative ``is_default`` row.
+    """
+    names = {'default'}
+
+    cached = globals().get('_LIST_PROFILES_CACHE')
+    if cached:
+        try:
+            names.update(_root_profile_names_from_rows(cached[0]))
+        except (IndexError, TypeError):
+            pass
+
+    try:
+        meta_path = Path(_DEFAULT_HERMES_HOME) / 'profile.yaml'
+        if meta_path.is_file():
+            data = yaml.safe_load(meta_path.read_text(encoding='utf-8')) or {}
+            if isinstance(data, dict):
+                for key in ('name', 'profile_name'):
+                    value = data.get(key)
+                    if isinstance(value, str):
+                        value = value.strip()
+                        if value and _PROFILE_ID_RE.fullmatch(value):
+                            names.add(value)
+    except Exception:
+        logger.debug("Failed to read root-profile identity metadata", exc_info=True)
+
+    return names
+
+
+def _remember_root_profile_names(rows) -> None:
+    """Refresh root identity from an authoritative full profile response."""
+    global _root_profile_name_cache_loaded
+    names = _root_profile_names_from_rows(rows)
+    with _root_profile_name_cache_lock:
+        _root_profile_name_cache.clear()
+        _root_profile_name_cache.update(names)
+        _root_profile_name_cache_loaded = True
 
 
 def _invalidate_root_profile_cache() -> None:
     """Drop the memoized root-profile-name set.
 
     Called whenever profile metadata might have changed: create, clone,
-    delete, rename. The next _is_root_profile() call repopulates from
-    list_profiles_api().
+    delete, rename. The next _is_root_profile() call repopulates through the
+    lightweight identity path.
     """
     global _root_profile_name_cache_loaded
     with _root_profile_name_cache_lock:
@@ -338,9 +400,8 @@ def _invalidate_root_profile_cache() -> None:
 def _is_root_profile(name: str) -> bool:
     """True if *name* resolves to the Hermes Agent root profile (~/.hermes).
 
-    Matches the legacy 'default' alias plus any name where list_profiles_api()
-    reports is_default=True. Memoized; call _invalidate_root_profile_cache()
-    after mutating profile metadata.
+    Matches the legacy 'default' alias plus renamed-root identities. Memoized;
+    call _invalidate_root_profile_cache() after mutating profile metadata.
     """
     global _root_profile_name_cache_loaded
     if not name:
@@ -350,22 +411,17 @@ def _is_root_profile(name: str) -> bool:
     with _root_profile_name_cache_lock:
         if _root_profile_name_cache_loaded:
             return name in _root_profile_name_cache
-    # Cache miss — populate from list_profiles_api(). Done outside the lock to
-    # avoid holding it across a hermes_cli subprocess call.
+    # Cache miss: use the identity-only path. Do this outside the lock so even
+    # a slow filesystem cannot block readers of an already-populated cache.
     try:
-        infos = list_profiles_api()
+        names = _list_root_profile_names_fast()
     except Exception:
-        logger.debug("Failed to list profiles for root-profile lookup", exc_info=True)
+        logger.debug("Failed to resolve root-profile identity", exc_info=True)
         return False
     with _root_profile_name_cache_lock:
         _root_profile_name_cache.clear()
+        _root_profile_name_cache.update(names or {'default'})
         _root_profile_name_cache.add('default')
-        for p in infos:
-            try:
-                if p.get('is_default') and p.get('name'):
-                    _root_profile_name_cache.add(p['name'])
-            except (AttributeError, TypeError):
-                continue
         _root_profile_name_cache_loaded = True
         return name in _root_profile_name_cache
 
@@ -1923,6 +1979,12 @@ def _build_profile_rows_fast() -> list | None:
     return rows
 
 
+def _finalize_profile_rows(rows: list) -> list:
+    """Publish root identity while returning a full profile response."""
+    _remember_root_profile_names(rows)
+    return rows
+
+
 def list_profiles_api() -> list:
     """List all profiles with metadata, serialized for JSON response.
 
@@ -1957,7 +2019,7 @@ def list_profiles_api() -> list:
                     same_home = False
                 if p.name == active and same_home:
                     enabled_count, total_count = _get_profile_skills_stats(p.path)
-                    return [{
+                    return _finalize_profile_rows([{
                         'name': p.name,
                         'path': str(p.path),
                         'is_default': p.is_default,
@@ -1970,12 +2032,12 @@ def list_profiles_api() -> list:
                         'skill_count': enabled_count,
                         'enabled_skills': enabled_count,
                         'total_skills': total_count,
-                    }]
+                    }])
         except (ImportError, OSError, PermissionError):
             pass
         # Fallback: construct profile dict with actual active name and hermes_home path
         enabled_count, total_count = _get_profile_skills_stats(hermes_home)
-        return [{
+        return _finalize_profile_rows([{
             'name': active,
             'path': str(hermes_home),
             'is_default': active == 'default',
@@ -1988,7 +2050,7 @@ def list_profiles_api() -> list:
             'skill_count': enabled_count,
             'enabled_skills': enabled_count,
             'total_skills': total_count,
-        }]
+        }])
 
     # Single-flight the build (#5364): hold the cache lock across the row build
     # so a cold-startup burst of concurrent requests collapses to ONE build while
@@ -2016,7 +2078,7 @@ def list_profiles_api() -> list:
             from hermes_cli.profiles import list_profiles
             infos = list_profiles()
         except ImportError:
-            return [_default_profile_dict()]
+            return _finalize_profile_rows([_default_profile_dict()])
 
         active = get_active_profile_name()
         result = []
@@ -2036,10 +2098,13 @@ def list_profiles_api() -> list:
                 'enabled_skills': enabled_count,
                 'total_skills': total_count,
             })
-        return result
+        return _finalize_profile_rows(result)
 
     active = get_active_profile_name()
-    return [{**p, 'is_active': p['name'] == active} for p in rows]
+    return _finalize_profile_rows([
+        {**p, 'is_active': p['name'] == active}
+        for p in rows
+    ])
 
 
 def _profile_visible_from_meta(profile_path: Path) -> bool:

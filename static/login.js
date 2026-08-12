@@ -68,6 +68,7 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   var AUTH_SCOPE_STORAGE_KEY = 'hermes-webui-auth-user-id';
+  var AUTH_ROLE_STORAGE_KEY = 'hermes-webui-auth-role';
 
   function _authIdentityFromUser(user) {
     if (!user) return '';
@@ -84,6 +85,7 @@ document.addEventListener('DOMContentLoaded', function () {
         localStorage.removeItem('hermes-webui-session');
       }
       if (identity) localStorage.setItem(AUTH_SCOPE_STORAGE_KEY, identity);
+      if (user && user.role) localStorage.setItem(AUTH_ROLE_STORAGE_KEY, String(user.role));
     } catch (_) {}
   }
 

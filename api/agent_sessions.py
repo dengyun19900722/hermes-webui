@@ -878,7 +878,13 @@ def read_session_lineage_report(db_path: Path, session_id: str | None, max_hops:
     }
 
 
-def read_session_lineage_metadata(db_path: Path, session_ids: list[str] | set[str]) -> dict[str, dict]:
+def read_session_lineage_metadata(
+    db_path: Path,
+    session_ids: list[str] | set[str],
+    *,
+    message_metadata: dict[str, dict] | None = None,
+    sqlite_timeout_seconds: float | None = None,
+) -> dict[str, dict]:
     """Return compression-lineage metadata for known WebUI sidebar sessions.
 
     WebUI sessions are persisted as JSON files, but Hermes Agent also mirrors
@@ -895,9 +901,17 @@ def read_session_lineage_metadata(db_path: Path, session_ids: list[str] | set[st
         return {}
 
     try:
-        with closing(sqlite3.connect(str(db_path))) as conn:
+        connect_kwargs = {}
+        if sqlite_timeout_seconds is not None:
+            connect_kwargs['timeout'] = max(0.0, float(sqlite_timeout_seconds))
+        with closing(sqlite3.connect(str(db_path), **connect_kwargs)) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
+            if sqlite_timeout_seconds is not None:
+                cur.execute(
+                    "PRAGMA busy_timeout=%d"
+                    % max(0, int(float(sqlite_timeout_seconds) * 1000))
+                )
             cur.execute("PRAGMA table_info(sessions)")
             session_cols = {row[1] for row in cur.fetchall()}
             if 'parent_session_id' not in session_cols or 'end_reason' not in session_cols:
@@ -1002,9 +1016,18 @@ def read_session_lineage_metadata(db_path: Path, session_ids: list[str] | set[st
             use_messages_query = has_messages_table and messages_has_session_id
             row_ids = list(rows)
             if use_messages_query:
+                for row_id in row_ids:
+                    seeded = (message_metadata or {}).get(row_id) or {}
+                    if '_state_db_actual_message_count' not in seeded:
+                        continue
+                    message_stats[row_id] = {
+                        'actual_message_count': seeded.get('_state_db_actual_message_count'),
+                        'last_message_at': seeded.get('_state_db_actual_last_message_at'),
+                    }
                 last_at_expr = "MAX(timestamp) AS last_message_at" if messages_has_timestamp else "NULL AS last_message_at"
-                for i in range(0, len(row_ids), IN_CHUNK):
-                    chunk = row_ids[i:i + IN_CHUNK]
+                missing_row_ids = [row_id for row_id in row_ids if row_id not in message_stats]
+                for i in range(0, len(missing_row_ids), IN_CHUNK):
+                    chunk = missing_row_ids[i:i + IN_CHUNK]
                     placeholders = ','.join('?' * len(chunk))
                     cur.execute(
                         f"""

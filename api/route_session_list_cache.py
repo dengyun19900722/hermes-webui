@@ -130,6 +130,7 @@ def _session_list_cache_key(
     sidebar_source: str | None = None,
     archived_limit: int | None = None,
     archived_offset: int = 0,
+    session_limit: int | None = None,
 ) -> tuple:
     normalized_archived_limit = None
     if archived_limit is not None:
@@ -141,6 +142,12 @@ def _session_list_cache_key(
         normalized_archived_offset = max(0, int(archived_offset or 0))
     except (TypeError, ValueError):
         normalized_archived_offset = 0
+    normalized_session_limit = None
+    if session_limit is not None:
+        try:
+            normalized_session_limit = max(0, int(session_limit))
+        except (TypeError, ValueError):
+            normalized_session_limit = None
     return (
         _session_list_cache_profile_scope(active_profile),
         bool(all_profiles),
@@ -155,6 +162,7 @@ def _session_list_cache_key(
         sidebar_source,
         normalized_archived_limit,
         normalized_archived_offset,
+        normalized_session_limit,
     )
 
 

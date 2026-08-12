@@ -2670,7 +2670,8 @@ function _startWebUIVersionSkewMonitor(){
       _check();
     },60000);
   }
-  _check();
+  // boot.js checks the version from its authoritative initial settings
+  // response. This monitor only needs the later focus/interval checks.
   document.addEventListener('visibilitychange',function(){
     if(!document.hidden){ _check(); _startPoll(); }
     else if(_pollTimer){ clearInterval(_pollTimer); _pollTimer=null; }
@@ -6749,10 +6750,15 @@ function _warmProfileDropdownCache(){
 }
 
 if(typeof window!=='undefined'){
-  window.addEventListener('load',()=>{
-    setTimeout(()=>{
+  window.addEventListener('hermes:session-list-ready',()=>{
+    const warm=()=>{
       if(typeof document==='undefined'||!document.hidden) _warmProfileDropdownCache();
-    },1200);
+    };
+    if(typeof window.requestIdleCallback==='function'){
+      window.requestIdleCallback(warm,{timeout:4000});
+    }else{
+      setTimeout(warm,800);
+    }
   },{once:true});
 }
 

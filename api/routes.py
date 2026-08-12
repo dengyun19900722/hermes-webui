@@ -2042,6 +2042,7 @@ def _session_list_cache_key(
     sidebar_source: str | None = None,
     archived_limit: int | None = None,
     archived_offset: int = 0,
+    session_limit: int | None = None,
     show_claude_code_sessions: bool = True,
     rbac_user_id: str | None = None,
     rbac_scope_enabled: bool = False,
@@ -2061,6 +2062,7 @@ def _session_list_cache_key(
         sidebar_source=sidebar_source,
         archived_limit=archived_limit,
         archived_offset=archived_offset,
+        session_limit=session_limit,
     ) + (bool(show_claude_code_sessions), str(rbac_user_id or ""), bool(rbac_scope_enabled), bool(rbac_is_admin))
 
 _ROUTE_SESSION_LIST_CACHE_DYNAMIC_EXPORTS = {
@@ -2311,6 +2313,7 @@ def _build_session_list_cache_payload(
     sidebar_source: str | None = None,
     archived_limit: int | None = None,
     archived_offset: int = 0,
+    session_limit: int | None = None,
     rbac_user_id: str | None = None,
     rbac_scope_enabled: bool = False,
     rbac_is_admin: bool = False,
@@ -2343,9 +2346,22 @@ def _build_session_list_cache_payload(
             or session.get("has_pending_user_message")
         )
 
+    state_db_metadata: dict[str, dict] = {}
+
     def _all_sessions_for_sidebar():
+        state_db_metadata.clear()
         if _callable_accepts_kwarg(all_sessions, "include_lineage_metadata"):
-            return all_sessions(diag=diag, include_lineage_metadata=False)
+            kwargs = {"diag": diag, "include_lineage_metadata": False}
+            if _callable_accepts_kwarg(all_sessions, "state_db_metadata_out"):
+                kwargs["state_db_metadata_out"] = state_db_metadata
+            # The initial sidebar request carries an explicit visible limit.
+            # Use it as a bounded state.db COUNT/MAX budget; the legacy no-limit
+            # contract keeps the existing environment-controlled top-N behavior.
+            if session_limit is not None and _callable_accepts_kwarg(
+                all_sessions, "state_db_override_top_n"
+            ):
+                kwargs["state_db_override_top_n"] = session_limit
+            return all_sessions(**kwargs)
         # Focused tests and third-party callers sometimes monkeypatch
         # routes.all_sessions with the historical diag-only signature.
         return all_sessions(diag=diag)
@@ -2670,10 +2686,22 @@ def _build_session_list_cache_payload(
             visible_scoped_filtered,
             archived_scoped_filtered,
         )
+        if session_limit is not None:
+            try:
+                normalized_session_limit = max(0, int(session_limit))
+            except (TypeError, ValueError):
+                normalized_session_limit = None
+            if normalized_session_limit is not None:
+                scoped = scoped[:normalized_session_limit]
     if not include_archived:
         diag_stage("filter_archived_sessions")
     diag_stage("visible_lineage_metadata")
-    _enrich_sidebar_lineage_metadata(scoped)
+    if state_db_metadata and _callable_accepts_kwarg(
+        _enrich_sidebar_lineage_metadata, "state_db_metadata"
+    ):
+        _enrich_sidebar_lineage_metadata(scoped, state_db_metadata=state_db_metadata)
+    else:
+        _enrich_sidebar_lineage_metadata(scoped)
     # Delegated subagent children (#5307) are view-only, owned by the delegate
     # runner. Coerce their sidebar rows to read_only=True + is_cli_session=False
     # so the UI never offers delete / edit / truncate / pin affordances on them
@@ -2693,8 +2721,16 @@ def _build_session_list_cache_payload(
             # a delegated child can't surface as a writable/CLI sidebar row.
             if not _is_sa and not _r.get("read_only"):
                 _sid = str(_r.get("session_id") or "").strip()
-                if _sid and _is_subagent_child_session_id(_sid):
-                    _is_sa = True
+                if _sid:
+                    # all_sessions() already fetched the state.db source map for
+                    # this render. Reuse it to avoid opening SQLite once per row
+                    # on a cold sidebar request; keep the per-row probe only for
+                    # rows absent from that map (legacy/minimal test stores).
+                    _state_entry = state_db_metadata.get(_sid) if state_db_metadata else None
+                    if _state_entry is not None:
+                        _is_sa = str(_state_entry.get("_state_db_source") or "").strip().lower() == "subagent"
+                    elif _is_subagent_child_session_id(_sid):
+                        _is_sa = True
             if _is_sa:
                 _r["read_only"] = True
                 _r["is_cli_session"] = False
@@ -2718,6 +2754,7 @@ def _build_session_list_cache_payload(
         "include_archived": include_archived,
         "archived_limit": archived_limit,
         "archived_offset": archived_offset,
+        "session_limit": session_limit,
         "all_profiles": all_profiles,
         "active_profile": active_profile,
         "other_profile_count": other_profile_count,
@@ -2776,6 +2813,8 @@ def _session_list_payload_to_response(payload: dict) -> dict:
     if payload.get("archived_limit") is not None:
         response["archived_limit"] = int(payload.get("archived_limit") or 0)
         response["archived_offset"] = int(payload.get("archived_offset") or 0)
+    if payload.get("session_limit") is not None:
+        response["session_limit"] = int(payload.get("session_limit") or 0)
     return response
 
 
@@ -11992,7 +12031,9 @@ def _render_index_shell_base() -> str:
             return cached[1]
     from urllib.parse import quote
 
-    version_token = quote(WEBad_text(encoding="utf-8")
+    version_token = quote(WEBUI_VERSION, safe="")
+    base = (
+        _INDEX_HTML_PATH.read_text(encoding="utf-8")
         .replace("__WEBUI_VERSION__", version_token)
         .replace("__MAX_UPLOAD_BYTES__", str(MAX_UPLOAD_BYTES))
     )
@@ -12019,7 +12060,7 @@ def _require_license(handler, parsed) -> bool | None:
         or path.startswith("/session/static/")
         or path == "/license"
         or path.startswith("/license/")
-        or path in ("/login", "/api/csp-report", "/api/shutdown")
+        or path in ("/health", "/login", "/api/csp-report", "/api/shutdown")
         or path in ("/manifest.json", "/manifest.webmanifest")
         or path in ("/session/manifest.json", "/session/manifest.webmanifest")
     ):
@@ -12067,63 +12108,10 @@ def handle_get(handler, parsed) -> bool:
     if proxy_result is not False:
         return proxy_result
 
-    # License check (blocks API calls if license invalid)
-    blocked = _require_license(handler, parsed)
-    if blocked is True:
-        return True
-
-    # RBAC routes (must come after license gate; auth check happens inside handlers)
+    # Platform License gating is enforced once in server.py before auth dispatch.
+    # Keep route handlers directly callable for focused tests and in-process users.
     from api.rbac_routes import try_handle_rbac
     if try_handle_rbac("GET", parsed, handler):
-        return True
-
-    # ── License routes ─────────────────────────────────────────────────────────
-    if parsed.path == "/api/license/status":
-        from api.license import init_license_config, check_license_status
-        workspace = Path(DEFAULT_WORKSPACE)
-        try:
-            config = init_license_config(workspace)
-        except FileNotFoundError:
-            logger.info("[license] 状态查询: 未初始化(secret_key 文件缺失)")
-            return j(handler, {
-                "activated": False,
-                "status": "not_initialized",
-                "platform_id": None,
-                "mac_address": None,
-                "expires_at": None,
-                "days_remaining": None,
-                "imported_at": None,
-            })
-
-        status = check_license_status(workspace)
-        status["platform_id"] = config.get("platform_id")
-        status["mac_address"] = config.get("mac_address")
-        logger.info(
-            "[license] 状态查询: %s  platform=%s  mac=%s  过期时间=%s  剩余天数=%s",
-            status["status"], status.get("platform_id"), status.get("mac_address"),
-            status.get("expires_at"), status.get("days_remaining"),
-        )
-        return j(handler, status)
-
-    if parsed.path == "/api/admin/license/list":
-        from api.license import get_admin_license_list
-        workspace = Path(DEFAULT_WORKSPACE)
-        licenses = get_admin_license_list(workspace)
-        logger.info("[license] 管理员查询列表: %d 条记录", len(licenses))
-        return j(handler, {"licenses": licenses})
-
-    # ── Notes routes ───────────────────────────────────────────────────────────
-    if parsed.path.startswith("/api/notes"):
-        from api.obsidian_notes import handle_notes_get
-
-        result = handle_notes_get(handler, parsed)
-        if result is False:
-            return bad(handler, f"unknown notes endpoint: GET {parsed.path}", status=404)
-        return True
-
-    # License check (blocks API calls if license invalid)
-    blocked = _require_license(handler, parsed)
-    if blocked is True:
         return True
 
     # ── License routes ─────────────────────────────────────────────────────────
@@ -13324,6 +13312,7 @@ def handle_get(handler, parsed) -> bool:
 
             diag.stage("load_settings")
             settings = load_settings()
+            diag.stage("session_list_settings")
             show_cli_sessions = bool(settings.get("show_cli_sessions"))
             show_claude_code_sessions = bool(settings.get("show_claude_code_sessions"))
             show_previous_messaging_sessions = bool(
@@ -13332,12 +13321,15 @@ def handle_get(handler, parsed) -> bool:
             show_cron_sessions = bool(settings.get("show_cron_sessions"))
             show_webhook_sessions = bool(settings.get("show_webhook_sessions"))
             agent_session_source_filter = settings.get("agent_session_source_filter")
+            diag.stage("resolve_active_profile")
             active_profile = profiles_api.get_active_profile_name()
+            diag.stage("parse_session_list_scope")
             all_profiles = _all_profiles_enabled(parsed)
             include_archived = _query_flag(parsed, "include_archived")
             exclude_hidden = _query_flag(parsed, "exclude_hidden")
             archived_limit = _query_positive_int(parsed, "archived_limit", default=None, maximum=2000)
             archived_offset = _query_positive_int(parsed, "archived_offset", default=0, maximum=200000)
+            session_limit = _query_positive_int(parsed, "limit", default=None, maximum=2000)
             sidebar_source = parse_qs(parsed.query).get("sidebar_source", [""])[0].strip().lower() or None
             if sidebar_source not in ("webui", "cli"):
                 sidebar_source = None
@@ -13364,6 +13356,7 @@ def handle_get(handler, parsed) -> bool:
                 sidebar_source=sidebar_source,
                 archived_limit=archived_limit,
                 archived_offset=archived_offset,
+                session_limit=session_limit,
             )
             # Keep the visible /api/sessions contract unchanged even though the
             # heavy lifting now lives in the cache builder: profile scoping via
@@ -13389,6 +13382,7 @@ def handle_get(handler, parsed) -> bool:
                     sidebar_source=sidebar_source,
                     archived_limit=archived_limit,
                     archived_offset=archived_offset,
+                    session_limit=session_limit,
                     diag=diag,
                 ),
                 diag=diag,
@@ -14239,14 +14233,7 @@ def handle_post(handler, parsed) -> bool:
                     platform_id, mac_address, expires_at, len(license_string))
         return j(handler, {"ok": True, "license_string": license_string})
 
-    # License gate: block non-license POST endpoints when not activated
-    blocked = _require_license(handler, parsed)
-    if blocked is True:
-        if diag:
-            diag.finish()
-        return True
-
-    # RBAC routes (must come after license gate; auth check happens inside handlers)
+    # Platform License gating is enforced once in server.py before auth dispatch.
     from api.rbac_routes import try_handle_rbac
     if try_handle_rbac("POST", parsed, handler):
         if diag:
