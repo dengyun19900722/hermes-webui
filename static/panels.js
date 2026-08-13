@@ -5566,6 +5566,7 @@ async function submitMemorySave() {
 
 // ── Workspace management ──
 let _workspaceList = [];  // cached from /api/workspaces
+let _workspaceSearchQuery = '';
 let _workspaceAuthGeneration = 0;
 let _wsSuggestTimer = null;
 let _wsSuggestReq = 0;
@@ -6025,12 +6026,40 @@ async function loadWorkspacesPanel(){
   renderWorkspacesPanel(data.workspaces);
 }
 
+function _workspacePanelSearchValue(){
+  const input=$('workspaceSearchInput');
+  const raw=(input&&typeof input.value==='string')?input.value:_workspaceSearchQuery;
+  return String(raw||'');
+}
+
+function _workspaceNameMatchesSearch(ws, query){
+  if(!query)return true;
+  const name=String(ws&&ws.name||'').toLowerCase();
+  return name.includes(query);
+}
+
+function filterWorkspacePanel(value){
+  if(typeof value==='string') _workspaceSearchQuery=value;
+  else _workspaceSearchQuery=_workspacePanelSearchValue();
+  renderWorkspacesPanel(_workspaceList);
+}
+
 function renderWorkspacesPanel(workspaces){
   const panel=$('workspacesPanel');
   panel.innerHTML='';
+  const allWorkspaces=Array.isArray(workspaces)?workspaces:[];
+  const searchInput=$('workspaceSearchInput');
+  if(searchInput && searchInput.value!==_workspaceSearchQuery){
+    searchInput.value=_workspaceSearchQuery;
+  }
+  const searchQuery=_workspacePanelSearchValue().trim().toLowerCase();
+  _workspaceSearchQuery=searchInput?searchInput.value:_workspaceSearchQuery;
+  const visibleWorkspaces=searchQuery
+    ? allWorkspaces.filter(w=>_workspaceNameMatchesSearch(w, searchQuery))
+    : allWorkspaces;
   const activePath = S.session ? S.session.workspace : '';
-  for(let i=0;i<workspaces.length;i++){
-    const w=workspaces[i];
+  for(let i=0;i<visibleWorkspaces.length;i++){
+    const w=visibleWorkspaces[i];
     const row=document.createElement('div');
     row.className='ws-row';
     row.dataset.path = w.path;
@@ -6079,7 +6108,7 @@ function renderWorkspacesPanel(workspaces){
       const toPath = w.path;
       if(fromPath === toPath) return; // Same item, no-op
       // Compute new order
-      const currentPaths = workspaces.map(ws => ws.path);
+      const currentPaths = allWorkspaces.map(ws => ws.path);
       const fromIdx = currentPaths.indexOf(fromPath);
       const toIdx = currentPaths.indexOf(toPath);
       if(fromIdx < 0 || toIdx < 0) return;
@@ -6102,13 +6131,19 @@ function renderWorkspacesPanel(workspaces){
 
     panel.appendChild(row);
   }
+  if(searchQuery && visibleWorkspaces.length===0){
+    const empty=document.createElement('div');
+    empty.className='ws-no-results';
+    empty.textContent=t('workspace_search_no_results')||'No spaces match that name.';
+    panel.appendChild(empty);
+  }
   const hint=document.createElement('div');
   hint.style.cssText='font-size:11px;color:var(--muted);padding:8px 0';
   hint.textContent=t('workspace_paths_validated_hint');
   panel.appendChild(hint);
   // Re-render detail if we have one cached and we're not in a form
   if (_currentWorkspaceDetail && _workspaceMode !== 'create' && _workspaceMode !== 'edit') {
-    const refreshed = workspaces.find(w => w.path === _currentWorkspaceDetail.path);
+    const refreshed = allWorkspaces.find(w => w.path === _currentWorkspaceDetail.path);
     if (refreshed) _renderWorkspaceDetail(refreshed);
     else _clearWorkspaceDetail();
   }
@@ -6340,6 +6375,11 @@ if(typeof window!=='undefined'){
 function _resetWorkspaceStateForAuthChange(){
   _workspaceAuthGeneration++;
   _workspaceList = [];
+  _workspaceSearchQuery = '';
+  try{
+    const searchInput=$('workspaceSearchInput');
+    if(searchInput) searchInput.value='';
+  }catch(_){}
   if(typeof _clearWorkspaceDetail === 'function') _clearWorkspaceDetail();
   // Clear the cached profile default workspace (re-read on next boot/settings).
   if(typeof S !== 'undefined' && S){

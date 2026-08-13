@@ -1166,6 +1166,8 @@ const LOCALES = {
     wiki_no_pages: 'No wiki pages found',
     wiki_not_configured: 'Wiki not configured',
     workspace_desc: 'Add and switch workspaces for your sessions.',
+    workspace_search_placeholder: 'Search spaces by name...',
+    workspace_search_no_results: 'No spaces match that name.',
     session_meta_messages: (n) => `${n} msg${n === 1 ? '' : 's'}`,
     session_meta_children: (n) => `${n} child${n === 1 ? '' : 'ren'}`,
     // Softened label: avoids exposing the technical internal term
@@ -10997,6 +10999,8 @@ const LOCALES = {
     personal_memory: '个人记忆',
     current_task_list: '当前任务列表',
     workspace_desc: '为你的会话添加并切换工作区。',
+    workspace_search_placeholder: '按名称搜索工作区...',
+    workspace_search_no_results: '没有匹配的工作区名称。',
     session_meta_messages: (n) => `${n} 条消息`,
     session_meta_children: (n) => `${n} 子会话`,
     session_meta_segments: (n) => `${n} 段`,
