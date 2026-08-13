@@ -1113,10 +1113,14 @@ async function newSession(flash, options={}){
       newModelState=explicitModelOverride;
       consumedExplicitModelOverride=true;
     }else if(window._defaultModel){
-      // Configured default wins over stale picker/persisted state even with no
-      // loaded session (deleting the last session left S.session null + stale picker) (#4728).
-      newModelState={model:window._defaultModel,model_provider:null};
-      usingConfiguredDefault=true;
+      if(window._defaultModelUnavailable&&modelSelForNew&&modelSelForNew.value&&typeof _modelStateForSelect==='function'){
+        newModelState=_modelStateForSelect(modelSelForNew,modelSelForNew.value);
+      }else{
+        // Configured default wins over stale picker/persisted state even with no
+        // loaded session (deleting the last session left S.session null + stale picker) (#4728).
+        newModelState={model:window._defaultModel,model_provider:null};
+        usingConfiguredDefault=true;
+      }
     }else if(modelSelForNew&&modelSelForNew.value&&typeof _modelStateForSelect==='function'){
       newModelState=_modelStateForSelect(modelSelForNew,modelSelForNew.value);
     }else if(typeof _readPersistedModelState==='function'){
