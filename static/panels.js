@@ -6422,7 +6422,15 @@ function openWorkspaceCreate(){
   if (typeof switchPanel === 'function' && _currentPanel !== 'workspaces') switchPanel('workspaces');
   _workspacePreFormDetail = _currentWorkspaceDetail ? { ..._currentWorkspaceDetail } : null;
   _workspaceMode = 'create';
-  _renderWorkspaceForm({ name:'', path:'', isEdit:false });
+  // The create form renders a read-only "Home" prefix (the default workspace
+  // root, i.e. HERMES_WEBUI_DEFAULT_WORKSPACE) followed by an editable
+  // relative sub-path. We seed the absolute path with `${home}/my-workspace`
+  // so the server can `mkdir -p` it on save if the user leaves the default
+  // untouched. The home is injected server-side via
+  // window.__HERMES_CONFIG__.userHome.
+  const _home = (window.__HERMES_CONFIG__ && window.__HERMES_CONFIG__.userHome) || '~';
+  const _defaultPath = `${_home}/my-workspace`;
+  _renderWorkspaceForm({ name:'', path: _defaultPath, isEdit:false, homePrefix: _home });
 }
 
 function editCurrentWorkspace(){
@@ -6432,7 +6440,7 @@ function editCurrentWorkspace(){
   _renderWorkspaceForm({ name: _currentWorkspaceDetail.name || '', path: _currentWorkspaceDetail.path || '', isEdit: true });
 }
 
-function _renderWorkspaceForm({ name, path, isEdit }){
+function _renderWorkspaceForm({ name, path, isEdit, homePrefix }){
   const title = $('workspaceDetailTitle');
   const body = $('workspaceDetailBody');
   const empty = $('workspaceDetailEmpty');
@@ -6442,6 +6450,30 @@ function _renderWorkspaceForm({ name, path, isEdit }){
   const pathHint = isEdit
     ? `<div class="detail-form-hint">${esc(t('workspace_path_readonly') || 'Path cannot be changed. Rename only.')}</div>`
     : `<div class="detail-form-hint">${esc(t('workspace_paths_validated_hint'))}</div>`;
+  // In create mode we render a split path field: a read-only "Home" prefix
+  // (the current OS user's home directory) followed by an editable relative
+  // sub-path. The hidden `workspaceFormPath` always carries the joined absolute
+  // path so the existing `saveWorkspaceForm` / path-suggestion code keeps
+  // working unchanged.
+  let pathInputHtml;
+  if (isEdit) {
+    pathInputHtml = `
+          <div class="workspace-form-path-wrap" style="position:relative">
+            <input type="text" id="workspaceFormPath" value="${esc(path || '')}" placeholder="${esc(t('workspace_add_path_placeholder') || '/absolute/path/to/folder')}" autocomplete="off" ${pathDisabled} required>
+            <div id="workspaceFormPathSuggestions" class="ws-suggestions" style="display:none"></div>
+          </div>`;
+  } else {
+    const _home = homePrefix || (window.__HERMES_CONFIG__ && window.__HERMES_CONFIG__.userHome) || '~';
+    const _rel = _splitPathUnderHome(path || `${_home}/my-workspace`, _home);
+    pathInputHtml = `
+          <div class="workspace-form-path-wrap workspace-form-path-split" style="position:relative">
+            <input type="text" id="workspaceFormPathHome" value="${esc(_home)}" readonly tabindex="-1" aria-label="Home" title="Current OS user home (read-only)" class="workspace-form-path-home">
+            <span class="workspace-form-path-sep" aria-hidden="true">/</span>
+            <input type="text" id="workspaceFormPathRel" value="${esc(_rel)}" placeholder="${esc(t('workspace_add_path_placeholder') || 'my-project/sub-folder')}" autocomplete="off" required>
+            <input type="hidden" id="workspaceFormPath" value="${esc(path || '')}">
+            <div id="workspaceFormPathSuggestions" class="ws-suggestions" style="display:none"></div>
+          </div>`;
+  }
   body.innerHTML = `
     <div class="main-view-content">
       <form class="detail-form" onsubmit="event.preventDefault(); saveWorkspaceForm();">
@@ -6450,11 +6482,8 @@ function _renderWorkspaceForm({ name, path, isEdit }){
           <input type="text" id="workspaceFormName" value="${esc(name || '')}" placeholder="${esc(t('workspace_name_placeholder') || 'Optional friendly name')}" autocomplete="off">
         </div>
         <div class="detail-form-row">
-          <label for="workspaceFormPath">${esc(t('workspace_path_label') || 'Path')}</label>
-          <div class="workspace-form-path-wrap" style="position:relative">
-            <input type="text" id="workspaceFormPath" value="${esc(path || '')}" placeholder="${esc(t('workspace_add_path_placeholder') || '/absolute/path/to/folder')}" autocomplete="off" ${pathDisabled} required>
-            <div id="workspaceFormPathSuggestions" class="ws-suggestions" style="display:none"></div>
-          </div>
+          <label for="${isEdit ? 'workspaceFormPath' : 'workspaceFormPathRel'}">${esc(t('workspace_path_label') || 'Path')}</label>
+          ${pathInputHtml}
           ${pathHint}
         </div>
         <div id="workspaceFormError" class="detail-form-error" style="display:none"></div>
@@ -6463,9 +6492,66 @@ function _renderWorkspaceForm({ name, path, isEdit }){
   body.style.display = '';
   if (empty) empty.style.display = 'none';
   _setWorkspaceHeaderButtons(isEdit ? 'edit' : 'create');
-  if (!isEdit) _wireWorkspaceFormPathSuggestions();
-  const focus = isEdit ? $('workspaceFormName') : $('workspaceFormPath');
+  if (!isEdit) {
+    // Keep the hidden `workspaceFormPath` synced with `${home}/${rel}` so the
+    // existing saveWorkspaceForm / suggestion code reads the joined absolute
+    // path it already knows how to handle.
+    _wireWorkspaceFormHomeRelSync();
+    _wireWorkspaceFormPathSuggestions();
+  }
+  const focus = isEdit ? $('workspaceFormName') : $('workspaceFormPathRel');
   if (focus) focus.focus();
+}
+
+// Split an absolute path into the home prefix and the relative remainder.
+// Falls back to treating the full path as "relative" if it doesn't sit under
+// the supplied home (rare — the create form is seeded with `${home}/...`).
+function _splitPathUnderHome(absolutePath, home){
+  if(!absolutePath || !home) return absolutePath || '';
+  const a = String(absolutePath);
+  const h = String(home);
+  if(a === h) return '';
+  if(a.startsWith(h + '/')) return a.slice(h.length + 1);
+  return a;
+}
+
+// Build the absolute path from the read-only home prefix + the relative input.
+// Used both to seed the hidden `workspaceFormPath` and to keep it in sync as
+// the user types.
+function _joinPathUnderHome(home, rel){
+  const h = String(home || '').replace(/\/+$/,'');
+  const r = String(rel || '').replace(/^\/+/,'').replace(/\/+$/,'');
+  if(!h) return r;
+  if(!r) return h;
+  return h + '/' + r;
+}
+
+// Wire the home + rel inputs to keep the hidden `workspaceFormPath` synced.
+// saveWorkspaceForm and the existing path-suggestion code keep reading
+// `workspaceFormPath`, so the join happens here invisibly.
+function _wireWorkspaceFormHomeRelSync(){
+  const home = $('workspaceFormPathHome');
+  const rel  = $('workspaceFormPathRel');
+  const hidden = $('workspaceFormPath');
+  if(!home || !rel || !hidden) return;
+  const sync = () => { hidden.value = _joinPathUnderHome(home.value, rel.value); };
+  rel.addEventListener('input', sync);
+  // If the user pastes a full absolute path into the relative field, swap the
+  // home + rel automatically so the split layout stays meaningful.
+  rel.addEventListener('change', () => {
+    const v = String(rel.value || '').trim();
+    if(!v) return;
+    if(v.startsWith('/')){
+      const guessedHome = (window.__HERMES_CONFIG__ && window.__HERMES_CONFIG__.userHome) || '~';
+      const sub = _splitPathUnderHome(v, guessedHome);
+      if(sub !== v){
+        home.value = guessedHome;
+        rel.value = sub;
+      }
+    }
+    sync();
+  });
+  sync();
 }
 
 function cancelWorkspaceForm(){
