@@ -82,6 +82,37 @@
       + '</tr>';
   }
 
+  function currentAuthUserMatches(userId, user) {
+    var id = String(userId || (user && user.id) || '').trim();
+    var currentId = String(window.currentUserId || '').trim();
+    var currentIdentity = String(window._currentAuthUserId || '').trim();
+    if (id && currentId && id === currentId) return true;
+    if (id && currentIdentity && (currentIdentity === id || currentIdentity === ('user:' + id))) return true;
+    var username = String((user && user.username) || '').trim();
+    var currentUsername = String(window.currentUsername || '').trim();
+    if (username && currentIdentity === ('user:' + username)) return true;
+    return !!(username && currentUsername && username === currentUsername);
+  }
+
+  async function refreshCurrentAuthAfterUserMutation(userId, user) {
+    if (!currentAuthUserMatches(userId, user)) return;
+    var status = null;
+    try {
+      if (typeof window.syncAuthIdentityScope === 'function') {
+        status = await window.syncAuthIdentityScope({ force: true, clearOnChange: false });
+      } else {
+        status = await api('/api/auth/status', { redirect401: false });
+      }
+    } catch (_) {}
+    if (status) renderCurrentAccount(status);
+    if (typeof window._applyTabVisibility === 'function' && typeof window._getHiddenTabs === 'function') {
+      try { window._applyTabVisibility(window._getHiddenTabs()); } catch (_) {}
+    }
+    if (typeof window.renderSessionListFromCache === 'function') {
+      try { window.renderSessionListFromCache(); } catch (_) {}
+    }
+  }
+
   function renderAuditRow(e) {
     var ts = e.ts || e.timestamp || '';
     var detail = '';
@@ -182,24 +213,24 @@
     _editingPanels = [];
   };
 
-  window.savePanelsEditor = function () {
+  window.savePanelsEditor = async function () {
     if (!_editingUserId) return;
+    var targetUserId = _editingUserId;
     var saveBtn = document.getElementById('users-panels-save-btn');
     if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '保存中…'; }
-    api('/api/admin/users/' + encodeURIComponent(_editingUserId) + '/panels', {
-      method: 'PUT', body: { panels: _editingPanels },
-    })
-      .then(function () {
-        closePanelsEditor();
-        loadUsers();
-        loadAudit();
-      })
-      .catch(function (e) {
-        window.alert('保存失败：' + (e.message || String(e)));
-      })
-      .then(function () {
-        if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '保存'; }
+    try {
+      var result = await api('/api/admin/users/' + encodeURIComponent(targetUserId) + '/panels', {
+        method: 'PUT', body: { panels: _editingPanels },
       });
+      closePanelsEditor();
+      await refreshCurrentAuthAfterUserMutation(targetUserId, result && result.user);
+      await loadUsers();
+      await loadAudit();
+    } catch (e) {
+      window.alert('保存失败：' + (e.message || String(e)));
+    } finally {
+      if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '保存'; }
+    }
   };
 
   function openPanelsEditor(userId, username, currentPanels) {
@@ -271,12 +302,14 @@
     if (!el) return;
     var user = status && status.user;
     if (user && user.username) {
+      window.currentUserId = user.id || '';
       window.currentUsername = user.username;
       el.innerHTML = '<strong>' + escapeHtml(user.username) + '</strong>'
         + '<span class="users-current-role">' + escapeHtml(user.role || 'user') + '</span>';
       if (signOutBtn) signOutBtn.hidden = false;
       return;
     }
+    window.currentUserId = '';
     window.currentUsername = '';
     el.textContent = status && status.logged_in
       ? t('users_current_account_password_auth', 'Signed in with instance password')
@@ -336,9 +369,10 @@
   async function toggleRole(userId, currentRole) {
     var newRole = currentRole === 'admin' ? 'user' : 'admin';
     try {
-      await api('/api/admin/users/' + encodeURIComponent(userId) + '/role', {
+      var result = await api('/api/admin/users/' + encodeURIComponent(userId) + '/role', {
         method: 'PUT', body: { role: newRole },
       });
+      await refreshCurrentAuthAfterUserMutation(userId, result && result.user);
       await loadUsers();
       await loadAudit();
     } catch (e) {

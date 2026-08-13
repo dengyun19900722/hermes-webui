@@ -5973,6 +5973,38 @@ function _messageBottomDistance(){
   if(!el) return 0;
   return el.scrollHeight-el.scrollTop-el.clientHeight;
 }
+function followStreamingOutputIfPinned(){
+  if(!_autoScrollFollow) return false;
+  const recentIntent=_recentNonMessageScrollIntent()
+    || _recentMessageScrollIntent()
+    || _recentMessageTouchScrollIntent()
+    || _recentMessageWheelIntent()
+    || _recentMessageKeyScrollIntent();
+  if(_messageUserUnpinned){
+    if(recentIntent){ _nearBottomCount=0; return false; }
+    if(_messageBottomDistance()>80){ _nearBottomCount=0; return false; }
+    _nearBottomCount=_nearBottomCount+1;
+    if(_nearBottomCount<2) return false;
+    _nearBottomCount=0;
+    _messageUserUnpinned=false;
+    _scrollPinned=true;
+  }else if(recentIntent){
+    return false;
+  }else if(!_scrollPinned){
+    // Live token frames are authoritative follow points when the reader has not
+    // manually unpinned. This recovers browser/native scroll-event downgrades
+    // caused by content growing beneath a followed viewport.
+    _scrollPinned=true;
+    _nearBottomCount=2;
+  }
+  if(!_scrollPinned) return false;
+  if(typeof _settleMessageScrollToBottom==='function') _settleMessageScrollToBottom(false);
+  else _setMessageScrollToBottom();
+  if(typeof _syncScrollToBottomCue==='function') _syncScrollToBottomCue(false,{newMessage:false});
+  if(typeof _updateSessionStartJumpButton==='function') _updateSessionStartJumpButton();
+  return true;
+}
+if(typeof window!=='undefined') window.followStreamingOutputIfPinned=followStreamingOutputIfPinned;
 // #5514/#5515: when the composer grows (typing multiple rows, Shift+Enter, a
 // multi-line paste / WisprFlow), the flex:1 `.messages` viewport shrinks by the
 // same delta. A reader pinned to the bottom is then stranded Δpx above it — the

@@ -2853,6 +2853,22 @@ function _applyAuthIdentityScope(status,{clearOnChange=true}={}){
   return identity;
 }
 
+function clearAuthIdentityScopeRuntime(){
+  _authIdentityStatusGeneration++;
+  _authIdentityStatusPromise=null;
+  _authIdentityStatusPromiseGeneration=0;
+  _authIdentityStatusSnapshot=null;
+  _authIdentityStatusSnapshotAt=0;
+  window._currentAuthUserId='';
+  window._currentAuthRole='';
+  window._currentUserPanels=null;
+  try{localStorage.removeItem(AUTH_SCOPE_STORAGE_KEY);}catch(_){}
+  try{localStorage.removeItem(AUTH_ROLE_STORAGE_KEY);}catch(_){}
+  if(typeof _applyTabVisibility==='function'&&typeof _getHiddenTabs==='function'){
+    try{_applyTabVisibility(_getHiddenTabs());}catch(_){}
+  }
+}
+
 async function syncAuthIdentityScope(options={}){
   const force=options&&options.force===true;
   const now=Date.now();
@@ -2967,8 +2983,7 @@ async function titlebarSignOut(){
   }
   try{
     await api('/api/auth/logout',{method:'POST',body:'{}'});
-    try{localStorage.removeItem(AUTH_SCOPE_STORAGE_KEY);}catch(_){}
-    try{localStorage.removeItem(AUTH_ROLE_STORAGE_KEY);}catch(_){}
+    try{clearAuthIdentityScopeRuntime();}catch(_){}
     try{localStorage.removeItem('hermes-webui-session');}catch(_){}
     try{if(typeof resetSessionStateForAuthChange==='function')resetSessionStateForAuthChange('');}catch(_){}
     try{if(typeof _resetShareCurrentUser==='function')_resetShareCurrentUser();}catch(_){}
@@ -2999,6 +3014,7 @@ window.loadTitlebarAccountMenu=loadTitlebarAccountMenu;
 window.toggleTitlebarAccountMenu=toggleTitlebarAccountMenu;
 window.titlebarSignOut=titlebarSignOut;
 window.initTitlebarAccountMenu=initTitlebarAccountMenu;
+window.clearAuthIdentityScopeRuntime=clearAuthIdentityScopeRuntime;
 window.syncAuthIdentityScope=syncAuthIdentityScope;
 
 function _mirrorSpeechSettingsFromServer(s){

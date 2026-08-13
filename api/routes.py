@@ -12258,11 +12258,26 @@ def handle_get(handler, parsed) -> bool:
             from api.updates import WEBUI_VERSION
             version_token = quote(WEBUI_VERSION, safe="")
 
+            # Inject the default workspace root (HERMES_WEBUI_DEFAULT_WORKSPACE
+            # env var takes priority, falling back to the discovered default) so
+            # the workspace create form can render a read-only "Home" prefix and
+            # accept a relative sub-path underneath it. This matches the user's
+            # mental model: new spaces live under the configured workspace root.
+            # NOTE: reference the module-level `DEFAULT_WORKSPACE` (imported at
+            # the top of this file) instead of `from api.config import ...` —
+            # rebinding the name via a function-local import marks the whole
+            # function body as UnboundLocalError-prone.
+            try:
+                _user_home_json = json.dumps(str(DEFAULT_WORKSPACE))
+            except Exception:
+                _user_home_json = json.dumps("~")
+
             html = (
                 _INDEX_HTML_PATH.read_text(encoding="utf-8")
                 .replace("__WEBUI_VERSION__", version_token)
                 .replace("__MAX_UPLOAD_BYTES__", str(MAX_UPLOAD_BYTES))
                 .replace("__CSRF_TOKEN_JSON__", json.dumps(csrf_token))
+                .replace("__USER_HOME_JSON__", _user_home_json)
             )
 
             # License gate: if license is invalid, return a standalone
@@ -12463,11 +12478,14 @@ def handle_get(handler, parsed) -> bool:
                 rbac_user = get_user_from_session(cv)
                 if rbac_user:
                     from api.user_store import DEFAULT_USER_PANELS
+                    panels = rbac_user.get("panels")
+                    if not isinstance(panels, list):
+                        panels = list(DEFAULT_USER_PANELS)
                     current_user = {
                         "id": rbac_user.get("id"),
                         "username": rbac_user.get("username"),
                         "role": rbac_user.get("role", "user"),
-                        "panels": rbac_user.get("panels") or list(DEFAULT_USER_PANELS),
+                        "panels": panels,
                     }
         passkey_flag = _passkey_feature_flag_enabled()
         passkeys = registered_credentials() if passkey_flag else []

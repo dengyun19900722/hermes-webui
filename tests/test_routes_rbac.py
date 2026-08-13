@@ -290,6 +290,59 @@ def test_current_rbac_user_cache_reuses_same_token(monkeypatch):
     assert lookups == ["token-a", "token-a"]
 
 
+def test_auth_status_preserves_explicit_empty_user_panels(monkeypatch):
+    """An admin-saved empty panel list is distinct from a legacy missing field."""
+    import api.routes as routes
+
+    monkeypatch.setattr("api.auth.is_auth_enabled", lambda: True)
+    monkeypatch.setattr("api.auth.is_oidc_auth_enabled", lambda: False)
+    monkeypatch.setattr("api.auth.parse_cookie", lambda handler: "token-empty-panels")
+    monkeypatch.setattr("api.auth.verify_any_session", lambda token: True)
+    monkeypatch.setattr(
+        "api.auth.get_user_from_session",
+        lambda token: {
+            "id": "u-empty",
+            "username": "empty",
+            "role": "user",
+            "panels": [],
+        },
+    )
+    monkeypatch.setattr("api.auth.get_password_hash", lambda: "hash")
+    monkeypatch.setattr("api.auth._passkey_feature_flag_enabled", lambda: False)
+
+    handler = _make_handler()
+    handler.headers = {}
+    routes.handle_get(handler, SimpleNamespace(path="/api/auth/status"))
+
+    handler.send_response.assert_called_with(200)
+    body = _read_json_response(handler)
+    assert body["user"]["panels"] == []
+
+
+def test_auth_status_defaults_only_when_user_panels_missing(monkeypatch):
+    import api.routes as routes
+    from api.user_store import DEFAULT_USER_PANELS
+
+    monkeypatch.setattr("api.auth.is_auth_enabled", lambda: True)
+    monkeypatch.setattr("api.auth.is_oidc_auth_enabled", lambda: False)
+    monkeypatch.setattr("api.auth.parse_cookie", lambda handler: "token-legacy")
+    monkeypatch.setattr("api.auth.verify_any_session", lambda token: True)
+    monkeypatch.setattr(
+        "api.auth.get_user_from_session",
+        lambda token: {"id": "u-legacy", "username": "legacy", "role": "user"},
+    )
+    monkeypatch.setattr("api.auth.get_password_hash", lambda: "hash")
+    monkeypatch.setattr("api.auth._passkey_feature_flag_enabled", lambda: False)
+
+    handler = _make_handler()
+    handler.headers = {}
+    routes.handle_get(handler, SimpleNamespace(path="/api/auth/status"))
+
+    handler.send_response.assert_called_with(200)
+    body = _read_json_response(handler)
+    assert body["user"]["panels"] == list(DEFAULT_USER_PANELS)
+
+
 def test_logout_clears_auth_cookie(monkeypatch):
     """RBAC logout must clear the browser cookie so users can switch accounts."""
     import io

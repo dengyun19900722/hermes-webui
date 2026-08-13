@@ -57,9 +57,15 @@ def test_settings_checkbox_renders_checked_by_default():
     """The Appearance checkbox must render checked when the setting is absent,
     matching the True default (panels.js settings-load)."""
     src = _read("static/panels.js")
+    html = _read("static/index.html")
     assert "autoScrollFollowCb.checked=settings.auto_scroll_follow!==false" in src, (
         "the auto-follow checkbox must default checked (=== false), not "
         "!!settings.auto_scroll_follow which would render it unchecked by default"
+    )
+    assert re.search(r'id="settingsAutoScrollFollow"[^>]*\bchecked\b', html), (
+        "the static checkbox must also start checked so an early settings save "
+        "cannot serialize the default-true auto_scroll_follow preference as false "
+        "before loadSettingsPanel() hydrates it"
     )
 
 
