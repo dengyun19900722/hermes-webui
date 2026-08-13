@@ -275,6 +275,9 @@ function syncAppTitlebar() {
 function _beginSettingsPanelSession() {
   _settingsIndex = null;
   _settingsIndexPromise = null;
+  _settingsLazyPaneWarmupPromise = null;
+  _settingsLazyPanesWarmed = false;
+  ++_settingsLazyPaneWarmupRun;
   // Invalidate any in-flight search render from a PRIOR Settings session and
   // reset the search UI, so a slow index build that resolves after the panel
   // was closed/reopened can't paint stale results into the dropdown. #4340
@@ -7877,6 +7880,9 @@ let _settingsAppearanceAutosaveTimer = null;
 let _settingsAppearanceAutosaveRetryPayload = null;
 let _settingsPreferencesAutosaveTimer = null;
 let _settingsPreferencesAutosaveRetryPayload = null;
+let _settingsLazyPaneWarmupPromise = null;
+let _settingsLazyPanesWarmed = false;
+let _settingsLazyPaneWarmupRun = 0;
 
 // ── Sidebar tab visibility/order ────────────────────────────────────────────
 const _ALWAYS_VISIBLE_TABS = new Set(['chat','settings']);
@@ -8404,8 +8410,7 @@ async function _buildSettingsIndex() {
   // lazy pane loaders are not guaranteed re-entrant.
   if (_settingsIndexPromise) return _settingsIndexPromise;
   const promise = (async () => {
-    // Ensure lazy-loaded panes are populated before reading the DOM
-    await Promise.all([loadProvidersPanel(), loadPluginsPanel(), loadExtensionsPanel()]);
+    _warmSettingsLazyPanes();
     const index = [];
     const add = (entry) => {
       index.push({ ...entry, _settingsSearchIndex: index.length });
@@ -8534,6 +8539,28 @@ async function _buildSettingsIndex() {
   })().catch(e => { if (_settingsIndexPromise === promise) _settingsIndexPromise = null; throw e; });
   _settingsIndexPromise = promise;
   return promise;
+}
+
+function _warmSettingsLazyPanes() {
+  if (_settingsLazyPanesWarmed) return Promise.resolve();
+  if (_settingsLazyPaneWarmupPromise) return _settingsLazyPaneWarmupPromise;
+  const run = _settingsLazyPaneWarmupRun;
+  _settingsLazyPaneWarmupPromise = Promise.allSettled([
+    loadProvidersPanel(),
+    loadPluginsPanel(),
+    loadExtensionsPanel()
+  ]).finally(() => {
+    if (run !== _settingsLazyPaneWarmupRun) return;
+    _settingsLazyPaneWarmupPromise = null;
+    _settingsLazyPanesWarmed = true;
+    _settingsIndex = null;
+    _settingsIndexPromise = null;
+    const input = $('settingsSearch');
+    if (_currentPanel === 'settings' && input && input.value.trim()) {
+      filterSettings(input.value);
+    }
+  });
+  return _settingsLazyPaneWarmupPromise;
 }
 
 async function filterSettings(query) {
@@ -9970,9 +9997,6 @@ async function loadSettingsPanel(){
     }
     _syncHermesPanelSessionActions();
     if(typeof loadDashboardSettings==='function') loadDashboardSettings();
-    loadProvidersPanel(); // load provider cards in background
-    loadPluginsPanel(); // load plugin/hook visibility in background
-    loadExtensionsPanel(); // load extension diagnostics in background
     switchSettingsSection(_settingsSection);
   }catch(e){
     showToast(t('settings_load_failed')+e.message);
@@ -11093,6 +11117,7 @@ const _SELF_HOSTED_DEFAULT_BASE_URLS = Object.freeze({
   ollama: 'http://localhost:11434/v1',
   lmstudio: 'http://localhost:1234/v1',
 });
+let _providersPanelLoadSeq = 0;
 
 async function _fetchProviderQuotaStatus(force=false){
   const endpoint=force?`/api/provider/quota?refresh=1&ts=${Date.now()}`:'/api/provider/quota';
@@ -11168,13 +11193,47 @@ function _renderBuiltInProvidersSection(container) {
   return body;  // caller appends quota card + built-in cards into this
 }
 
+function _renderProvidersPanelShell(list, empty) {
+  if (!list) return null;
+  list.innerHTML = '';
+  _providerCardEls.clear();
+  if (empty) empty.style.display = 'none';
+  list.style.display = '';
+  const loading = document.createElement('div');
+  loading.className = 'providers-loading';
+  loading.textContent = t('providers_refreshing') || 'Loading providers...';
+  list.appendChild(loading);
+  return loading;
+}
+
+function _providerQuotaFallback(e) {
+  return {
+    ok: false,
+    status: 'unavailable',
+    quota: null,
+    message: (e && e.message) || t('provider_quota_unavailable'),
+    client_fetched_at: new Date().toISOString()
+  };
+}
+
+function _renderProviderQuotaIntoSection(builtIn, quota) {
+  if (!builtIn || !builtIn.isConnected) return;
+  builtIn.querySelectorAll('.provider-quota-card').forEach(card => card.remove());
+  const quotaCard = _buildProviderQuotaCard(quota || _providerQuotaFallback());
+  if (!quotaCard) return;
+  builtIn.prepend(quotaCard);
+  renderProviderCostChart(quotaCard); // async, fire-and-forget
+}
+
 async function loadProvidersPanel(){
   const list=$('providersList');
   const empty=$('providersEmpty');
   if(!list) return;
+  const seq=++_providersPanelLoadSeq;
+  _renderProvidersPanelShell(list, empty);
   try{
     const data=await api('/api/providers');
-    const quota=await _fetchProviderQuotaStatus(false).catch(e=>({ok:false,status:'unavailable',quota:null,message:e.message||t('provider_quota_unavailable'),client_fetched_at:new Date().toISOString()}));
+    if(seq!==_providersPanelLoadSeq) return;
     // Filter out is_custom from built-in list — they now live in the Custom section above
     const providers=(data.providers||[]).filter(p=>!p.is_custom&&(p.configurable||p.is_oauth||p.is_plugin_provider||p.is_self_hosted));
     list.innerHTML='';
@@ -11182,19 +11241,21 @@ async function loadProvidersPanel(){
 
     // Load custom providers, then render Custom section first (highlighted yellow box)
     await _loadCustomProviders();
+    if(seq!==_providersPanelLoadSeq) return;
     _renderCustomProvidersSection(list);
 
     // Render Built-in section (collapsed by default), then existing built-in cards into it
     const builtIn = _renderBuiltInProvidersSection(list);
-
-    const quotaCard=_buildProviderQuotaCard(quota);
-    if(quotaCard){
-      builtIn.appendChild(quotaCard);
-      renderProviderCostChart(quotaCard); // async, fire-and-forget
-    }
+    const quotaPromise=_fetchProviderQuotaStatus(false)
+      .catch(e=>_providerQuotaFallback(e))
+      .then(quota=>{
+        if(seq!==_providersPanelLoadSeq) return;
+        _renderProviderQuotaIntoSection(builtIn, quota);
+      });
     if(providers.length===0){
       list.style.display='none';
       if(empty) empty.style.display='';
+      quotaPromise.catch(()=>{});
       return;
     }
     if(empty) empty.style.display='none';
@@ -11202,7 +11263,9 @@ async function loadProvidersPanel(){
     for(const p of providers){
       builtIn.appendChild(_buildProviderCard(p));
     }
+    quotaPromise.catch(()=>{});
   }catch(e){
+    if(seq!==_providersPanelLoadSeq) return;
     list.innerHTML='<div style="color:var(--error);padding:12px;font-size:13px">Failed to load providers: '+esc(e.message||String(e))+'</div>';
   }
 }
