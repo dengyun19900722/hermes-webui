@@ -205,6 +205,23 @@
   /* ── Panel editor state ────────────────────────────────────────────── */
   var _editingUserId = '';
   var _editingPanels = [];
+  var _usersCache = [];
+  var _auditRefreshTimer = null;
+  var _usersPanelLoadInFlight = false;
+
+  function runQuietly(promise) {
+    Promise.resolve(promise).catch(function (e) {
+      try { console.warn('[users_panel] background task failed', e); } catch (_) {}
+    });
+  }
+
+  function refreshAuditSoon() {
+    if (_auditRefreshTimer) clearTimeout(_auditRefreshTimer);
+    _auditRefreshTimer = setTimeout(function () {
+      _auditRefreshTimer = null;
+      runQuietly(loadAudit());
+    }, 0);
+  }
 
   window.closePanelsEditor = function () {
     var modal = document.getElementById('users-panels-modal');
@@ -225,7 +242,7 @@
       closePanelsEditor();
       await refreshCurrentAuthAfterUserMutation(targetUserId, result && result.user);
       await loadUsers();
-      await loadAudit();
+      refreshAuditSoon();
     } catch (e) {
       window.alert('保存失败：' + (e.message || String(e)));
     } finally {
@@ -285,6 +302,7 @@
     try {
       var data = await api('/api/admin/users');
       var users = data.users || [];
+      _usersCache = users;
       if (!users.length) {
         tbody.innerHTML = '<tr><td colspan="4" data-i18n="users_none">No users.</td></tr>';
         return;
@@ -360,7 +378,7 @@
       usernameEl.value = '';
       passwordEl.value = '';
       await loadUsers();
-      await loadAudit();
+      refreshAuditSoon();
     } catch (e) {
       showError('users-create-error', e.message || String(e));
     }
@@ -374,7 +392,7 @@
       });
       await refreshCurrentAuthAfterUserMutation(userId, result && result.user);
       await loadUsers();
-      await loadAudit();
+      refreshAuditSoon();
     } catch (e) {
       window.alert(e.message || String(e));
     }
@@ -410,7 +428,7 @@
       }
       // The reset creates an audit event; refresh that table without making a
       // successful password reset appear to fail if the refresh is unavailable.
-      loadAudit();
+      refreshAuditSoon();
     } catch (e) {
       var message = 'Error: ' + (e && e.message ? e.message : String(e));
       if (typeof window.showToast === 'function') {
@@ -430,7 +448,7 @@
     try {
       await api('/api/admin/users/' + encodeURIComponent(userId), { method: 'DELETE' });
       await loadUsers();
-      await loadAudit();
+      refreshAuditSoon();
     } catch (e) {
       window.alert(e.message || String(e));
     }
@@ -452,11 +470,18 @@
   /* ── Fetch user data to open panel editor ─────────────────────────── */
   async function editPanels(userId, username) {
     try {
-      var data = await api('/api/admin/users');
-      var users = data.users || [];
+      var users = Array.isArray(_usersCache) ? _usersCache : [];
       var u = null;
       for (var i = 0; i < users.length; i++) {
         if (users[i].id === userId) { u = users[i]; break; }
+      }
+      if (!u) {
+        var data = await api('/api/admin/users');
+        users = data.users || [];
+        _usersCache = users;
+        for (var j = 0; j < users.length; j++) {
+          if (users[j].id === userId) { u = users[j]; break; }
+        }
       }
       if (!u) throw new Error('User not found');
       openPanelsEditor(userId, username, u.panels);
@@ -473,6 +498,8 @@
       createBtn.dataset.bound = '1';
       createBtn.addEventListener('click', createUser);
     }
+    if (pane.dataset.usersActionsBound) return;
+    pane.dataset.usersActionsBound = '1';
     pane.addEventListener('click', function (e) {
       var btn = e.target.closest && e.target.closest('[data-action]');
       if (!btn) return;
@@ -495,11 +522,21 @@
     });
   }
 
-  async function loadUsersPanel() {
-    renderPanel();
+  function loadUsersPanel() {
+    var pane = document.getElementById('settingsPaneUsers');
+    if (!pane || pane.dataset.usersPanelMounted !== '1' || !pane.querySelector('#users-tbody')) {
+      renderPanel();
+      pane = document.getElementById('settingsPaneUsers');
+      if (pane) pane.dataset.usersPanelMounted = '1';
+    }
     bindActions();
-    await loadCurrentAccount();
-    await Promise.all([loadUsers(), loadAudit()]);
+    if (!_usersPanelLoadInFlight) {
+      _usersPanelLoadInFlight = true;
+      runQuietly(Promise.allSettled([loadCurrentAccount(), loadUsers()]).finally(function () {
+        _usersPanelLoadInFlight = false;
+      }));
+    }
+    refreshAuditSoon();
   }
 
   // Expose to panels.js lazy-load contract

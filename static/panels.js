@@ -275,6 +275,9 @@ function syncAppTitlebar() {
 function _beginSettingsPanelSession() {
   _settingsIndex = null;
   _settingsIndexPromise = null;
+  _settingsLazyPaneWarmupPromise = null;
+  _settingsLazyPanesWarmed = false;
+  ++_settingsLazyPaneWarmupRun;
   // Invalidate any in-flight search render from a PRIOR Settings session and
   // reset the search UI, so a slow index build that resolves after the panel
   // was closed/reopened can't paint stale results into the dropdown. #4340
@@ -7877,6 +7880,9 @@ let _settingsAppearanceAutosaveTimer = null;
 let _settingsAppearanceAutosaveRetryPayload = null;
 let _settingsPreferencesAutosaveTimer = null;
 let _settingsPreferencesAutosaveRetryPayload = null;
+let _settingsLazyPaneWarmupPromise = null;
+let _settingsLazyPanesWarmed = false;
+let _settingsLazyPaneWarmupRun = 0;
 
 // ── Sidebar tab visibility/order ────────────────────────────────────────────
 const _ALWAYS_VISIBLE_TABS = new Set(['chat','settings']);
@@ -8404,8 +8410,7 @@ async function _buildSettingsIndex() {
   // lazy pane loaders are not guaranteed re-entrant.
   if (_settingsIndexPromise) return _settingsIndexPromise;
   const promise = (async () => {
-    // Ensure lazy-loaded panes are populated before reading the DOM
-    await Promise.all([loadProvidersPanel(), loadPluginsPanel(), loadExtensionsPanel()]);
+    _warmSettingsLazyPanes();
     const index = [];
     const add = (entry) => {
       index.push({ ...entry, _settingsSearchIndex: index.length });
@@ -8534,6 +8539,28 @@ async function _buildSettingsIndex() {
   })().catch(e => { if (_settingsIndexPromise === promise) _settingsIndexPromise = null; throw e; });
   _settingsIndexPromise = promise;
   return promise;
+}
+
+function _warmSettingsLazyPanes() {
+  if (_settingsLazyPanesWarmed) return Promise.resolve();
+  if (_settingsLazyPaneWarmupPromise) return _settingsLazyPaneWarmupPromise;
+  const run = _settingsLazyPaneWarmupRun;
+  _settingsLazyPaneWarmupPromise = Promise.allSettled([
+    loadProvidersPanel(),
+    loadPluginsPanel(),
+    loadExtensionsPanel()
+  ]).finally(() => {
+    if (run !== _settingsLazyPaneWarmupRun) return;
+    _settingsLazyPaneWarmupPromise = null;
+    _settingsLazyPanesWarmed = true;
+    _settingsIndex = null;
+    _settingsIndexPromise = null;
+    const input = $('settingsSearch');
+    if (_currentPanel === 'settings' && input && input.value.trim()) {
+      filterSettings(input.value);
+    }
+  });
+  return _settingsLazyPaneWarmupPromise;
 }
 
 async function filterSettings(query) {
@@ -9249,10 +9276,102 @@ function _syncSettingsMaxTokensPlaceholder(field, fallbackValue){
     : 'No override';
 }
 
+function _bindSettingsModelPickerOnce(modelSel){
+  if(!modelSel) return;
+  if(!modelSel._settingsModelDirtyBound){
+    modelSel._settingsModelDirtyBound=true;
+    modelSel.addEventListener('change',_markSettingsDirty,{once:false});
+  }
+  if(!modelSel._settingsChipSyncBound){
+    modelSel._settingsChipSyncBound=true;
+    modelSel.addEventListener('change',()=>{if(typeof syncSettingsModelChip==='function') syncSettingsModelChip();},{once:false});
+  }
+}
+
+function _renderSettingsModelOptions(modelSel, models){
+  if(!modelSel) return;
+  modelSel.innerHTML='';
+  for(const g of (((models||{}).groups)||[])){
+    const og=document.createElement('optgroup');
+    og.label=g.provider;
+    if(g.provider_id) og.dataset.provider=g.provider_id;
+    for(const m of [...(g.models||[]),...(g.extra_models||[])]){
+      const opt=document.createElement('option');
+      opt.value=m.id;opt.textContent=m.label;
+      og.appendChild(opt);
+    }
+    modelSel.appendChild(og);
+  }
+}
+
+function _applySettingsModelFallback(modelSel, model, provider){
+  const fallback=String(model||'').trim();
+  if(!modelSel||!fallback) return;
+  if(typeof _applyModelToDropdown==='function'){
+    const applied=_applyModelToDropdown(fallback, modelSel, provider||window._activeProvider||null);
+    if(applied) return;
+  }
+  if(typeof _ensureModelOptionInDropdown==='function'){
+    _ensureModelOptionInDropdown(fallback, modelSel, provider||window._activeProvider||null);
+    return;
+  }
+  if(!Array.from(modelSel.options||[]).some(opt=>opt.value===fallback)){
+    const opt=document.createElement('option');
+    opt.value=fallback;
+    opt.textContent=(typeof getModelLabel==='function')?getModelLabel(fallback):fallback;
+    modelSel.appendChild(opt);
+  }
+  modelSel.value=fallback;
+}
+
+async function _loadSettingsModelPicker(){
+  const modelSel=$('settingsModel');
+  if(!modelSel) return null;
+  _bindSettingsModelPickerOnce(modelSel);
+  const fallbackModel=String(_settingsHermesDefaultModelOnOpen||window._defaultModel||modelSel.value||'').trim();
+  const fallbackProvider=_settingsHermesDefaultModelProviderOnOpen||window._activeProvider||null;
+  if(fallbackModel&&!modelSel.options.length) _applySettingsModelFallback(modelSel,fallbackModel,fallbackProvider);
+  if(typeof closeSettingsModelDropdown==='function') closeSettingsModelDropdown();
+  if(typeof mountSettingsModelPicker==='function') mountSettingsModelPicker();
+  try{
+    const models=await api('/api/models?freshness=session_visit',{timeoutMs:8000,timeoutToast:false,retries:0});
+    _renderSettingsModelOptions(modelSel, models);
+    _settingsHermesDefaultModelOnOpen=(models&&models.default_model)||'';
+    _settingsHermesDefaultModelProviderOnOpen=(models&&models.active_provider)||null;
+    if(models&&models.default_model) window._defaultModel=models.default_model;
+    if(models&&models.active_provider) window._activeProvider=models.active_provider;
+    const selectedModel=_settingsHermesDefaultModelOnOpen||fallbackModel;
+    const selectedProvider=_settingsHermesDefaultModelProviderOnOpen||fallbackProvider;
+    if(selectedModel) _applySettingsModelFallback(modelSel,selectedModel,selectedProvider);
+    if(typeof closeSettingsModelDropdown==='function') closeSettingsModelDropdown();
+    if(typeof mountSettingsModelPicker==='function') mountSettingsModelPicker();
+    if(typeof syncSettingsModelChip==='function') syncSettingsModelChip();
+    if(models&&models.active_provider&&typeof _fetchLiveModels==='function'){
+      setTimeout(()=>{try{_fetchLiveModels(models.active_provider, modelSel);}catch(_){}},0);
+    }
+    return models;
+  }catch(e){
+    console.warn('[settings] model picker catalog load failed',e);
+    _settingsHermesDefaultModelOnOpen=_settingsHermesDefaultModelOnOpen||fallbackModel||'';
+    _settingsHermesDefaultModelProviderOnOpen=_settingsHermesDefaultModelProviderOnOpen||fallbackProvider||null;
+    _applySettingsModelFallback(modelSel,_settingsHermesDefaultModelOnOpen,_settingsHermesDefaultModelProviderOnOpen);
+    if(typeof syncSettingsModelChip==='function') syncSettingsModelChip();
+    return null;
+  }
+}
+
 async function loadSettingsPanel(){
   try{
     const settings=await api('/api/settings');
     checkWebUIVersionSkew(settings);
+    if(settings&&settings.default_model){
+      window._defaultModel=settings.default_model;
+      _settingsHermesDefaultModelOnOpen=settings.default_model;
+    }
+    if(settings&&Object.prototype.hasOwnProperty.call(settings,'default_model_provider')){
+      window._activeProvider=settings.default_model_provider||window._activeProvider||null;
+      _settingsHermesDefaultModelProviderOnOpen=settings.default_model_provider||null;
+    }
     // Populate the version badges from the server — keeps them in sync with git
     // tags automatically without any manual release step.
     const webuiBadge = $('settings-webui-version-badge');
@@ -9468,49 +9587,14 @@ async function loadSettingsPanel(){
         _schedulePreferencesAutosave();
       },{once:false});
     }
-    // Populate model dropdown from /api/models + live model fetch (#872)
+    // Populate model dropdown from /api/models + live model fetch (#872).
+    // This is intentionally fire-and-forget: Settings → Users must stay usable
+    // even when a provider catalog is slow or the configured default model is
+    // temporarily unavailable.
     const modelSel=$('settingsModel');
     if(modelSel){
-      modelSel.innerHTML='';
-      let models=null;
-      try{
-        models=await api('/api/models');
-        for(const g of ((models||{}).groups||[])){
-          const og=document.createElement('optgroup');
-          og.label=g.provider;
-          if(g.provider_id) og.dataset.provider=g.provider_id;
-          for(const m of [...(g.models||[]),...(g.extra_models||[])]){
-            const opt=document.createElement('option');
-            opt.value=m.id;opt.textContent=m.label;
-            og.appendChild(opt);
-          }
-          modelSel.appendChild(og);
-        }
-        // Append live-fetched models for the active provider, same as the
-        // chat-header dropdown does via _fetchLiveModels() (#872).
-        if(models.active_provider && typeof _fetchLiveModels==='function'){
-          _fetchLiveModels(models.active_provider, modelSel);
-        }
-      }catch(e){}
-      _settingsHermesDefaultModelOnOpen=(models&&models.default_model)||'';
-      _settingsHermesDefaultModelProviderOnOpen=(models&&models.active_provider)||null;
-      // Use the smart matcher so a saved bare form like "anthropic/claude-opus-4.6"
-      // (what the CLI's `hermes model` command writes) still selects the matching
-      // `@nous:anthropic/claude-opus-4.6` option on a Nous setup. Without this, the
-      // picker renders blank for any user whose default was persisted without the
-      // @-prefix — CLI-first users, legacy installs, etc.
-      if(typeof _applyModelToDropdown==='function'){
-        _applyModelToDropdown(_settingsHermesDefaultModelOnOpen, modelSel, (models&&models.active_provider)||window._activeProvider||null);
-      }else{
-        modelSel.value=_settingsHermesDefaultModelOnOpen;
-      }
-      if(typeof closeSettingsModelDropdown==='function') closeSettingsModelDropdown();
-      if(typeof mountSettingsModelPicker==='function') mountSettingsModelPicker();
-      modelSel.addEventListener('change',_markSettingsDirty,{once:false});
-      if(!modelSel._settingsChipSyncBound){
-        modelSel._settingsChipSyncBound=true;
-        modelSel.addEventListener('change',()=>{if(typeof syncSettingsModelChip==='function') syncSettingsModelChip();},{once:false});
-      }
+      _bindSettingsModelPickerOnce(modelSel);
+      Promise.resolve(_loadSettingsModelPicker()).catch(()=>{});
     }
     // Auxiliary models — load task assignments and provider/model options
     _bindMainAdvancedOptionsButton();
@@ -9913,9 +9997,6 @@ async function loadSettingsPanel(){
     }
     _syncHermesPanelSessionActions();
     if(typeof loadDashboardSettings==='function') loadDashboardSettings();
-    loadProvidersPanel(); // load provider cards in background
-    loadPluginsPanel(); // load plugin/hook visibility in background
-    loadExtensionsPanel(); // load extension diagnostics in background
     switchSettingsSection(_settingsSection);
   }catch(e){
     showToast(t('settings_load_failed')+e.message);
@@ -11036,6 +11117,7 @@ const _SELF_HOSTED_DEFAULT_BASE_URLS = Object.freeze({
   ollama: 'http://localhost:11434/v1',
   lmstudio: 'http://localhost:1234/v1',
 });
+let _providersPanelLoadSeq = 0;
 
 async function _fetchProviderQuotaStatus(force=false){
   const endpoint=force?`/api/provider/quota?refresh=1&ts=${Date.now()}`:'/api/provider/quota';
@@ -11111,13 +11193,47 @@ function _renderBuiltInProvidersSection(container) {
   return body;  // caller appends quota card + built-in cards into this
 }
 
+function _renderProvidersPanelShell(list, empty) {
+  if (!list) return null;
+  list.innerHTML = '';
+  _providerCardEls.clear();
+  if (empty) empty.style.display = 'none';
+  list.style.display = '';
+  const loading = document.createElement('div');
+  loading.className = 'providers-loading';
+  loading.textContent = t('providers_refreshing') || 'Loading providers...';
+  list.appendChild(loading);
+  return loading;
+}
+
+function _providerQuotaFallback(e) {
+  return {
+    ok: false,
+    status: 'unavailable',
+    quota: null,
+    message: (e && e.message) || t('provider_quota_unavailable'),
+    client_fetched_at: new Date().toISOString()
+  };
+}
+
+function _renderProviderQuotaIntoSection(builtIn, quota) {
+  if (!builtIn || !builtIn.isConnected) return;
+  builtIn.querySelectorAll('.provider-quota-card').forEach(card => card.remove());
+  const quotaCard = _buildProviderQuotaCard(quota || _providerQuotaFallback());
+  if (!quotaCard) return;
+  builtIn.prepend(quotaCard);
+  renderProviderCostChart(quotaCard); // async, fire-and-forget
+}
+
 async function loadProvidersPanel(){
   const list=$('providersList');
   const empty=$('providersEmpty');
   if(!list) return;
+  const seq=++_providersPanelLoadSeq;
+  _renderProvidersPanelShell(list, empty);
   try{
     const data=await api('/api/providers');
-    const quota=await _fetchProviderQuotaStatus(false).catch(e=>({ok:false,status:'unavailable',quota:null,message:e.message||t('provider_quota_unavailable'),client_fetched_at:new Date().toISOString()}));
+    if(seq!==_providersPanelLoadSeq) return;
     // Filter out is_custom from built-in list — they now live in the Custom section above
     const providers=(data.providers||[]).filter(p=>!p.is_custom&&(p.configurable||p.is_oauth||p.is_plugin_provider||p.is_self_hosted));
     list.innerHTML='';
@@ -11125,19 +11241,21 @@ async function loadProvidersPanel(){
 
     // Load custom providers, then render Custom section first (highlighted yellow box)
     await _loadCustomProviders();
+    if(seq!==_providersPanelLoadSeq) return;
     _renderCustomProvidersSection(list);
 
     // Render Built-in section (collapsed by default), then existing built-in cards into it
     const builtIn = _renderBuiltInProvidersSection(list);
-
-    const quotaCard=_buildProviderQuotaCard(quota);
-    if(quotaCard){
-      builtIn.appendChild(quotaCard);
-      renderProviderCostChart(quotaCard); // async, fire-and-forget
-    }
+    const quotaPromise=_fetchProviderQuotaStatus(false)
+      .catch(e=>_providerQuotaFallback(e))
+      .then(quota=>{
+        if(seq!==_providersPanelLoadSeq) return;
+        _renderProviderQuotaIntoSection(builtIn, quota);
+      });
     if(providers.length===0){
       list.style.display='none';
       if(empty) empty.style.display='';
+      quotaPromise.catch(()=>{});
       return;
     }
     if(empty) empty.style.display='none';
@@ -11145,7 +11263,9 @@ async function loadProvidersPanel(){
     for(const p of providers){
       builtIn.appendChild(_buildProviderCard(p));
     }
+    quotaPromise.catch(()=>{});
   }catch(e){
+    if(seq!==_providersPanelLoadSeq) return;
     list.innerHTML='<div style="color:var(--error);padding:12px;font-size:13px">Failed to load providers: '+esc(e.message||String(e))+'</div>';
   }
 }
@@ -13150,7 +13270,7 @@ async function _loadAuxiliaryModels(){
  // Fetch auxiliary config AND the WebUI's own /api/models for provider/model lists
  const [auxData,modelsData]=await Promise.all([
  api('/api/model/auxiliary').catch(()=>null),
- api('/api/models').catch(()=>null),
+ api('/api/models?freshness=session_visit',{timeoutMs:8000,timeoutToast:false,retries:0}).catch(()=>null),
  ]);
  // Build provider list from /api/models groups
  // /api/models returns: { groups: [{ provider: str, provider_id: str, models: [{id,label}] }] }

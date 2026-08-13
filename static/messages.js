@@ -8,6 +8,34 @@ function _apiUrl(path) {
   return new URL(path, document.baseURI || location.href).href;
 }
 
+// Translate known backend error strings into localized messages before we
+// show them as `**Error:** …` chat bubbles or composer banners. Falls back
+// to the original string when the error is unrecognized so we never lose
+// information the server chose to surface. Add new mappings as the backend
+// grows new read-only / permission states so the chat UI stays in the user's
+// language instead of leaking English.
+function _translateChatError(rawErr) {
+  const msg = (rawErr == null ? '' : String(rawErr));
+  if (!msg) return msg;
+  // Normalize: backend may include the literal `Error: ` prefix; strip it
+  // for matching then re-prepend after lookup so the displayed bubble still
+  // reads `Error: <localized>`.
+  let body = msg.replace(/^\s*Error:\s*/i, '').trim();
+  let prefix = msg.startsWith('Error:') ? 'Error: ' : '';
+  const t = (typeof window !== 'undefined' && typeof window.t === 'function')
+    ? window.t : (k) => k;
+  if (/^shared session is read-only$/i.test(body)) {
+    return prefix + t('chat_error_shared_session_readonly');
+  }
+  if (/^session already has an active stream$/i.test(body)) {
+    // The conflict-active-stream branch is handled inline (queue + toast) at
+    // the call site, but if a future code path ever shows it as a chat
+    // bubble, localize it the same way for consistency.
+    return prefix + (body || msg);
+  }
+  return msg;
+}
+
 // Module-scope dedupe ring buffer for bg_task_complete events. Shared between
 // the in-turn STREAMS path (per-turn EventSource inside the chat-stream wirer)
 // and the persistent session-scoped path (/api/session/stream), so the
@@ -1785,8 +1813,8 @@ async function send(){
     // Only hide approval card if it belongs to the session that just finished
     if(!_approvalSessionId || _approvalSessionId===activeSid) hideApprovalCard(true);removeThinking();
     if(!_clarifySessionId || _clarifySessionId===activeSid) hideClarifyCard(true, 'terminal');
-    S.messages.push({role:'assistant',content:`**Error:** ${errMsg}`});
-    _queueDrainSid=activeSid;renderMessages();setBusy(false);setComposerStatus(`Error: ${errMsg}`);
+    S.messages.push({role:'assistant',content:`**Error:** ${_translateChatError(errMsg)}`});
+    _queueDrainSid=activeSid;renderMessages();setBusy(false);setComposerStatus(`Error: ${_translateChatError(errMsg)}`);
     // #5472: the send was rejected before the turn was durably started, so the
     // composer text + attachments (cleared at send time) would otherwise be
     // lost. Put back the ORIGINAL captured draft (not the mutated /moa/bundle

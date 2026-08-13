@@ -2758,7 +2758,13 @@ function _applySessionModelFallback(sel){
   const configuredDefault=String(window._defaultModel||'').trim();
   if(configuredDefault){
     const appliedDefault=_applyModelToDropdown(configuredDefault,sel,window._activeProvider||null);
-    if(appliedDefault) return _modelStateFromAppliedDropdown(sel,appliedDefault);
+    if(appliedDefault){
+      window._defaultModelUnavailable=false;
+      return _modelStateFromAppliedDropdown(sel,appliedDefault);
+    }
+    window._defaultModelUnavailable=true;
+  }else{
+    window._defaultModelUnavailable=false;
   }
   const first=sel.querySelector('optgroup > option, option');
   if(first){
@@ -2783,18 +2789,33 @@ async function populateModelDropdown(opts={}){
     const modelsUrl=new URL('api/models',document.baseURI||location.href);
     const requestedFreshness=opts&&opts.freshness?String(opts.freshness):'';
     if(opts&&opts.freshness) modelsUrl.searchParams.set('freshness',opts.freshness);
-    // Defense-in-depth: abort the fetch after 60s so a hanging provider
-    // doesn't freeze the dropdown forever (backend _handle_live_models
-    // now has its own 30s timeout, but this guards other paths).
+    // Defense-in-depth: use a short UI budget so a hanging provider catalog
+    // cannot freeze login, boot, or Settings. The session_visit retry below
+    // uses the backend's bounded cached path.
     const _fetchController=new AbortController();
-    const _fetchTimeoutId=setTimeout(()=>_fetchController.abort(),60000);
+    const _modelFetchTimeoutMs=Number.isFinite(Number(opts&&opts.timeoutMs))
+      ? Math.max(1000,Number(opts.timeoutMs))
+      : (requestedFreshness==='session_visit'?8000:12000);
+    const _fetchTimeoutId=setTimeout(()=>_fetchController.abort(),_modelFetchTimeoutMs);
     let _modelsRes;
     try{
       _modelsRes=await fetch(modelsUrl.href,{credentials:'include',signal:_fetchController.signal});
     }catch(_fetchErr){
       clearTimeout(_fetchTimeoutId);
       if(_fetchErr.name==='AbortError'){
-        console.debug('[hermes] Model fetch timed out after 60s');
+        console.debug('[hermes] Model fetch timed out after '+_modelFetchTimeoutMs+'ms');
+        if(requestedFreshness!=='session_visit'&&!_modelCatalogFallbackRetried){
+          _modelCatalogFallbackRetried=true;
+          populateModelDropdown({...opts,freshness:'session_visit',timeoutMs:8000}).catch(()=>{});
+        }else{
+          _applySessionModelFallback(sel);
+          if(typeof syncModelChip==='function') syncModelChip();
+        }
+        return;
+      }
+      if(requestedFreshness!=='session_visit'&&!_modelCatalogFallbackRetried){
+        _modelCatalogFallbackRetried=true;
+        populateModelDropdown({...opts,freshness:'session_visit',timeoutMs:8000}).catch(()=>{});
         return;
       }
       throw _fetchErr; // re-throw to outer catch for network errors
@@ -2812,6 +2833,7 @@ async function populateModelDropdown(opts={}){
     window._defaultModel=data.default_model||null;
     window._configuredModelBadges=data.configured_model_badges||{};
     window._modelEndpointErrors={};
+    window._defaultModelUnavailable=false;
     // Keep g.extra_models label hydration in this function for /model and tail selections.
 
     const _synthGroupsFromConfigured=()=>{
@@ -2915,6 +2937,7 @@ async function populateModelDropdown(opts={}){
     if(requestSeq!==_modelDropdownRequestSeq) return;
     // API unavailable -- keep the hardcoded HTML options as fallback
     console.warn('Failed to load models from server:',e.message);
+    _applySessionModelFallback(sel);
     if(typeof syncModelChip==='function') syncModelChip();
   }
 }

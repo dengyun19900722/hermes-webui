@@ -11622,6 +11622,7 @@ const LOCALES = {
     readonly: '只读',
     shared_readonly_banner: '此会话由 {name} 分享，只读',
     shared_readonly_composer: '只读会话，无法发送消息',
+    chat_error_shared_session_readonly: '此分享会话为只读，无法发送新消息。',
     session_archive_desc: '隐藏此会话，直到显示归档',
     session_archive_worktree_desc: '隐藏此会话；保留磁盘上的 worktree',
     session_hide_external_desc: '从 WebUI 列表中隐藏此导入的会话，不删除原始历史记录。',
@@ -13846,20 +13847,6 @@ const LOCALES = {
     html_error: 'HTML 預覽載入失敗',
     html_open_full: '開啟完整頁面',
     html_sandbox_label: 'HTML 預覽',
-    // TTS (#499)
-    tts_listen: '收聽',
-    tts_not_supported: '語音合成無法使用',
-    settings_label_tts: '回覆語音合成',
-    settings_desc_tts: '在助手訊息上顯示喇叭按鈕',
-    settings_label_tts_auto_read: '自動朗讀回覆',
-    settings_desc_tts_auto_read: '自動朗讀助手回覆',
-    // Composer voice-mode pref (#1488)
-    settings_label_voice_mode: 'Hands-free voice mode button',  // TODO: translate
-    settings_desc_voice_mode: 'Show the voice-mode button (audio waveform) next to the dictation mic. Lets you speak naturally — Hermes auto-sends after a pause and reads replies aloud. Requires a browser that supports both speech recognition and TTS.',  // TODO: translate
-    settings_label_tts_voice: '語音',
-    settings_desc_tts_voice: '選擇語音合成聲音',
-    settings_label_tts_rate: '語速',
-    settings_label_tts_pitch: '音調',
     // Security Audit Log
     audit_section_title: '安全审计日志',
     audit_section_desc: '浏览并导出 HTTP 请求和对话审计记录。',
@@ -13933,8 +13920,6 @@ const LOCALES = {
     insights_token_breakdown: 'Token Breakdown',  // TODO: translate
     insights_tokens: 'Tokens',  // TODO: translate
     insights_total: 'Total',  // TODO: translate
-    settings_desc_api_redact: 'Self-hosted users can disable for transparency (not recommended for shared instances).',  // TODO: translate
-    settings_label_api_redact: 'Redact sensitive data in API responses',  // TODO: translate
     voice_error: 'Voice not supported in this browser',  // TODO: translate
     voice_listening: 'Listening…',  // TODO: translate
     voice_mode_active: 'Voice mode on',  // TODO: translate
