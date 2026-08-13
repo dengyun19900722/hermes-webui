@@ -110,6 +110,22 @@ def test_session_sidebar_cache_is_scoped_by_authenticated_user():
     assert "localStorage.removeItem('hermes-webui-session')" in login_src
 
 
+def test_sign_out_clears_auth_role_panels_and_status_snapshot():
+    boot_src = Path("static/boot.js").read_text(encoding="utf-8")
+    panels_src = Path("static/panels.js").read_text(encoding="utf-8")
+
+    assert "function clearAuthIdentityScopeRuntime()" in boot_src
+    assert "_authIdentityStatusGeneration++" in boot_src
+    assert "_authIdentityStatusPromise=null" in boot_src
+    assert "_authIdentityStatusSnapshot=null" in boot_src
+    assert "window._currentAuthRole=''" in boot_src
+    assert "window._currentUserPanels=null" in boot_src
+    assert "localStorage.removeItem(AUTH_ROLE_STORAGE_KEY)" in boot_src
+    assert "window.clearAuthIdentityScopeRuntime=clearAuthIdentityScopeRuntime" in boot_src
+    assert "typeof window.clearAuthIdentityScopeRuntime==='function'" in panels_src
+    assert "localStorage.removeItem('hermes-webui-auth-role')" in panels_src
+
+
 def test_shared_sessions_wait_until_primary_sidebar_is_ready():
     src = Path("static/session_sharing.js").read_text(encoding="utf-8")
     assert "hermes:session-list-ready" in src

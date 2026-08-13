@@ -9669,12 +9669,23 @@ async function loadSettingsPanel(){
         });
       }
     };
-    if(ttsVoiceSel&&'speechSynthesis' in window){
-      window._populateTtsVoices();
-      speechSynthesis.addEventListener('voiceschanged',function(){
-        const engine=localStorage.getItem('hermes-tts-engine')||'browser';
-        if(engine==='browser') window._populateTtsVoices();
-      },{once:false});
+    if(ttsVoiceSel && 'speechSynthesis' in window){
+      // Some Webview / older browser builds expose `speechSynthesis` as a
+      // non-EventTarget object and do NOT implement `.addEventListener`. Calling
+      // it would throw `undefined is not a function` and abort the rest of the
+      // settings panel initialization (users would see the panel blank with a
+      // generic toast). Guard with `typeof === 'function'` before subscribing.
+      if(typeof speechSynthesis.addEventListener === 'function'){
+        window._populateTtsVoices();
+        speechSynthesis.addEventListener('voiceschanged',function(){
+          const engine=localStorage.getItem('hermes-tts-engine')||'browser';
+          if(engine==='browser') window._populateTtsVoices();
+        },{once:false});
+      } else {
+        // Best-effort: still populate once so the dropdown isn't empty; we just
+        // can't auto-refresh when the engine finishes loading system voices.
+        try{ window._populateTtsVoices(); }catch(_){}
+      }
       ttsVoiceSel.onchange=function(){_markSpeechPreferenceChanged('tts_voice');localStorage.setItem('hermes-tts-voice',this.value);_schedulePreferencesAutosave();};
     }
     // TTS rate/pitch sliders
@@ -13282,7 +13293,16 @@ async function saveSettings(andClose){
 async function signOut(){
   try{
     await api('/api/auth/logout',{method:'POST',body:'{}'});
-    try{localStorage.removeItem('hermes-webui-auth-user-id');}catch(_){}
+    try{
+      if(typeof window.clearAuthIdentityScopeRuntime==='function') window.clearAuthIdentityScopeRuntime();
+      else {
+        localStorage.removeItem('hermes-webui-auth-user-id');
+        localStorage.removeItem('hermes-webui-auth-role');
+        window._currentAuthUserId='';
+        window._currentAuthRole='';
+        window._currentUserPanels=null;
+      }
+    }catch(_){}
     try{localStorage.removeItem('hermes-webui-session');}catch(_){}
     try{if(typeof resetSessionStateForAuthChange==='function')resetSessionStateForAuthChange('');}catch(_){}
     try{if(typeof _resetShareCurrentUser==='function')_resetShareCurrentUser();}catch(_){}

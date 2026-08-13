@@ -12398,11 +12398,14 @@ def handle_get(handler, parsed) -> bool:
                 rbac_user = get_user_from_session(cv)
                 if rbac_user:
                     from api.user_store import DEFAULT_USER_PANELS
+                    panels = rbac_user.get("panels")
+                    if not isinstance(panels, list):
+                        panels = list(DEFAULT_USER_PANELS)
                     current_user = {
                         "id": rbac_user.get("id"),
                         "username": rbac_user.get("username"),
                         "role": rbac_user.get("role", "user"),
-                        "panels": rbac_user.get("panels") or list(DEFAULT_USER_PANELS),
+                        "panels": panels,
                     }
         passkey_flag = _passkey_feature_flag_enabled()
         passkeys = registered_credentials() if passkey_flag else []
