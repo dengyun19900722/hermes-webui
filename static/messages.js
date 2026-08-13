@@ -4458,7 +4458,8 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       const caughtUp=_renderStreamingFadeMarkdown(target);
       const anchorProcessText=_streamFadeDomText||target;
       if(anchorProcessText) _upsertAnchorProcessProse(anchorProcessText);
-      scrollIfPinned();
+      if(typeof followStreamingOutputIfPinned==='function') followStreamingOutputIfPinned();
+      else scrollIfPinned();
       if(caughtUp){
         // parser_end can flush pending markdown text; include that final text in
         // the fade wait instead of replacing it immediately in renderMessages().
@@ -4867,7 +4868,8 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
         if(typeof _syncLiveWorklogReasonsForAnchor==='function') _syncLiveWorklogReasonsForAnchor(assistantRow, displayText);
       }
       if(anchorProcessText) _upsertAnchorProcessProse(anchorProcessText);
-      scrollIfPinned();
+      if(typeof followStreamingOutputIfPinned==='function') followStreamingOutputIfPinned();
+      else scrollIfPinned();
       _throttledSnapshotLiveTurn();
     };
     const frameIntervalMs=_shouldUseLiveProseFade()?33:66;
