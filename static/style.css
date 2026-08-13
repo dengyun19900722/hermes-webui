@@ -8342,10 +8342,10 @@ html[data-conversation-outline="enabled"] #outlineToggleBtn:not([hidden]){displa
 .shared-sessions-head{padding:4px 12px;}
 .shared-sessions-title{font-size:12px;font-weight:600;color:var(--text-muted,#9AA0AC);text-transform:uppercase;letter-spacing:.04em;}
 .shared-session-row{display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer;border-radius:8px;}
-.shared-session-row:hover{background:var(--surface-hover,#232733);}
+.shared-session-row:hover{background:var(--hover-bg,rgba(0,0,0,.05));}
 .shared-session-row .session-row-main{flex:1;min-width:0;}
-.shared-session-row .session-row-title{font-size:13px;color:var(--text,#E6E8EC);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.shared-session-sub{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-muted,#6B7280);}
+.shared-session-row .session-row-title{font-size:13px;color:var(--text,#1A1610);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.shared-session-sub{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted,#6B7280);}
 .shared-readonly-badge{flex-shrink:0;font-size:10px;padding:2px 6px;border-radius:6px;background:rgba(212,168,67,.15);color:var(--accent,#D4A843);border:1px solid rgba(212,168,67,.3);}
 
 /* Read-only banner + composer lock for shared sessions */
