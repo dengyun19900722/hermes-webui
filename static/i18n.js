@@ -11574,6 +11574,7 @@ const LOCALES = {
     readonly: '只读',
     shared_readonly_banner: '此会话由 {name} 分享，只读',
     shared_readonly_composer: '只读会话，无法发送消息',
+    chat_error_shared_session_readonly: '此分享会话为只读，无法发送新消息。',
     session_archive_desc: '隐藏此会话，直到显示归档',
     session_archive_worktree_desc: '隐藏此会话；保留磁盘上的 worktree',
     session_hide_external_desc: '从 WebUI 列表中隐藏此导入的会话，不删除原始历史记录。',
