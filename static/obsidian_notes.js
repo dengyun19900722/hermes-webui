@@ -593,6 +593,11 @@ function _renderKnowledgeSearchResults(results, query){
   }
 }
 
+function _knowledgeShowWarningOnce(key, message, ms=8000){
+  if(typeof showWarningOnce==='function') showWarningOnce(key, message, ms);
+  else if(typeof showToast==='function') showToast(message, ms, 'warning');
+}
+
 async function loadKnowledgeNotes(force=false){
   const box=$('knowledgeList');
   if(!box) return;
@@ -603,7 +608,7 @@ async function loadKnowledgeNotes(force=false){
       if(!ok) return;
       cancelKnowledgeEdit();
     }
-    const data = await api('/api/notes/tree');
+    const data = await api('/api/notes/tree',{timeoutToast:false,retries:0});
     _knowledgeTreeData = data || {};
     const expandedNow = new Set(_knowledgeExpanded);
     if(!expandedNow.size && Array.isArray(_knowledgeTreeData.tree)){
@@ -628,6 +633,12 @@ async function loadKnowledgeNotes(force=false){
       _knowledgeSetEmptyState('选择一个笔记', '从左侧知识库目录选择笔记，或新建一条 Markdown 笔记。');
     }
   }catch(e){
+    if(typeof isRequestTimeoutError==='function'&&isRequestTimeoutError(e)){
+      const msg='知识库目录加载超时：后端可能正在扫描较大的知识库，或当前服务繁忙。请稍后点击刷新。';
+      box.innerHTML = `<div class="knowledge-warning">${esc(msg)}</div>`;
+      _knowledgeShowWarningOnce('knowledge-tree-timeout', msg);
+      return;
+    }
     box.innerHTML = `<div class="knowledge-error">加载知识库失败：${esc(e.message)}</div>`;
   }
 }
@@ -643,10 +654,16 @@ function filterKnowledgeNotes(force=false){
   }
   _knowledgeSearchTimer=setTimeout(async()=>{
     try{
-      const data=await api('/api/notes/search?q='+encodeURIComponent(query));
+      const data=await api('/api/notes/search?q='+encodeURIComponent(query),{timeoutToast:false,retries:0});
       _renderKnowledgeSearchResults(Array.isArray(data.results)?data.results:[], query);
     }catch(e){
       const box=$('knowledgeList');
+      if(typeof isRequestTimeoutError==='function'&&isRequestTimeoutError(e)){
+        const msg='知识库搜索超时：后端可能正在扫描目录或检索范围较大，请缩小关键词后重试。';
+        if(box) box.innerHTML = `<div class="knowledge-warning">${esc(msg)}</div>`;
+        _knowledgeShowWarningOnce('knowledge-search-timeout', msg);
+        return;
+      }
       if(box) box.innerHTML = `<div class="knowledge-error">搜索失败：${esc(e.message)}</div>`;
     }
   }, force ? 0 : 300);
@@ -692,7 +709,7 @@ async function openKnowledgeNote(path, el, opts={}){
   const cached=_knowledgeNoteCache.get(notePath);
   if(cached&&!opts.force) return _openNote(cached);
   try{
-    const data=await api('/api/notes/content?path='+encodeURIComponent(notePath));
+    const data=await api('/api/notes/content?path='+encodeURIComponent(notePath),{timeoutToast:false,retries:0});
     // 缓存笔记（限制缓存条目数）
     _knowledgeNoteCache.set(notePath,data);
     if(_knowledgeNoteCache.size>_KNOWLEDGE_CACHE_MAX){
@@ -701,6 +718,13 @@ async function openKnowledgeNote(path, el, opts={}){
     }
     _openNote(data);
   }catch(e){
+    if(typeof isRequestTimeoutError==='function'&&isRequestTimeoutError(e)){
+      _knowledgeShowWarningOnce(
+        'knowledge-note-timeout',
+        '笔记正文加载超时：后端可能正在读取大文件或当前服务繁忙，请稍后重试。'
+      );
+      return;
+    }
     showToast('加载笔记失败：'+e.message);
   }
 }

@@ -66,7 +66,7 @@ def test_ui_js_passes_model_context_to_reasoning_api():
     inlined = "api('/api/reasoning'+_reasoningEffortQuery())" in src
     captured = (
         re.search(r"const\s+key\s*=\s*_reasoningEffortQuery\(\)", fetch_body)
-        and "api('/api/reasoning'+key)" in fetch_body
+        and re.search(r"api\('/api/reasoning'\+key\s*(?:,|\))", fetch_body)
     )
     assert inlined or captured, (
         "fetchReasoningChip must pass _reasoningEffortQuery() (model/provider context) "
@@ -78,10 +78,10 @@ def test_fetchReasoningChip_calls_apply():
     """fetchReasoningChip must call _applyReasoningChip on success."""
     with open("static/ui.js") as f:
         src = f.read()
-    # Find fetchReasoningChip function
-    func_match = re.search(r"function fetchReasoningChip\(\)\{(.+?)\}", src, re.DOTALL)
-    assert func_match, "fetchReasoningChip function must exist"
-    func_body = func_match.group(1)
+    start = src.find("function fetchReasoningChip(){")
+    end = src.find("function syncReasoningChip()", start)
+    assert start >= 0 and end > start, "fetchReasoningChip function must exist"
+    func_body = src[start:end]
     assert "_applyReasoningChip" in func_body, \
         "fetchReasoningChip must call _applyReasoningChip"
 

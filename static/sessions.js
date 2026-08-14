@@ -2515,7 +2515,10 @@ function _resolveSessionModelForDisplaySoon(sid){
   if(!sid) return;
   _deferSessionSideEffect(sid,async()=>{
     try{
-      const data=await api(`/api/session?session_id=${encodeURIComponent(sid)}&messages=0&resolve_model=1`);
+      const data=await api(
+        `/api/session?session_id=${encodeURIComponent(sid)}&messages=0&resolve_model=1`,
+        {timeoutMs:8000,timeoutToast:false,retries:0}
+      );
       const model=data&&data.session&&data.session.model;
       const provider=data&&data.session&&data.session.model_provider;
       if(!model||!S.session||S.session.session_id!==sid) return;
@@ -2542,7 +2545,13 @@ function _resolveSessionModelForDisplaySoon(sid){
           threshold_tokens:data.session.threshold_tokens||0,
         });
       }
-    }catch(_){
+    }catch(e){
+      if(typeof isRequestTimeoutError==='function'&&isRequestTimeoutError(e)&&typeof showWarningOnce==='function'){
+        showWarningOnce(
+          'model-status-timeout',
+          '模型状态检测超时：当前模型服务响应慢，或后台正在探测模型能力。已暂时使用缓存信息，不影响继续浏览页面。'
+        );
+      }
       // Keep session switching non-blocking; the next load can try again.
     }
   },0);

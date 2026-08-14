@@ -299,7 +299,26 @@ def test_passive_background_polls_suppress_timeout_toasts():
     assert "api('/api/dashboard/status',{timeoutToast:false})" in ui
     assert "api('/api/system/health',{timeoutToast:false})" in ui
     assert "api('/api/health/agent',{timeoutToast:false})" in ui
+    assert "api('/api/reasoning'+key,{timeoutMs:8000,timeoutToast:false,retries:0})" in ui
+    assert (
+        "`/api/session?session_id=${encodeURIComponent(sid)}&messages=0&resolve_model=1`,\n"
+        "        {timeoutMs:8000,timeoutToast:false,retries:0}"
+    ) in sessions
     assert "api(`/api/crons/status?job_id=${encodeURIComponent(jobId)}`,{timeoutToast:false})" in panels
+
+
+def test_knowledge_read_timeouts_use_contextual_warning():
+    """Knowledge read paths should not emit the generic English timeout toast."""
+    notes = _source(ROOT / "static" / "obsidian_notes.js")
+    css = _source(ROOT / "static" / "style.css")
+
+    assert "api('/api/notes/tree',{timeoutToast:false,retries:0})" in notes
+    assert "api('/api/notes/search?q='+encodeURIComponent(query),{timeoutToast:false,retries:0})" in notes
+    assert "api('/api/notes/content?path='+encodeURIComponent(notePath),{timeoutToast:false,retries:0})" in notes
+    assert "知识库目录加载超时" in notes
+    assert "知识库搜索超时" in notes
+    assert "笔记正文加载超时" in notes
+    assert ".knowledge-warning{color:var(--warning);}" in css
 
 
 def test_new_session_inflight_cleanup_still_runs_after_api_rejects():

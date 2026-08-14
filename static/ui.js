@@ -4517,17 +4517,23 @@ function fetchReasoningChip(){
   const key=_reasoningEffortQuery();
   const seq=++_reasoningFetchSeq;
   _lastReasoningFetchKey=key;
-  api('/api/reasoning'+key).then(function(st){
+  api('/api/reasoning'+key,{timeoutMs:8000,timeoutToast:false,retries:0}).then(function(st){
     // Ignore a stale/superseded response: only the most recent dispatch may
     // apply, so an older in-flight GET can't poison the current chip (#4650).
     if(seq!==_reasoningFetchSeq) return;
     _applyReasoningChip((st&&st.reasoning_effort)||'', st||{});
-  }).catch(function(){
+  }).catch(function(e){
     // Same staleness guard on failure: a stale error must neither hide the chip
     // nor clear a newer fetch's key. Only the latest dispatch clears the key so
     // routine syncs retry after a genuine transient failure.
     if(seq!==_reasoningFetchSeq) return;
     _lastReasoningFetchKey=null;
+    if(isRequestTimeoutError(e)){
+      showWarningOnce(
+        'model-status-timeout',
+        '模型状态检测超时：当前模型服务响应慢，或后台正在探测模型能力。已暂时使用缓存信息，不影响继续浏览页面。'
+      );
+    }
     _applyReasoningChip('', {supported_efforts:[]});
   });
 }
@@ -7664,6 +7670,22 @@ function showToast(msg,ms,type){
   el.onclick=t==='error'?null:()=>dismissToast(el);
   setToastDismissTimer(el,duration);
 }
+
+const _warningToastOnceLast=Object.create(null);
+function isRequestTimeoutError(e){
+  return !!(e&&(e.timeout===true||e.name==='TimeoutError'||/timed out|timeout/i.test(String(e.message||''))));
+}
+function showWarningOnce(key,msg,ms=7000,ttlMs=60000){
+  const id=String(key||msg||'warning');
+  const now=Date.now();
+  if(_warningToastOnceLast[id]&&now-_warningToastOnceLast[id]<ttlMs) return;
+  _warningToastOnceLast[id]=now;
+  if(typeof showToast==='function') showToast(msg,ms,'warning');
+}
+try{
+  window.isRequestTimeoutError=isRequestTimeoutError;
+  window.showWarningOnce=showWarningOnce;
+}catch(_){}
 
 // ── Shared app dialogs ───────────────────────────────────────────────────────
 // showConfirmDialog(opts) and showPromptDialog(opts) replace browser-native dialog calls
