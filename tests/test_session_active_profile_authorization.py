@@ -11,8 +11,19 @@ import io
 import time
 from urllib.parse import urlparse
 
+import pytest
+
 import api.routes as routes
 import api.upload as upload
+
+
+@pytest.fixture(autouse=True)
+def _disable_rbac_for_profile_visibility_tests(monkeypatch):
+    """Keep this file focused on profile isolation, independent of local users.json."""
+    monkeypatch.setattr(routes, "_rbac_users_configured", lambda: False)
+    monkeypatch.setattr(routes, "_current_rbac_user", lambda _handler: None)
+    monkeypatch.setattr(routes, "_current_rbac_user_id", lambda _handler: None)
+    monkeypatch.setattr(routes, "_current_rbac_user_is_admin", lambda _handler: False)
 
 
 class _FakeHandler:

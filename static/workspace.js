@@ -158,7 +158,9 @@ function recordClientSSEError(source, details={}){
 
 // Persist/restore expanded directory state per workspace in localStorage
 function _wsExpandKey(){
-  const ws=S.session&&S.session.workspace;
+  const ws=(S.session&&S.session.workspace)
+    || (typeof getCurrentWorkspaceBrowsePath==='function'&&getCurrentWorkspaceBrowsePath())
+    || '';
   return ws?'hermes-webui-expanded:'+ws:null;
 }
 function _saveExpandedDirs(){
@@ -278,32 +280,44 @@ function _clearWorkspaceEscapeGrant(path){
 }
 
 function _workspacePathIsReadOnly(path){
-  return !!_workspaceEscapeGrantForPath(path || S.currentDir || '.');
+  return !S.session || !!_workspaceEscapeGrantForPath(path || S.currentDir || '.');
 }
 
 function _workspaceRouteForPath(path, kind, opts={}){
-  if(!S.session) return '';
   const normalizedPath = _normalizeWorkspaceRelPath(path);
-  const grant = _workspaceEscapeGrantForPath(normalizedPath);
-  const sessionId = encodeURIComponent(S.session.session_id);
-  const params = new URLSearchParams({session_id:S.session.session_id, path:normalizedPath || '.'});
-  if(grant){
-    params.set('token', grant.token);
-    if(kind === 'raw' && opts.download) params.set('download', '1');
-    if(kind === 'raw' && opts.inline) params.set('inline', '1');
-    if(kind === 'list') return `/api/escape/list?${params.toString()}`;
-    if(kind === 'read') return `/api/escape/file/read?${params.toString()}`;
-    if(kind === 'raw') return `/api/escape/file/raw?${params.toString()}`;
+  if(S.session){
+    const grant = _workspaceEscapeGrantForPath(normalizedPath);
+    const sessionId = encodeURIComponent(S.session.session_id);
+    const params = new URLSearchParams({session_id:S.session.session_id, path:normalizedPath || '.'});
+    if(grant){
+      params.set('token', grant.token);
+      if(kind === 'raw' && opts.download) params.set('download', '1');
+      if(kind === 'raw' && opts.inline) params.set('inline', '1');
+      if(kind === 'list') return `/api/escape/list?${params.toString()}`;
+      if(kind === 'read') return `/api/escape/file/read?${params.toString()}`;
+      if(kind === 'raw') return `/api/escape/file/raw?${params.toString()}`;
+    }
+    if(kind === 'list') return `/api/list?session_id=${sessionId}&path=${encodeURIComponent(normalizedPath || '.')}`;
+    if(kind === 'read') return `/api/file?session_id=${sessionId}&path=${encodeURIComponent(normalizedPath || '.')}`;
+    if(kind === 'raw'){
+      const extra = [];
+      if(opts.download) extra.push('download=1');
+      // Inline previews intentionally preserve a literal &inline=1 marker in this file.
+      if(opts.inline) extra.push('inline=1');
+      const suffix = extra.length ? `&${extra.join('&')}` : '';
+      return `/api/file/raw?session_id=${sessionId}&path=${encodeURIComponent(normalizedPath || '.')}${suffix}`;
+    }
+    return '';
   }
-  if(kind === 'list') return `/api/list?session_id=${sessionId}&path=${encodeURIComponent(normalizedPath || '.')}`;
-  if(kind === 'read') return `/api/file?session_id=${sessionId}&path=${encodeURIComponent(normalizedPath || '.')}`;
+  const workspace=(typeof getCurrentWorkspaceBrowsePath==='function'&&getCurrentWorkspaceBrowsePath())||'';
+  if(!workspace) return '';
+  const params = new URLSearchParams({workspace, path:normalizedPath || '.'});
+  if(kind === 'list') return `/api/list?${params.toString()}`;
+  if(kind === 'read') return `/api/file?${params.toString()}`;
   if(kind === 'raw'){
-    const extra = [];
-    if(opts.download) extra.push('download=1');
-    // Inline previews intentionally preserve a literal &inline=1 marker in this file.
-    if(opts.inline) extra.push('inline=1');
-    const suffix = extra.length ? `&${extra.join('&')}` : '';
-    return `/api/file/raw?session_id=${sessionId}&path=${encodeURIComponent(normalizedPath || '.')}${suffix}`;
+    if(opts.download) params.set('download', '1');
+    if(opts.inline) params.set('inline', '1');
+    return `/api/file/raw?${params.toString()}`;
   }
   return '';
 }
@@ -750,25 +764,40 @@ function clearWorkspaceTreeSkeleton(){
 async function loadDir(path, opts={}){
   const preservePreview=!!(opts&&opts.preservePreview);
   const refreshExpanded=!!(opts&&opts.refreshExpanded);
-  if(!S.session)return;
-  const sessionId=S.session.session_id;
+  const sessionId=(S.session&&S.session.session_id)||'';
+  const workspacePath=sessionId
+    ? (S.session.workspace||'')
+    : ((typeof getCurrentWorkspaceBrowsePath==='function'&&getCurrentWorkspaceBrowsePath())||'');
+  if(!sessionId&&!workspacePath){
+    S.entries=[];
+    S._dirCache={};
+    S.currentDir='.';
+    renderBreadcrumb();
+    renderFileTree();
+    return;
+  }
   const treeGen=_wsTreeGen;  // #4671: capture the workspace-tree generation. A profile
                              // switch bumps it (bumpWorkspaceTreeGen), so a stale response
                              // from the previous workspace — which would pass the session_id
                              // guard because an empty-session switch reuses the same id — is
                              // rejected here instead of painting the wrong profile's files.
   const requestedPath=_workspaceDirKey(path||'.');
+  const scopeStillCurrent=()=>{
+    if(treeGen!==_wsTreeGen) return false;
+    if(sessionId) return !!(S.session&&S.session.session_id===sessionId);
+    const currentWorkspace=(typeof getCurrentWorkspaceBrowsePath==='function'&&getCurrentWorkspaceBrowsePath())||'';
+    return !S.session&&currentWorkspace===workspacePath;
+  };
   try{
     if(requestedPath==='.'||refreshExpanded){
       S._dirCache={};
       _restoreExpandedDirs();  // restore per-workspace expanded state after root and refresh resets
     }
     S.currentDir=requestedPath;
-    const data=await api(
-      _workspaceRouteForPath(path, 'list') ||
-      `/api/list?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(requestedPath||'.')}`
-    );
-    if(!S.session||S.session.session_id!==sessionId||treeGen!==_wsTreeGen)return;
+    const route=_workspaceRouteForPath(path, 'list');
+    if(!route)return;
+    const data=await api(route);
+    if(!scopeStillCurrent())return;
     S.entries=data.entries||[];renderBreadcrumb();renderFileTree();
     // #2673 — refresh Artifacts tab when its source data (the file tree) updates.
     if(typeof renderSessionArtifacts==='function') renderSessionArtifacts();
@@ -783,12 +812,14 @@ async function loadDir(path, opts={}){
       }
       const pending=cleanExpanded.filter(dirPath=>!S._dirCache[dirPath]);
       if(pending.length){
-        const results=await Promise.all(pending.map(dirPath=>
-          api(_workspaceRouteForPath(dirPath, 'list'))
+        const results=await Promise.all(pending.map(dirPath=>{
+          const route=_workspaceRouteForPath(dirPath, 'list');
+          if(!route) return Promise.resolve({dirPath,entries:[]});
+          return api(route)
             .then(dc=>({dirPath,entries:dc.entries||[]}))
-            .catch(()=>({dirPath,entries:[]}))
-        ));
-        if(!S.session||S.session.session_id!==sessionId||treeGen!==_wsTreeGen)return;
+            .catch(()=>({dirPath,entries:[]}));
+        }));
+        if(!scopeStillCurrent())return;
         for(const {dirPath,entries} of results) S._dirCache[_workspaceDirKey(dirPath)]=entries;
       }
       if(expanded.size>0)renderFileTree();
@@ -811,12 +842,25 @@ async function loadDir(path, opts={}){
       showToast(t('external_link_grant_expired') || t('file_open_failed'), 5000, 'error');
       return;
     }
+    if(e && e.status===403){
+      if(!scopeStillCurrent())return;
+      S.entries=[];
+      S._dirCache={};
+      S.currentDir='.';
+      renderBreadcrumb();
+      renderFileTree();
+      if(typeof renderSessionArtifacts==='function') renderSessionArtifacts();
+      if(typeof clearPreview==='function') clearPreview({keepPanelOpen:true});
+      if(typeof showToast==='function') showToast(t('workspace_access_denied'), 5000, 'warning');
+      try{ if(typeof loadWorkspaceList==='function') loadWorkspaceList(); }catch(_){}
+      return;
+    }
     console.warn('loadDir',e);
   }
 }
 
 function refreshWorkspacePanel(){
-  if(!S.session)return;
+  if(!S.session&&!(typeof getCurrentWorkspaceBrowsePath==='function'&&getCurrentWorkspaceBrowsePath()))return;
   const targetDir = S.currentDir || '.';
   loadDir(targetDir,{refreshExpanded:true});
 }
@@ -848,7 +892,7 @@ async function _refreshGitBadge(){
 }
 
 function navigateUp(){
-  if(!S.session||S.currentDir==='.')return;
+  if((!S.session&&!(typeof getCurrentWorkspaceBrowsePath==='function'&&getCurrentWorkspaceBrowsePath()))||S.currentDir==='.')return;
   const parts=S.currentDir.split('/');
   parts.pop();
   loadDir(parts.length?parts.join('/'):'.');
@@ -1246,9 +1290,9 @@ async function openFile(path, opts={}){
 }
 
 function downloadFile(path){
-  if(!S.session)return;
   // Trigger browser download via the raw file endpoint with content-disposition attachment
   const url=_workspaceRouteForPath(path, 'raw', {download:true});
+  if(!url)return;
   const filename=path.split('/').pop();
   const a=document.createElement('a');
   a.href=url;a.download=filename;
@@ -1297,8 +1341,9 @@ function renderFileBreadcrumb(filePath) {
 }
 
 function openInBrowser(){
-  if(!_previewCurrentPath||!S.session) return;
+  if(!_previewCurrentPath) return;
   const url=_workspaceRouteForPath(_previewCurrentPath, 'raw', {inline:true});
+  if(!url) return;
   window.open(url,'_blank','noopener');
 }
 // openInBrowser keeps the helper-based raw path, which expands to an explicit &inline=1 URL.

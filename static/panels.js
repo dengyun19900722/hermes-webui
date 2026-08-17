@@ -5669,6 +5669,17 @@ function getWorkspaceFriendlyName(path){
   return path.split('/').filter(Boolean).pop()||path;
 }
 
+function getCurrentWorkspaceBrowsePath(){
+  if(S.session&&S.session.workspace) return S.session.workspace;
+  const defaultWs=(typeof S._profileDefaultWorkspace==='string'&&S._profileDefaultWorkspace)||'';
+  const listAccessible=Array.isArray(_workspaceList)?_workspaceList:[];
+  const inAccessible=path=>!!path && listAccessible.some(w=>w&&w.path===path);
+  if(inAccessible(defaultWs)) return defaultWs;
+  if(listAccessible.length>0) return listAccessible[0].path||'';
+  return '';
+}
+if(typeof window!=='undefined') window.getCurrentWorkspaceBrowsePath=getCurrentWorkspaceBrowsePath;
+
 function syncWorkspaceDisplays(){
   const hasSession=!!(S.session&&S.session.workspace);
   // Fall back to the profile default workspace when no session is active yet.

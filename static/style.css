@@ -2551,8 +2551,9 @@
   .knowledge-row-actions button[data-action="mkdir"]{background:var(--accent-bg);border-color:var(--accent-bg-strong);color:var(--accent-text);}
   .knowledge-row-actions button[data-action="mkdir"]:hover{background:var(--accent-bg-strong);border-color:var(--accent);color:var(--accent-text);}
   .knowledge-row-actions button[data-action="delete"]:hover{background:rgba(198,40,40,.08);border-color:rgba(198,40,40,.18);color:var(--error);}
-  .knowledge-tree-empty,.knowledge-error{padding:12px;color:var(--muted);font-size:12px;line-height:1.5;}
+  .knowledge-tree-empty,.knowledge-error,.knowledge-warning{padding:12px;color:var(--muted);font-size:12px;line-height:1.5;}
   .knowledge-error{color:var(--accent);}
+  .knowledge-warning{color:var(--warning);}
   .knowledge-detail-meta{font-size:11px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:min(70vw,760px);}
   .knowledge-detail-layout,.knowledge-editor-shell{display:grid;grid-template-columns:minmax(0,1fr) 220px;gap:0;min-height:0;width:100%;}
   .knowledge-note-content{font-size:14px;line-height:1.7;color:var(--text);padding:4px 0 12px;}

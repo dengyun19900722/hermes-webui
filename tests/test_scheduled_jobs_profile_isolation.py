@@ -405,6 +405,56 @@ def test_streaming_cronjob_wrapper_uses_profile_context_only_for_tool_call(tmp_p
     ]
 
 
+def test_streaming_cronjob_wrapper_tolerates_missing_dynamic_schema_overrides(monkeypatch):
+    """Newer agent ToolEntry objects may omit dynamic_schema_overrides."""
+    import types
+
+    from api import streaming as st
+
+    events = []
+    registered_kwargs = {}
+
+    def original_handler(args, **kwargs):
+        events.append(("handler", args.get("action")))
+        return "ok"
+
+    class Entry:
+        name = "cronjob"
+        toolset = "cronjob"
+        schema = {"name": "cronjob"}
+        handler = staticmethod(original_handler)
+        check_fn = None
+        requires_env = []
+        is_async = False
+        description = ""
+        emoji = None
+        max_result_size_chars = None
+
+    entry = Entry()
+
+    class Registry:
+        def get_entry(self, name):
+            assert name == "cronjob"
+            return entry
+
+        def register(self, **kwargs):
+            registered_kwargs.update(kwargs)
+            entry.handler = kwargs["handler"]
+
+    tools_pkg = types.ModuleType("tools")
+    registry_mod = types.ModuleType("tools.registry")
+    registry_mod.__dict__["registry"] = Registry()
+    monkeypatch.setitem(sys.modules, "tools", tools_pkg)
+    monkeypatch.setitem(sys.modules, "tools.registry", registry_mod)
+    monkeypatch.setattr(st, "_STREAMING_CRONJOB_WRAPPER_INSTALLED", False)
+
+    st._install_streaming_cronjob_profile_wrapper()
+
+    assert "dynamic_schema_overrides" not in registered_kwargs
+    assert entry.handler({"action": "list"}) == "ok"
+    assert events == [("handler", "list")]
+
+
 def test_streaming_cronjob_wrapper_context_survives_threadpool_context_copy(tmp_path, monkeypatch):
     """Lock the cross-thread contextvar contract used by agent tool dispatch.
 

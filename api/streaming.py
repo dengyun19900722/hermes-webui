@@ -295,19 +295,21 @@ def _install_streaming_cronjob_profile_wrapper() -> None:
 
     _profile_scoped_cronjob_handler.__dict__["_webui_streaming_profile_wrapper"] = True
     _profile_scoped_cronjob_handler.__dict__["_webui_original_handler"] = original_handler
-    registry.register(
-        name=entry.name,
-        toolset=entry.toolset,
-        schema=entry.schema,
-        handler=_profile_scoped_cronjob_handler,
-        check_fn=entry.check_fn,
-        requires_env=entry.requires_env,
-        is_async=entry.is_async,
-        description=entry.description,
-        emoji=entry.emoji,
-        max_result_size_chars=entry.max_result_size_chars,
-        dynamic_schema_overrides=entry.dynamic_schema_overrides,
-    )
+    register_kwargs = {
+        "name": entry.name,
+        "toolset": entry.toolset,
+        "schema": entry.schema,
+        "handler": _profile_scoped_cronjob_handler,
+        "check_fn": entry.check_fn,
+        "requires_env": entry.requires_env,
+        "is_async": entry.is_async,
+        "description": entry.description,
+        "emoji": entry.emoji,
+        "max_result_size_chars": entry.max_result_size_chars,
+    }
+    if hasattr(entry, "dynamic_schema_overrides"):
+        register_kwargs["dynamic_schema_overrides"] = entry.dynamic_schema_overrides
+    registry.register(**register_kwargs)
     _STREAMING_CRONJOB_WRAPPER_INSTALLED = True
 
 

@@ -4517,17 +4517,23 @@ function fetchReasoningChip(){
   const key=_reasoningEffortQuery();
   const seq=++_reasoningFetchSeq;
   _lastReasoningFetchKey=key;
-  api('/api/reasoning'+key).then(function(st){
+  api('/api/reasoning'+key,{timeoutMs:8000,timeoutToast:false,retries:0}).then(function(st){
     // Ignore a stale/superseded response: only the most recent dispatch may
     // apply, so an older in-flight GET can't poison the current chip (#4650).
     if(seq!==_reasoningFetchSeq) return;
     _applyReasoningChip((st&&st.reasoning_effort)||'', st||{});
-  }).catch(function(){
+  }).catch(function(e){
     // Same staleness guard on failure: a stale error must neither hide the chip
     // nor clear a newer fetch's key. Only the latest dispatch clears the key so
     // routine syncs retry after a genuine transient failure.
     if(seq!==_reasoningFetchSeq) return;
     _lastReasoningFetchKey=null;
+    if(isRequestTimeoutError(e)){
+      showWarningOnce(
+        'model-status-timeout',
+        '模型状态检测超时：当前模型服务响应慢，或后台正在探测模型能力。已暂时使用缓存信息，不影响继续浏览页面。'
+      );
+    }
     _applyReasoningChip('', {supported_efforts:[]});
   });
 }
@@ -7664,6 +7670,22 @@ function showToast(msg,ms,type){
   el.onclick=t==='error'?null:()=>dismissToast(el);
   setToastDismissTimer(el,duration);
 }
+
+const _warningToastOnceLast=Object.create(null);
+function isRequestTimeoutError(e){
+  return !!(e&&(e.timeout===true||e.name==='TimeoutError'||/timed out|timeout/i.test(String(e.message||''))));
+}
+function showWarningOnce(key,msg,ms=7000,ttlMs=60000){
+  const id=String(key||msg||'warning');
+  const now=Date.now();
+  if(_warningToastOnceLast[id]&&now-_warningToastOnceLast[id]<ttlMs) return;
+  _warningToastOnceLast[id]=now;
+  if(typeof showToast==='function') showToast(msg,ms,'warning');
+}
+try{
+  window.isRequestTimeoutError=isRequestTimeoutError;
+  window.showWarningOnce=showWarningOnce;
+}catch(_){}
 
 // ── Shared app dialogs ───────────────────────────────────────────────────────
 // showConfirmDialog(opts) and showPromptDialog(opts) replace browser-native dialog calls
@@ -17824,8 +17846,10 @@ function renderBreadcrumb(){
   root.className='breadcrumb-seg breadcrumb-link';
   root.textContent='~';
   root.onclick=()=>loadDir('.');
-  _bindWorkspaceMoveDropTarget(root,'.');
-  _bindWorkspaceOsUploadDropTarget(root,'.');
+  if(S.session&&!(typeof _workspacePathIsReadOnly==='function'&&_workspacePathIsReadOnly('.'))){
+    _bindWorkspaceMoveDropTarget(root,'.');
+    _bindWorkspaceOsUploadDropTarget(root,'.');
+  }
   bar.appendChild(root);
   // Path segments
   const parts=S.currentDir.split('/');
@@ -17841,8 +17865,10 @@ function renderBreadcrumb(){
       seg.className='breadcrumb-seg breadcrumb-link';
       const target=accumulated;
       seg.onclick=()=>loadDir(target);
-      _bindWorkspaceMoveDropTarget(seg,target);
-      _bindWorkspaceOsUploadDropTarget(seg,target);
+      if(S.session&&!(typeof _workspacePathIsReadOnly==='function'&&_workspacePathIsReadOnly(target))){
+        _bindWorkspaceMoveDropTarget(seg,target);
+        _bindWorkspaceOsUploadDropTarget(seg,target);
+      }
     } else {
       seg.className='breadcrumb-seg breadcrumb-current';
     }
@@ -17989,11 +18015,19 @@ function bindWorkspaceHeadingActions(){
   if(!heading||heading.dataset.bound==='1')return;
   heading.dataset.bound='1';
   const goRoot=()=>{
-    if(S.session&&S.session.workspace) loadDir('.');
+    const hasWorkspace=!!(
+      (S.session&&S.session.workspace) ||
+      (typeof getCurrentWorkspaceBrowsePath==='function'&&getCurrentWorkspaceBrowsePath())
+    );
+    if(hasWorkspace) loadDir('.');
   };
   heading.onclick=goRoot;
   heading.onkeydown=(e)=>{
-    if(!(S.session&&S.session.workspace)) return;
+    const hasWorkspace=!!(
+      (S.session&&S.session.workspace) ||
+      (typeof getCurrentWorkspaceBrowsePath==='function'&&getCurrentWorkspaceBrowsePath())
+    );
+    if(!hasWorkspace) return;
     if(e.key==='Enter'||e.key===' '){
       e.preventDefault();
       goRoot();
@@ -18011,7 +18045,10 @@ function bindWorkspaceHeadingActions(){
 function _syncWorkspaceHeadingState(){
   const heading=$('workspacePanelHeading');
   if(!heading) return;
-  const enabled=!!(S.session&&S.session.workspace);
+  const enabled=!!(
+    (S.session&&S.session.workspace) ||
+    (typeof getCurrentWorkspaceBrowsePath==='function'&&getCurrentWorkspaceBrowsePath())
+  );
   heading.classList.toggle('workspace-panel-heading--enabled',enabled);
   if(enabled){
     heading.setAttribute('role','button');
@@ -18158,7 +18195,10 @@ function renderFileTree(){
   S._dirCache[_workspaceTreePath(S.currentDir||'.')]=S.entries;
   // Show empty-state when no workspace is set or the directory is empty (#703)
   const emptyEl=$('wsEmptyState');
-  const hasWorkspace=!!(S.session&&S.session.workspace);
+  const hasWorkspace=!!(
+    (S.session&&S.session.workspace) ||
+    (typeof getCurrentWorkspaceBrowsePath==='function'&&getCurrentWorkspaceBrowsePath())
+  );
   if(!hasWorkspace){
     if(emptyEl){emptyEl.textContent=t('workspace_empty_no_path');emptyEl.style.display='flex';}
     box.style.display='none';
@@ -18491,29 +18531,33 @@ function _renderTreeItems(container, entries, depth, ancestry){
     const itemPath=_workspaceTreePath(item.path||item.name);
     const el=document.createElement('div');el.className='file-item';
     el.style.paddingLeft=(8+depth*16)+'px';
-    el.setAttribute('draggable','true');
     el.dataset.wsType=item.type;
-    el.oncontextmenu=(e)=>{
-      const grant=typeof _workspaceEscapeGrantForPath==='function' ? _workspaceEscapeGrantForPath(item.path) : null;
-      const isDirRow=item.type==='dir'||(item.type==='symlink'&&item.is_dir);
-      if(grant&&!isDirRow){e.preventDefault();e.stopPropagation();return;}
-      e.preventDefault();e.stopPropagation();_showFileContextMenu(e,item);
-    };
-    el.ondragstart=(e)=>{_setWsDragData(e,item);e.dataTransfer.effectAllowed='copy';el.classList.add('dragging');};
-    el.ondragend=()=>{el.classList.remove('dragging');_clearWorkspaceMoveDragOver();_clearWsDragData();};
 
     const isLk = item.type === 'symlink';
     const isExternalLink = isLk && item.target_outside_workspace;
     const escapeGrant = typeof _workspaceEscapeGrantForPath === 'function' ? _workspaceEscapeGrantForPath(item.path) : null;
     const exactEscapeGrant = typeof _workspaceEscapeExactGrant === 'function' ? _workspaceEscapeExactGrant(item.path) : null;
-    const isReadOnlyEscape = !!escapeGrant;
+    const isReadOnlyEscape = (typeof _workspacePathIsReadOnly==='function')
+      ? _workspacePathIsReadOnly(item.path)
+      : !!escapeGrant;
     const isNestedEscape = !!escapeGrant && !exactEscapeGrant;
     // External symlinks are display-only: not expandable, not openable.
     // The read gate (safe_resolve_ws) still blocks navigation through them.
     const isDirLike = !isExternalLink && (item.type === 'dir' || (isLk && item.is_dir));
     const isFileLike = !isExternalLink && !isDirLike;
     el.dataset.wsIsDir = String(isDirLike);
-    if(isExternalLink || isReadOnlyEscape){el.removeAttribute('draggable');el.ondragstart=null;}
+    if(!isExternalLink && !isReadOnlyEscape){
+      el.setAttribute('draggable','true');
+      el.oncontextmenu=(e)=>{
+        e.preventDefault();e.stopPropagation();_showFileContextMenu(e,item);
+      };
+      el.ondragstart=(e)=>{_setWsDragData(e,item);e.dataTransfer.effectAllowed='copy';el.classList.add('dragging');};
+      el.ondragend=()=>{el.classList.remove('dragging');_clearWorkspaceMoveDragOver();_clearWsDragData();};
+    }else{
+      el.removeAttribute('draggable');
+      el.ondragstart=null;
+      el.oncontextmenu=(e)=>{e.preventDefault();e.stopPropagation();};
+    }
 
     if(isDirLike){
       // Toggle arrow for directories
@@ -18657,7 +18701,7 @@ function _renderTreeItems(container, entries, depth, ancestry){
     }
 
     if(isDirLike){
-      if(!isReadOnlyEscape){
+      if(!isReadOnlyEscape&&S.session){
         _bindWorkspaceMoveDropTarget(el,item.path);
         _bindWorkspaceOsUploadDropTarget(el,item.path);
       }
@@ -18762,9 +18806,11 @@ function _showFileContextMenu(e, item){
   menu.style.top=(e.clientY+100>vh?e.clientY-100:e.clientY)+'px';
   const isDirLike=item.type==='dir'||(item.type==='symlink'&&item.is_dir);
   const targetDir=isDirLike ? item.path : _workspaceParentDir(item.path);
-  const isReadOnlyEscape=typeof _workspaceEscapeGrantForPath==='function' ? !!_workspaceEscapeGrantForPath(item.path) : false;
+  const isReadOnly=typeof _workspacePathIsReadOnly==='function'
+    ? _workspacePathIsReadOnly(item.path)
+    : (typeof _workspaceEscapeGrantForPath==='function' ? !!_workspaceEscapeGrantForPath(item.path) : false);
 
-  if(!isReadOnlyEscape){
+  if(!isReadOnly){
     menu.appendChild(_workspaceContextMenuItem(t('new_file'),async()=>{
       menu.remove();
       await promptNewFile(targetDir);
@@ -18859,7 +18905,7 @@ function _showFileContextMenu(e, item){
     menu.appendChild(copyRelPathItem);
   }
 
-  if(isDirLike){
+  if(isDirLike&&S.session){
     const dlItem=document.createElement('div');
     dlItem.textContent=t('download_folder');
     dlItem.style.cssText='padding:7px 14px;cursor:pointer;font-size:13px;color:var(--text);';
@@ -18874,7 +18920,7 @@ function _showFileContextMenu(e, item){
     menu.appendChild(dlItem);
   }
 
-  if(!isReadOnlyEscape){
+  if(!isReadOnly){
     const sep=document.createElement('hr');
     sep.style.cssText='border:none;border-top:1px solid var(--border);margin:4px 0;';
     menu.appendChild(sep);
