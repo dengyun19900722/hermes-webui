@@ -27,6 +27,7 @@ Run with ``--noconftest`` so the slow ``test_server`` fixture is skipped::
 """
 from contextlib import ExitStack
 from pathlib import Path
+from urllib.parse import urlencode
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -359,6 +360,139 @@ def test_admin_default_view_sees_all_spaces(tmp_path):
     assert "view" not in state.response_payload
     paths = sorted(w["path"] for w in state.response_payload["workspaces"])
     assert paths == ["/a", "/b", "/c"]
+
+
+# ── 6. File-manager RBAC scope ─────────────────────────────────────────────
+
+
+def test_file_tree_falls_back_to_caller_visible_workspace(tmp_path):
+    """A stale session.workspace pointing at an admin-only workspace must not
+    drive /api/list for an ordinary user.
+
+    This mirrors the production bug: the composer chip can resolve to the
+    caller's workspace from /api/workspaces while the persisted session still
+    carries an old admin path. The route must list the caller-visible fallback,
+    not the stale admin directory.
+    """
+    admin_ws = tmp_path / "admin-only"
+    user_ws = tmp_path / "user-owned"
+    admin_ws.mkdir()
+    user_ws.mkdir()
+    state = _State()
+    state.workspaces = [
+        {"path": str(admin_ws), "name": "Admin", "owner": ADMIN["id"], "members": [ADMIN["id"]]},
+        {"path": str(user_ws), "name": "User", "owner": USER["id"], "members": [USER["id"]]},
+    ]
+    session = type("Session", (), {
+        "session_id": "stale-admin-ws",
+        "workspace": str(admin_ws),
+        "profile": None,
+        "worktree_path": None,
+    })()
+    captured = {}
+
+    def fake_list_dir(workspace, rel_path):
+        captured["workspace"] = str(workspace)
+        captured["rel_path"] = rel_path
+        return [{"name": "owned.txt", "path": "owned.txt", "type": "file"}]
+
+    with _patch_stack(state, user=USER, state_dir=tmp_path)[0], \
+            patch.object(rmod, "get_session_for_file_ops", return_value=session), \
+            patch.object(rmod, "resolve_trusted_workspace", side_effect=lambda raw: Path(raw).resolve()), \
+            patch.object(rmod, "list_dir", side_effect=fake_list_dir), \
+            patch.object(rmod, "dir_signature", return_value="sig"):
+        rmod._handle_list_dir(None, _Parsed("session_id=stale-admin-ws&path=."))
+
+    assert state.error_status is None, state.error_msg
+    assert state.response_status == 200
+    assert captured["workspace"] == str(user_ws.resolve())
+    assert captured["workspace"] != str(admin_ws.resolve())
+    assert state.response_payload["entries"][0]["name"] == "owned.txt"
+
+
+def test_sessionless_file_tree_lists_explicit_visible_workspace(tmp_path):
+    """The empty chat page can browse the current composer workspace before
+    a session exists, but the explicit workspace path still goes through RBAC.
+    """
+    user_ws = tmp_path / "user-owned"
+    user_ws.mkdir()
+    state = _State()
+    state.workspaces = [
+        {"path": str(user_ws), "name": "User", "owner": USER["id"], "members": [USER["id"]]},
+    ]
+    captured = {}
+
+    def fake_list_dir(workspace, rel_path):
+        captured["workspace"] = str(workspace)
+        captured["rel_path"] = rel_path
+        return [{"name": "visible.txt", "path": "visible.txt", "type": "file"}]
+
+    query = urlencode({"workspace": str(user_ws), "path": "."})
+    with _patch_stack(state, user=USER, state_dir=tmp_path)[0], \
+            patch.object(rmod, "resolve_trusted_workspace", side_effect=lambda raw: Path(raw).resolve()), \
+            patch.object(rmod, "list_dir", side_effect=fake_list_dir), \
+            patch.object(rmod, "dir_signature", return_value="sig"):
+        rmod._handle_list_dir(None, _Parsed(query))
+
+    assert state.error_status is None, state.error_msg
+    assert state.response_status == 200
+    assert captured == {"workspace": str(user_ws.resolve()), "rel_path": "."}
+    assert state.response_payload["entries"][0]["name"] == "visible.txt"
+
+
+def test_sessionless_file_tree_rejects_hidden_workspace_for_non_admin(tmp_path):
+    """A user must not be able to bypass the composer-scoped workspace list by
+    calling /api/list?workspace=<admin path> without a session_id.
+    """
+    admin_ws = tmp_path / "admin-only"
+    admin_ws.mkdir()
+    state = _State()
+    state.workspaces = [
+        {"path": str(admin_ws), "name": "Admin", "owner": ADMIN["id"], "members": [ADMIN["id"]]},
+    ]
+    list_dir_mock = MagicMock(return_value=[])
+
+    query = urlencode({"workspace": str(admin_ws), "path": "."})
+    with _patch_stack(state, user=USER, state_dir=tmp_path)[0], \
+            patch.object(rmod, "resolve_trusted_workspace", side_effect=lambda raw: Path(raw).resolve()), \
+            patch.object(rmod, "list_dir", list_dir_mock):
+        rmod._handle_list_dir(None, _Parsed(query))
+
+    assert state.error_status == 403
+    assert state.error_msg == "Workspace not accessible"
+    list_dir_mock.assert_not_called()
+
+
+def test_workspace_binding_rejects_hidden_workspace_for_non_admin(tmp_path):
+    """Explicit workspace binding stays fail-closed: a regular user cannot
+    update a session onto a workspace they do not own or belong to.
+    """
+    admin_ws = tmp_path / "admin-only"
+    user_ws = tmp_path / "user-owned"
+    admin_ws.mkdir()
+    user_ws.mkdir()
+    state = _State()
+    state.workspaces = [
+        {"path": str(admin_ws), "name": "Admin", "owner": ADMIN["id"], "members": [ADMIN["id"]]},
+        {"path": str(user_ws), "name": "User", "owner": USER["id"], "members": [USER["id"]]},
+    ]
+    session = type("Session", (), {
+        "session_id": "user-session",
+        "workspace": str(user_ws),
+        "profile": None,
+        "worktree_path": None,
+    })()
+
+    with _patch_stack(state, user=USER, state_dir=tmp_path)[0], \
+            patch.object(rmod, "resolve_trusted_workspace", side_effect=lambda raw: Path(raw).resolve()):
+        with pytest.raises(rmod.WorkspacePermissionError):
+            rmod._resolve_workspace_for_request_binding(
+                None,
+                str(admin_ws),
+                session=session,
+            )
+
+    assert session.workspace == str(user_ws)
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ from api.workspace import (
     make_anchored_dir,
     rmtree_anchored,
     unlink_anchored,
+    WorkspacePermissionError,
 )
 
 
@@ -586,8 +587,15 @@ def handle_workspace_upload(handler):
         if _reject_invisible_session(handler, session):
             return True
 
-        # Resolve workspace root from session
-        workspace = resolve_trusted_workspace(session.workspace)
+        # Resolve workspace root from session under the current RBAC caller.
+        try:
+            from api.routes import _workspace_for_request_session
+
+            workspace = _workspace_for_request_session(handler, session)
+        except ImportError:
+            workspace = resolve_trusted_workspace(session.workspace)
+        except WorkspacePermissionError as e:
+            return j(handler, {'error': str(e)}, status=403)
 
         # Resolve target subdirectory within workspace
         target_dir = safe_resolve_ws(workspace, subpath) if subpath else workspace

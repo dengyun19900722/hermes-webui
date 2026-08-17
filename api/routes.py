@@ -13509,14 +13509,13 @@ def handle_get(handler, parsed) -> bool:
         sid = qs.get("session_id", [""])[0]
         if not sid:
             return bad(handler, "session_id required")
-        try:
-            s = get_session(sid)
-        except KeyError:
-            return bad(handler, "Session not found", 404)
+        workspace = _git_session_workspace(handler, sid)
+        if workspace is None:
+            return True
         from api.workspace_git import GitWorkspaceError, git_status
 
         try:
-            status = git_status(Path(s.workspace))
+            status = git_status(workspace)
         except GitWorkspaceError as e:
             return _git_bad(handler, e)
         totals = status.get("totals") or {}
@@ -14470,9 +14469,19 @@ def handle_post(handler, parsed) -> bool:
 
     if parsed.path == "/api/session/new":
         try:
-            workspace = str(resolve_trusted_workspace(body.get("workspace"))) if body.get("workspace") else None
+            if body.get("workspace"):
+                workspace = str(_resolve_workspace_for_request_binding(handler, body.get("workspace")))
+            elif _rbac_users_configured() or _current_rbac_user_id(handler):
+                caller_workspace = _caller_default_workspace(handler)
+                if caller_workspace is None:
+                    return bad(handler, _WORKSPACE_ACCESS_DENIED, 403)
+                workspace = str(caller_workspace)
+            else:
+                workspace = None
         except (TypeError, ValueError) as e:
             return bad(handler, str(e))
+        except WorkspacePermissionError as e:
+            return bad(handler, str(e), 403)
         worktree_info = None
         worktree_requested = (
             body.get("worktree") is True
@@ -14484,10 +14493,14 @@ def handle_post(handler, parsed) -> bool:
                 base_workspace = workspace
                 if not base_workspace:
                     base_workspace = str(resolve_trusted_workspace(get_last_workspace()))
+                else:
+                    base_workspace = str(_resolve_workspace_for_request_binding(handler, base_workspace))
                 worktree_info = create_worktree_for_workspace(base_workspace)
                 workspace = worktree_info["path"]
             except (TypeError, ValueError) as e:
                 return bad(handler, str(e), status=400)
+            except WorkspacePermissionError as e:
+                return bad(handler, str(e), status=403)
             except Exception as e:
                 logger.exception("failed to create worktree-backed session")
                 return bad(handler, f"Failed to create worktree: {e}", status=500)
@@ -15084,9 +15097,15 @@ def handle_post(handler, parsed) -> bool:
         old_model = getattr(s, "model", None)
         old_provider = getattr(s, "model_provider", None)
         try:
-            new_ws = str(resolve_trusted_workspace(body.get("workspace", s.workspace)))
+            new_ws = str(_resolve_workspace_for_request_binding(
+                handler,
+                body.get("workspace", s.workspace),
+                session=s,
+            ))
         except ValueError as e:
             return bad(handler, str(e))
+        except WorkspacePermissionError as e:
+            return bad(handler, str(e), 403)
         with _get_session_agent_lock(body["session_id"]):
             s.workspace = new_ws
             if "model" in body or "model_provider" in body:
@@ -17161,25 +17180,15 @@ def _handle_sessions_search(handler, parsed):
 
 def _handle_list_dir(handler, parsed):
     qs = parse_qs(parsed.query)
-    sid = qs.get("session_id", [""])[0]
-    if not sid:
-        return bad(handler, "session_id is required")
-    try:
-        s = get_session(sid)
-        workspace = s.workspace
-    except KeyError:
-        # Fallback for CLI sessions not loaded in WebUI memory
-        try:
-            cli_meta = None
-            for cs in get_cli_sessions():
-                if cs["session_id"] == sid:
-                    cli_meta = cs
-                    break
-            if not cli_meta:
-                return bad(handler, "Session not found", 404)
-            workspace = cli_meta.get("workspace", "")
-        except Exception:
-            return bad(handler, "Session not found", 404)
+    resolved_view = _workspace_read_view_from_query(
+        handler,
+        qs,
+        allow_cli_fallback=True,
+    )
+    if resolved_view is None:
+        return True
+    s, _sid = resolved_view
+    workspace = s.workspace
     try:
         rel_path = qs.get("path", ["."])[0]
         entries = list_dir(Path(workspace), rel_path)
@@ -17230,10 +17239,9 @@ def _handle_escape_authorize(handler, parsed, body: dict | None = None):
         return bad(handler, "session_id is required")
     if not rel:
         return bad(handler, "path is required")
-    try:
-        s = get_session_for_file_ops(sid)
-    except KeyError:
-        return bad(handler, "Session not found", 404)
+    s = _get_session_for_workspace_file_ops(handler, sid)
+    if s is None:
+        return True
     try:
         payload = authorize_escape_target(Path(s.workspace), sid, rel)
     except ValueError as exc:
@@ -17249,10 +17257,9 @@ def _handle_escape_list_dir(handler, parsed):
         return bad(handler, "session_id is required")
     if not token:
         return bad(handler, "token is required")
-    try:
-        s = get_session_for_file_ops(sid)
-    except KeyError:
-        return bad(handler, "Session not found", 404)
+    s = _get_session_for_workspace_file_ops(handler, sid)
+    if s is None:
+        return True
     rel_path = qs.get("path", ["."])[0]
     try:
         payload = list_authorized_escape_dir(Path(s.workspace), sid, token, rel_path)
@@ -17273,10 +17280,9 @@ def _handle_escape_file_read(handler, parsed):
         return bad(handler, "session_id is required")
     if not token:
         return bad(handler, "token is required")
-    try:
-        s = get_session_for_file_ops(sid)
-    except KeyError:
-        return bad(handler, "Session not found", 404)
+    s = _get_session_for_workspace_file_ops(handler, sid)
+    if s is None:
+        return True
     rel = qs.get("path", [""])[0]
     try:
         return j(handler, read_authorized_escape_file_content(Path(s.workspace), sid, token, rel))
@@ -17300,10 +17306,9 @@ def _handle_escape_file_raw(handler, parsed):
         return bad(handler, "session_id is required")
     if not token:
         return bad(handler, "token is required")
-    try:
-        s = get_session_for_file_ops(sid)
-    except KeyError:
-        return bad(handler, "Session not found", 404)
+    s = _get_session_for_workspace_file_ops(handler, sid)
+    if s is None:
+        return True
     rel = qs.get("path", [""])[0]
     force_download = qs.get("download", [""])[0] == "1"
     try:
@@ -18994,6 +18999,9 @@ def _file_raw_target(session, sid: str, rel: str) -> tuple[Path, Path] | None:
     if target and target.exists() and target.is_file():
         return workspace_root, target
 
+    if not sid:
+        return None
+
     # Chat uploads now live in a per-session attachment inbox outside the
     # workspace. Keep the public URL stable while scoping fallback lookup to
     # the requesting session's own attachment directory.
@@ -19091,10 +19099,9 @@ def _handle_folder_download(handler, parsed):
     sid = qs.get("session_id", [""])[0]
     if not sid:
         return bad(handler, "session_id is required")
-    try:
-        s = get_session_for_file_ops(sid)
-    except KeyError:
-        return bad(handler, "Session not found", 404)
+    s = _get_session_for_workspace_file_ops(handler, sid)
+    if s is None:
+        return True
 
     rel = qs.get("path", [""])[0]
     try:
@@ -19174,13 +19181,10 @@ def _handle_folder_download(handler, parsed):
 
 def _handle_file_raw(handler, parsed):
     qs = parse_qs(parsed.query)
-    sid = qs.get("session_id", [""])[0]
-    if not sid:
-        return bad(handler, "session_id is required")
-    try:
-        s = get_session_for_file_ops(sid)
-    except KeyError:
-        return bad(handler, "Session not found", 404)
+    resolved_view = _workspace_read_view_from_query(handler, qs)
+    if resolved_view is None:
+        return True
+    s, sid = resolved_view
     rel = qs.get("path", [""])[0]
     force_download = qs.get("download", [""])[0] == "1"
     resolved = _file_raw_target(s, sid, rel)
@@ -19214,13 +19218,10 @@ def _handle_file_raw(handler, parsed):
 
 def _handle_file_read(handler, parsed):
     qs = parse_qs(parsed.query)
-    sid = qs.get("session_id", [""])[0]
-    if not sid:
-        return bad(handler, "session_id is required")
-    try:
-        s = get_session_for_file_ops(sid)
-    except KeyError:
-        return bad(handler, "Session not found", 404)
+    resolved_view = _workspace_read_view_from_query(handler, qs)
+    if resolved_view is None:
+        return True
+    s, _sid = resolved_view
     rel = qs.get("path", [""])[0]
     if not rel:
         return bad(handler, "path is required")
@@ -21344,6 +21345,7 @@ def _start_run(
     route: str,
     diag=None,
     moa_config=None,
+    client_ip: str | None = None,
 ):
     """Shared start-run helper for /api/chat/start and start_session_turn.
 
@@ -21406,7 +21408,10 @@ def _start_run(
                     provider=model_provider,
                     model=model,
                     source=source,
-                    metadata={"route": route},
+                    metadata={
+                        "route": route,
+                        **({"client_ip": client_ip} if client_ip else {}),
+                    },
                 )
             )
         except NotImplementedError as exc:
@@ -21752,9 +21757,11 @@ def _handle_goal_command(handler, body):
     previous_goal_state = None
     if will_kickoff:
         try:
-            workspace = str(resolve_trusted_workspace(body.get("workspace") or s.workspace))
+            workspace = _resolve_chat_workspace_with_recovery(s, body.get("workspace"), handler)
         except ValueError as e:
             return bad(handler, str(e))
+        except WorkspacePermissionError as e:
+            return bad(handler, str(e), 403)
         requested_model = body.get("model") or s.model
         requested_provider = (
             body.get("model_provider")
@@ -21803,9 +21810,11 @@ def _handle_goal_command(handler, body):
     if kickoff_prompt:
         if workspace is None:
             try:
-                workspace = str(resolve_trusted_workspace(body.get("workspace") or s.workspace))
+                workspace = _resolve_chat_workspace_with_recovery(s, body.get("workspace"), handler)
             except ValueError as e:
                 return bad(handler, str(e))
+            except WorkspacePermissionError as e:
+                return bad(handler, str(e), 403)
         if model is None:
             requested_model = body.get("model") or s.model
             requested_provider = (
@@ -21972,9 +21981,11 @@ def _handle_chat_start(handler, body, diag=None):
             )
         diag.stage("resolve_workspace") if diag else None
         try:
-            workspace = _resolve_chat_workspace_with_recovery(s, body.get("workspace"))
+            workspace = _resolve_chat_workspace_with_recovery(s, body.get("workspace"), handler)
         except ValueError as e:
             return bad(handler, str(e))
+        except WorkspacePermissionError as e:
+            return bad(handler, str(e), 403)
         requested_model = body.get("model") or s.model
         requested_provider = (
             body.get("model_provider")
@@ -22012,6 +22023,8 @@ def _handle_chat_start(handler, body, diag=None):
                 moa_config = resolve_moa_config(model)
             except RuntimeError as e:
                 return bad(handler, str(e), 503)
+        client_ip = _client_ip_for_audit(handler)
+        s.pending_client_ip = client_ip if client_ip and client_ip != "-" else None
         # NOTE: runtime-adapter selection is delegated to _start_run (shared
         # with start_session_turn so both entry points behave identically
         # under runtime_adapter_enabled() / runtime_adapter_runner_enabled()
@@ -22026,6 +22039,7 @@ def _handle_chat_start(handler, body, diag=None):
             "source": "webui",
             "route": "/api/chat/start",
             "diag": diag,
+            "client_ip": client_ip,
         }
         if not gateway_chat_enabled and moa_config is not None:
             start_run_kwargs["moa_config"] = moa_config
@@ -22061,66 +22075,6 @@ def _handle_chat_start(handler, body, diag=None):
             if restore_err is not None:
                 return bad(handler, f"failed to restore compression recovery: {_sanitize_error(restore_err)}", 500)
             return j(handler, {"error": response["error"]}, status=501)
-        client_ip = _client_ip_for_audit(handler)
-        s.pending_client_ip = client_ip if client_ip and client_ip != "-" else None
-        from api.runtime_adapter import (
-            LegacyJournalRuntimeAdapter,
-            StartRunRequest,
-            build_runtime_adapter,
-            runtime_adapter_enabled,
-            runtime_adapter_runner_enabled,
-        )
-
-        if runtime_adapter_enabled() or runtime_adapter_runner_enabled():
-            def _legacy_start_run(request: StartRunRequest) -> dict:
-                return _start_chat_stream_for_session(
-                    s,
-                    msg=request.message,
-                    attachments=request.attachments,
-                    workspace=request.workspace or workspace,
-                    model=request.model or model,
-                    model_provider=request.provider or model_provider,
-                    normalized_model=normalized_model,
-                    diag=diag,
-                )
-
-            def _legacy_adapter_factory():
-                return LegacyJournalRuntimeAdapter(start_run_delegate=_legacy_start_run)
-
-            try:
-                adapter = build_runtime_adapter(
-                    legacy_adapter_factory=_legacy_adapter_factory,
-                    runner_client_factory=_runtime_runner_client_factory,
-                )
-                if adapter is None:
-                    raise NotImplementedError("runtime adapter selection returned no adapter")
-                result = adapter.start_run(
-                    StartRunRequest(
-                        session_id=s.session_id,
-                        message=msg,
-                        attachments=attachments,
-                        workspace=workspace,
-                        profile=getattr(s, "profile", None),
-                        provider=model_provider,
-                        model=model,
-                        source="webui",
-                        metadata={"route": "/api/chat/start", "client_ip": client_ip},
-                    )
-                )
-            except NotImplementedError as exc:
-                return j(handler, {"error": str(exc)}, status=501)
-            response = _chat_start_response_from_run_start(result)
-        else:
-            response = _start_chat_stream_for_session(
-                s,
-                msg=msg,
-                attachments=attachments,
-                workspace=workspace,
-                model=model,
-                model_provider=model_provider,
-                normalized_model=normalized_model,
-                diag=diag,
-            )
         status = int(response.pop("_status", 200) or 200)
         if status >= 400 and recovery_cleared_for_start is not None:
             restore_err = _restore_cleared_recovery()
@@ -22134,10 +22088,25 @@ def _handle_chat_start(handler, body, diag=None):
 
 
 
-def _resolve_chat_workspace_with_recovery(s, requested_workspace) -> str:
+def _resolve_chat_workspace_with_recovery(s, requested_workspace, handler=None) -> str:
     """Recover stale implicit session workspaces without hiding explicit errors."""
     explicit = requested_workspace not in (None, "")
     candidate = requested_workspace if explicit else getattr(s, "workspace", None)
+    if handler is not None:
+        try:
+            if explicit:
+                return str(_resolve_workspace_for_request_binding(handler, candidate, session=s))
+            return str(_workspace_for_request_session(
+                handler,
+                s,
+                allow_fallback=True,
+                persist_fallback=True,
+            ))
+        except WorkspacePermissionError:
+            raise
+        except ValueError:
+            if explicit:
+                raise
     try:
         return str(resolve_trusted_workspace(candidate))
     except ValueError:
@@ -22191,9 +22160,11 @@ def _handle_chat_sync(handler, body):
     if not msg:
         return j(handler, {"error": "empty message"}, status=400)
     try:
-        workspace = str(resolve_trusted_workspace(body.get("workspace") or s.workspace))
+        workspace = _resolve_chat_workspace_with_recovery(s, body.get("workspace"), handler)
     except ValueError as e:
         return bad(handler, str(e))
+    except WorkspacePermissionError as e:
+        return bad(handler, str(e), 403)
     with _get_session_agent_lock(s.session_id):
         s.workspace = workspace
         _sync_requested_provider = (
@@ -22609,14 +22580,28 @@ def _git_session_workspace(handler, session_id: str):
     session = _git_session(handler, session_id)
     if session is None:
         return None
-    return Path(session.workspace)
+    try:
+        return _workspace_for_request_session(handler, session)
+    except WorkspacePermissionError as exc:
+        bad(handler, str(exc), 403)
+        return None
+    except ValueError as exc:
+        bad(handler, _sanitize_error(exc), 404)
+        return None
 
 
 def _git_session_and_workspace(handler, session_id: str):
     session = _git_session(handler, session_id)
     if session is None:
         return None, None
-    return session, Path(session.workspace)
+    try:
+        return session, _workspace_for_request_session(handler, session)
+    except WorkspacePermissionError as exc:
+        bad(handler, str(exc), 403)
+        return None, None
+    except ValueError as exc:
+        bad(handler, _sanitize_error(exc), 404)
+        return None, None
 
 
 def _git_locked_by_active_stream(session) -> bool:
@@ -22894,8 +22879,9 @@ def _handle_git_commit_message(handler, body):
 
     try:
         require(body, "session_id")
-        session = get_session(body["session_id"])
-        workspace = Path(session.workspace)
+        session, workspace = _git_session_and_workspace(handler, body["session_id"])
+        if workspace is None:
+            return True
 
         prompt = staged_commit_message_prompt(workspace)
         message = clean_generated_commit_message(
@@ -22925,8 +22911,9 @@ def _handle_git_commit_message_selected(handler, body):
     try:
         require(body, "session_id")
         paths = _git_paths_from_body(body)
-        session = get_session(body["session_id"])
-        workspace = Path(session.workspace)
+        session, workspace = _git_session_and_workspace(handler, body["session_id"])
+        if workspace is None:
+            return True
 
         prompt = selected_commit_message_prompt(workspace, paths)
         message = clean_generated_commit_message(
@@ -23081,10 +23068,9 @@ def _handle_file_delete(handler, body):
         require(body, "session_id", "path")
     except ValueError as e:
         return bad(handler, str(e))
-    try:
-        s = get_session_for_file_ops(body["session_id"])
-    except KeyError:
-        return bad(handler, "Session not found", 404)
+    s = _get_session_for_workspace_file_ops(handler, body["session_id"])
+    if s is None:
+        return True
     try:
         ws_root = Path(s.workspace)
         target = safe_resolve(ws_root, body["path"])
@@ -23113,10 +23099,9 @@ def _handle_file_save(handler, body):
         require(body, "session_id", "path")
     except ValueError as e:
         return bad(handler, str(e))
-    try:
-        s = get_session_for_file_ops(body["session_id"])
-    except KeyError:
-        return bad(handler, "Session not found", 404)
+    s = _get_session_for_workspace_file_ops(handler, body["session_id"])
+    if s is None:
+        return True
     try:
         ws_root = Path(s.workspace)
         target = safe_resolve(ws_root, body["path"])
@@ -23144,10 +23129,9 @@ def _handle_office_file_save(handler, body):
         require(body, "session_id", "path")
     except ValueError as e:
         return bad(handler, str(e))
-    try:
-        s = get_session_for_file_ops(body["session_id"])
-    except KeyError:
-        return bad(handler, "Session not found", 404)
+    s = _get_session_for_workspace_file_ops(handler, body["session_id"])
+    if s is None:
+        return True
     try:
         ws_root = Path(s.workspace)
         target = safe_resolve(ws_root, body["path"])
@@ -23179,10 +23163,9 @@ def _handle_file_create(handler, body):
         require(body, "session_id", "path")
     except ValueError as e:
         return bad(handler, str(e))
-    try:
-        s = get_session_for_file_ops(body["session_id"])
-    except KeyError:
-        return bad(handler, "Session not found", 404)
+    s = _get_session_for_workspace_file_ops(handler, body["session_id"])
+    if s is None:
+        return True
     try:
         ws_root = Path(s.workspace)
         target = safe_resolve(ws_root, body["path"])
@@ -23206,10 +23189,9 @@ def _handle_file_rename(handler, body):
         require(body, "session_id", "path", "new_name")
     except ValueError as e:
         return bad(handler, str(e))
-    try:
-        s = get_session_for_file_ops(body["session_id"])
-    except KeyError:
-        return bad(handler, "Session not found", 404)
+    s = _get_session_for_workspace_file_ops(handler, body["session_id"])
+    if s is None:
+        return True
     try:
         ws_root = Path(s.workspace)
         ws_root_resolved = ws_root.resolve()
@@ -23241,10 +23223,9 @@ def _handle_file_move(handler, body):
         require(body, "session_id", "path", "dest_dir")
     except ValueError as e:
         return bad(handler, str(e))
-    try:
-        s = get_session_for_file_ops(body["session_id"])
-    except KeyError:
-        return bad(handler, "Session not found", 404)
+    s = _get_session_for_workspace_file_ops(handler, body["session_id"])
+    if s is None:
+        return True
     try:
         ws_root = Path(s.workspace)
         # safe_resolve() returns paths under the RESOLVED root, so compute
@@ -23339,10 +23320,9 @@ def _handle_create_dir(handler, body):
         require(body, "session_id", "path")
     except ValueError as e:
         return bad(handler, str(e))
-    try:
-        s = get_session_for_file_ops(body["session_id"])
-    except KeyError:
-        return bad(handler, "Session not found", 404)
+    s = _get_session_for_workspace_file_ops(handler, body["session_id"])
+    if s is None:
+        return True
     try:
         ws_root = Path(s.workspace)
         target = safe_resolve(ws_root, body["path"])
@@ -23361,10 +23341,9 @@ def _handle_file_reveal(handler, body):
         require(body, "session_id", "path")
     except ValueError as e:
         return bad(handler, str(e))
-    try:
-        s = get_session_for_file_ops(body["session_id"])
-    except KeyError:
-        return bad(handler, "Session not found", 404)
+    s = _get_session_for_workspace_file_ops(handler, body["session_id"])
+    if s is None:
+        return True
     try:
         target = safe_resolve(Path(s.workspace), body["path"])
         if not target.exists():
@@ -23422,10 +23401,9 @@ def _handle_file_path(handler, body):
         require(body, "session_id", "path")
     except ValueError as e:
         return bad(handler, str(e))
-    try:
-        s = get_session_for_file_ops(body["session_id"])
-    except KeyError:
-        return bad(handler, "Session not found", 404)
+    s = _get_session_for_workspace_file_ops(handler, body["session_id"])
+    if s is None:
+        return True
     try:
         target = safe_resolve(Path(s.workspace), body["path"])
         return j(handler, {"ok": True, "path": str(target)})
@@ -23452,10 +23430,9 @@ def _handle_file_open_vscode(handler, body):
         require(body, "session_id", "path")
     except ValueError as e:
         return bad(handler, str(e))
-    try:
-        s = get_session_for_file_ops(body["session_id"])
-    except KeyError:
-        return bad(handler, "Session not found", 404)
+    s = _get_session_for_workspace_file_ops(handler, body["session_id"])
+    if s is None:
+        return True
     try:
         target = safe_resolve(Path(s.workspace), body["path"])
         if not target.exists():
@@ -23531,6 +23508,230 @@ def _workspace_scope_for_caller(handler, all_ws):
     if not _rbac_users_configured():
         return list(all_ws), rbac_user_id
     return visible_workspaces(rbac_user_id, caller_is_admin, all_ws), rbac_user_id
+
+
+_WORKSPACE_ACCESS_DENIED = "Workspace not accessible"
+
+
+class _WorkspaceSessionView:
+    """Session proxy with a request-scoped workspace override."""
+
+    def __init__(self, source, *, session_id: str, workspace: str):
+        self._source = source
+        self.session_id = session_id
+        self.workspace = workspace
+
+    def __getattr__(self, name):
+        if self._source is None:
+            raise AttributeError(name)
+        return getattr(self._source, name)
+
+
+def _workspace_path_key(path) -> str:
+    raw = str(path or "").strip()
+    if not raw:
+        return ""
+    try:
+        return str(Path(raw).expanduser().resolve(strict=False))
+    except (OSError, RuntimeError, ValueError):
+        return raw
+
+
+def _workspace_scope_snapshot_for_caller(handler, all_ws=None):
+    all_ws = load_workspaces() if all_ws is None else all_ws
+    workspaces, rbac_user_id = _workspace_scope_for_caller(handler, all_ws)
+    raw_paths = {
+        str(w.get("path"))
+        for w in workspaces
+        if isinstance(w, dict) and str(w.get("path") or "").strip()
+    }
+    resolved_paths = {_workspace_path_key(path) for path in raw_paths}
+    return workspaces, rbac_user_id, raw_paths, resolved_paths
+
+
+def _workspace_path_allowed_for_caller(handler, workspace, *, session=None, resolved_paths=None) -> bool:
+    if not _rbac_users_configured():
+        return True
+    if _current_rbac_user_is_admin(handler):
+        return True
+    key = _workspace_path_key(workspace)
+    if key and key in (resolved_paths or set()):
+        return True
+    # WebUI worktree sessions use a generated workspace path that is not stored
+    # in workspaces.json. The session itself is already request-visible before
+    # file handlers reach here, so its own worktree path stays allowed.
+    if session is not None:
+        worktree_key = _workspace_path_key(getattr(session, "worktree_path", None))
+        if worktree_key and key == worktree_key:
+            return True
+    return False
+
+
+def _caller_default_workspace(handler, *, workspaces=None, rbac_user_id=None, raw_paths=None):
+    if workspaces is None or rbac_user_id is None or raw_paths is None:
+        workspaces, rbac_user_id, raw_paths, _ = _workspace_scope_snapshot_for_caller(handler)
+    allowed_paths = raw_paths
+    if not allowed_paths and not _rbac_users_configured():
+        allowed_paths = None
+    candidates = []
+    try:
+        last = get_last_workspace(rbac_user_id, allowed_paths=allowed_paths)
+    except TypeError:
+        last = get_last_workspace()
+    if last:
+        candidates.append(last)
+    for workspace in workspaces or []:
+        if isinstance(workspace, dict) and workspace.get("path"):
+            candidates.append(str(workspace["path"]))
+    seen = set()
+    for candidate in candidates:
+        key = _workspace_path_key(candidate)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        try:
+            return Path(resolve_trusted_workspace(candidate))
+        except ValueError:
+            continue
+    return None
+
+
+def _resolve_workspace_candidate(raw_workspace, *, session=None):
+    worktree_key = _workspace_path_key(getattr(session, "worktree_path", None)) if session is not None else ""
+    raw_key = _workspace_path_key(raw_workspace)
+    if worktree_key and raw_key == worktree_key:
+        return Path(raw_workspace).expanduser().resolve(strict=False)
+    return Path(resolve_trusted_workspace(raw_workspace))
+
+
+def _workspace_for_request_session(handler, session, *, allow_fallback: bool = True, persist_fallback: bool = False):
+    workspaces, rbac_user_id, raw_paths, resolved_paths = _workspace_scope_snapshot_for_caller(handler)
+    candidate = None
+    candidate_error = None
+    try:
+        candidate = _resolve_workspace_candidate(getattr(session, "workspace", None), session=session)
+    except ValueError as exc:
+        candidate_error = exc
+    if candidate is not None and _workspace_path_allowed_for_caller(
+        handler,
+        candidate,
+        session=session,
+        resolved_paths=resolved_paths,
+    ):
+        return candidate
+    fallback = None
+    if allow_fallback and (_rbac_users_configured() or _current_rbac_user_id(handler)):
+        fallback = _caller_default_workspace(
+            handler,
+            workspaces=workspaces,
+            rbac_user_id=rbac_user_id,
+            raw_paths=raw_paths,
+        )
+    if fallback is not None:
+        if persist_fallback and hasattr(session, "workspace"):
+            try:
+                session.workspace = str(fallback)
+                session.save()
+            except Exception:
+                logger.debug(
+                    "Failed to persist workspace fallback for session %s",
+                    getattr(session, "session_id", None),
+                    exc_info=True,
+                )
+        return fallback
+    if candidate_error is not None and not _rbac_users_configured():
+        raise candidate_error
+    raise WorkspacePermissionError(_WORKSPACE_ACCESS_DENIED)
+
+
+def _resolve_workspace_for_request_binding(handler, raw_workspace, *, session=None):
+    workspace = _resolve_workspace_candidate(raw_workspace, session=session)
+    _, _, _, resolved_paths = _workspace_scope_snapshot_for_caller(handler)
+    if not _workspace_path_allowed_for_caller(
+        handler,
+        workspace,
+        session=session,
+        resolved_paths=resolved_paths,
+    ):
+        raise WorkspacePermissionError(_WORKSPACE_ACCESS_DENIED)
+    return workspace
+
+
+def _get_session_for_workspace_file_ops(handler, sid: str, *, allow_cli_fallback: bool = False):
+    if not _session_id_visible_to_request_profile(handler, sid):
+        return None
+    try:
+        session = get_session_for_file_ops(sid)
+    except KeyError:
+        if not allow_cli_fallback:
+            bad(handler, "Session not found", 404)
+            return None
+        cli_meta = None
+        try:
+            for cs in get_cli_sessions():
+                if cs.get("session_id") == sid:
+                    cli_meta = cs
+                    break
+        except Exception:
+            cli_meta = None
+        if not cli_meta:
+            bad(handler, "Session not found", 404)
+            return None
+        session = _WorkspaceSessionView(
+            None,
+            session_id=sid,
+            workspace=str(cli_meta.get("workspace", "")),
+        )
+    try:
+        workspace = _workspace_for_request_session(handler, session)
+    except WorkspacePermissionError as exc:
+        bad(handler, str(exc), 403)
+        return None
+    except ValueError as exc:
+        bad(handler, _sanitize_error(exc), 404)
+        return None
+    if _workspace_path_key(workspace) == _workspace_path_key(getattr(session, "workspace", None)):
+        return session
+    return _WorkspaceSessionView(
+        session,
+        session_id=str(getattr(session, "session_id", sid)),
+        workspace=str(workspace),
+    )
+
+
+def _workspace_read_view_from_query(handler, qs, *, allow_cli_fallback: bool = False):
+    """Resolve a read-only workspace view from session_id or explicit workspace.
+
+    Empty chat pages have a selected composer workspace before they have a
+    session. Let read-only file browser routes use that workspace directly, while
+    still routing every path through the same RBAC scope check as session-bound
+    file operations.
+    """
+    sid = qs.get("session_id", [""])[0]
+    if sid:
+        session = _get_session_for_workspace_file_ops(
+            handler,
+            sid,
+            allow_cli_fallback=allow_cli_fallback,
+        )
+        return (session, sid) if session is not None else None
+
+    raw_workspace = (qs.get("workspace", [""])[0] or "").strip()
+    if not raw_workspace:
+        bad(handler, "session_id or workspace is required")
+        return None
+    try:
+        workspace = _resolve_workspace_for_request_binding(handler, raw_workspace)
+    except WorkspacePermissionError as exc:
+        bad(handler, str(exc), 403)
+        return None
+    except ValueError as exc:
+        bad(handler, _sanitize_error(exc), 404)
+        return None
+    return (
+        _WorkspaceSessionView(None, session_id="", workspace=str(workspace)),
+        "",
+    )
 
 
 def _augment_workspace_usernames(workspaces):

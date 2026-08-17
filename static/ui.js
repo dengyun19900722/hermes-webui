@@ -17846,8 +17846,10 @@ function renderBreadcrumb(){
   root.className='breadcrumb-seg breadcrumb-link';
   root.textContent='~';
   root.onclick=()=>loadDir('.');
-  _bindWorkspaceMoveDropTarget(root,'.');
-  _bindWorkspaceOsUploadDropTarget(root,'.');
+  if(S.session&&!(typeof _workspacePathIsReadOnly==='function'&&_workspacePathIsReadOnly('.'))){
+    _bindWorkspaceMoveDropTarget(root,'.');
+    _bindWorkspaceOsUploadDropTarget(root,'.');
+  }
   bar.appendChild(root);
   // Path segments
   const parts=S.currentDir.split('/');
@@ -17863,8 +17865,10 @@ function renderBreadcrumb(){
       seg.className='breadcrumb-seg breadcrumb-link';
       const target=accumulated;
       seg.onclick=()=>loadDir(target);
-      _bindWorkspaceMoveDropTarget(seg,target);
-      _bindWorkspaceOsUploadDropTarget(seg,target);
+      if(S.session&&!(typeof _workspacePathIsReadOnly==='function'&&_workspacePathIsReadOnly(target))){
+        _bindWorkspaceMoveDropTarget(seg,target);
+        _bindWorkspaceOsUploadDropTarget(seg,target);
+      }
     } else {
       seg.className='breadcrumb-seg breadcrumb-current';
     }
@@ -18011,11 +18015,19 @@ function bindWorkspaceHeadingActions(){
   if(!heading||heading.dataset.bound==='1')return;
   heading.dataset.bound='1';
   const goRoot=()=>{
-    if(S.session&&S.session.workspace) loadDir('.');
+    const hasWorkspace=!!(
+      (S.session&&S.session.workspace) ||
+      (typeof getCurrentWorkspaceBrowsePath==='function'&&getCurrentWorkspaceBrowsePath())
+    );
+    if(hasWorkspace) loadDir('.');
   };
   heading.onclick=goRoot;
   heading.onkeydown=(e)=>{
-    if(!(S.session&&S.session.workspace)) return;
+    const hasWorkspace=!!(
+      (S.session&&S.session.workspace) ||
+      (typeof getCurrentWorkspaceBrowsePath==='function'&&getCurrentWorkspaceBrowsePath())
+    );
+    if(!hasWorkspace) return;
     if(e.key==='Enter'||e.key===' '){
       e.preventDefault();
       goRoot();
@@ -18033,7 +18045,10 @@ function bindWorkspaceHeadingActions(){
 function _syncWorkspaceHeadingState(){
   const heading=$('workspacePanelHeading');
   if(!heading) return;
-  const enabled=!!(S.session&&S.session.workspace);
+  const enabled=!!(
+    (S.session&&S.session.workspace) ||
+    (typeof getCurrentWorkspaceBrowsePath==='function'&&getCurrentWorkspaceBrowsePath())
+  );
   heading.classList.toggle('workspace-panel-heading--enabled',enabled);
   if(enabled){
     heading.setAttribute('role','button');
@@ -18180,7 +18195,10 @@ function renderFileTree(){
   S._dirCache[_workspaceTreePath(S.currentDir||'.')]=S.entries;
   // Show empty-state when no workspace is set or the directory is empty (#703)
   const emptyEl=$('wsEmptyState');
-  const hasWorkspace=!!(S.session&&S.session.workspace);
+  const hasWorkspace=!!(
+    (S.session&&S.session.workspace) ||
+    (typeof getCurrentWorkspaceBrowsePath==='function'&&getCurrentWorkspaceBrowsePath())
+  );
   if(!hasWorkspace){
     if(emptyEl){emptyEl.textContent=t('workspace_empty_no_path');emptyEl.style.display='flex';}
     box.style.display='none';
@@ -18513,29 +18531,33 @@ function _renderTreeItems(container, entries, depth, ancestry){
     const itemPath=_workspaceTreePath(item.path||item.name);
     const el=document.createElement('div');el.className='file-item';
     el.style.paddingLeft=(8+depth*16)+'px';
-    el.setAttribute('draggable','true');
     el.dataset.wsType=item.type;
-    el.oncontextmenu=(e)=>{
-      const grant=typeof _workspaceEscapeGrantForPath==='function' ? _workspaceEscapeGrantForPath(item.path) : null;
-      const isDirRow=item.type==='dir'||(item.type==='symlink'&&item.is_dir);
-      if(grant&&!isDirRow){e.preventDefault();e.stopPropagation();return;}
-      e.preventDefault();e.stopPropagation();_showFileContextMenu(e,item);
-    };
-    el.ondragstart=(e)=>{_setWsDragData(e,item);e.dataTransfer.effectAllowed='copy';el.classList.add('dragging');};
-    el.ondragend=()=>{el.classList.remove('dragging');_clearWorkspaceMoveDragOver();_clearWsDragData();};
 
     const isLk = item.type === 'symlink';
     const isExternalLink = isLk && item.target_outside_workspace;
     const escapeGrant = typeof _workspaceEscapeGrantForPath === 'function' ? _workspaceEscapeGrantForPath(item.path) : null;
     const exactEscapeGrant = typeof _workspaceEscapeExactGrant === 'function' ? _workspaceEscapeExactGrant(item.path) : null;
-    const isReadOnlyEscape = !!escapeGrant;
+    const isReadOnlyEscape = (typeof _workspacePathIsReadOnly==='function')
+      ? _workspacePathIsReadOnly(item.path)
+      : !!escapeGrant;
     const isNestedEscape = !!escapeGrant && !exactEscapeGrant;
     // External symlinks are display-only: not expandable, not openable.
     // The read gate (safe_resolve_ws) still blocks navigation through them.
     const isDirLike = !isExternalLink && (item.type === 'dir' || (isLk && item.is_dir));
     const isFileLike = !isExternalLink && !isDirLike;
     el.dataset.wsIsDir = String(isDirLike);
-    if(isExternalLink || isReadOnlyEscape){el.removeAttribute('draggable');el.ondragstart=null;}
+    if(!isExternalLink && !isReadOnlyEscape){
+      el.setAttribute('draggable','true');
+      el.oncontextmenu=(e)=>{
+        e.preventDefault();e.stopPropagation();_showFileContextMenu(e,item);
+      };
+      el.ondragstart=(e)=>{_setWsDragData(e,item);e.dataTransfer.effectAllowed='copy';el.classList.add('dragging');};
+      el.ondragend=()=>{el.classList.remove('dragging');_clearWorkspaceMoveDragOver();_clearWsDragData();};
+    }else{
+      el.removeAttribute('draggable');
+      el.ondragstart=null;
+      el.oncontextmenu=(e)=>{e.preventDefault();e.stopPropagation();};
+    }
 
     if(isDirLike){
       // Toggle arrow for directories
@@ -18679,7 +18701,7 @@ function _renderTreeItems(container, entries, depth, ancestry){
     }
 
     if(isDirLike){
-      if(!isReadOnlyEscape){
+      if(!isReadOnlyEscape&&S.session){
         _bindWorkspaceMoveDropTarget(el,item.path);
         _bindWorkspaceOsUploadDropTarget(el,item.path);
       }
@@ -18784,9 +18806,11 @@ function _showFileContextMenu(e, item){
   menu.style.top=(e.clientY+100>vh?e.clientY-100:e.clientY)+'px';
   const isDirLike=item.type==='dir'||(item.type==='symlink'&&item.is_dir);
   const targetDir=isDirLike ? item.path : _workspaceParentDir(item.path);
-  const isReadOnlyEscape=typeof _workspaceEscapeGrantForPath==='function' ? !!_workspaceEscapeGrantForPath(item.path) : false;
+  const isReadOnly=typeof _workspacePathIsReadOnly==='function'
+    ? _workspacePathIsReadOnly(item.path)
+    : (typeof _workspaceEscapeGrantForPath==='function' ? !!_workspaceEscapeGrantForPath(item.path) : false);
 
-  if(!isReadOnlyEscape){
+  if(!isReadOnly){
     menu.appendChild(_workspaceContextMenuItem(t('new_file'),async()=>{
       menu.remove();
       await promptNewFile(targetDir);
@@ -18881,7 +18905,7 @@ function _showFileContextMenu(e, item){
     menu.appendChild(copyRelPathItem);
   }
 
-  if(isDirLike){
+  if(isDirLike&&S.session){
     const dlItem=document.createElement('div');
     dlItem.textContent=t('download_folder');
     dlItem.style.cssText='padding:7px 14px;cursor:pointer;font-size:13px;color:var(--text);';
@@ -18896,7 +18920,7 @@ function _showFileContextMenu(e, item){
     menu.appendChild(dlItem);
   }
 
-  if(!isReadOnlyEscape){
+  if(!isReadOnly){
     const sep=document.createElement('hr');
     sep.style.cssText='border:none;border-top:1px solid var(--border);margin:4px 0;';
     menu.appendChild(sep);

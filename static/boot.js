@@ -248,7 +248,8 @@ function syncWorkspacePanelState(){
 }
 
 function openWorkspacePanel(mode='browse'){
-  if(mode==='browse'&&!S.session&&!_hasWorkspacePreviewVisible()&&!S._profileDefaultWorkspace)return;
+  const browseWorkspace=(typeof getCurrentWorkspaceBrowsePath==='function'&&getCurrentWorkspaceBrowsePath())||S._profileDefaultWorkspace||'';
+  if(mode==='browse'&&!S.session&&!_hasWorkspacePreviewVisible()&&!browseWorkspace)return;
   if(mode==='preview'&&_workspacePanelMode==='browse'){
     syncWorkspacePanelUI();
     return;
@@ -274,15 +275,19 @@ function handleWorkspaceClose(){
 }
 
 async function _maybeBindFreshDefaultWorkspaceSession(prefillIntent=null){
-  if(_prefillHasDraftText(prefillIntent)) return false;
+  return false;
+}
+
+async function _loadSessionlessWorkspaceTreeIfBrowse(){
   if(S.session) return false;
   if(_workspacePanelMode!=='browse') return false;
-  if(!S._profileDefaultWorkspace) return false;
+  const workspace=(typeof getCurrentWorkspaceBrowsePath==='function'&&getCurrentWorkspaceBrowsePath())||'';
+  if(!workspace) return false;
+  if(typeof loadDir!=='function') return false;
   try{
-    await newSession(false, {awaitWorkspaceLoad: true});
+    await loadDir('.',{preservePreview:true});
     return true;
-  }catch(e){
-    console.warn('[hermes] failed to bind fresh default workspace session', e);
+  }catch(_){
     return false;
   }
 }
@@ -314,7 +319,8 @@ function syncWorkspacePanelUI(){
   const mobileOpen=panel.classList.contains('mobile-open');
   const isCompact=_isCompactWorkspaceViewport();
   const isOpen=isCompact?mobileOpen:desktopOpen;
-  const canBrowse=!!S.session||_hasWorkspacePreviewVisible()||!!(S._profileDefaultWorkspace);
+  const browseWorkspace=(typeof getCurrentWorkspaceBrowsePath==='function'&&getCurrentWorkspaceBrowsePath())||S._profileDefaultWorkspace||'';
+  const canBrowse=!!S.session||_hasWorkspacePreviewVisible()||!!browseWorkspace;
   const hasPreview=_hasWorkspacePreviewVisible();
   if(toggleBtn){
     toggleBtn.classList.toggle('active',isOpen);
@@ -332,7 +338,12 @@ function syncWorkspacePanelUI(){
     _setButtonTooltip(collapseBtn, isCompact?'Close workspace panel':'Hide workspace panel');
   }
   const hasSession=!!S.session;
-  ['btnUpDir','btnNewFile','btnNewFolder','btnRefreshPanel'].forEach(id=>{
+  const hasBrowseWorkspace=hasSession||!!(typeof getCurrentWorkspaceBrowsePath==='function'&&getCurrentWorkspaceBrowsePath());
+  const upBtn=$('btnUpDir');
+  if(upBtn) upBtn.disabled=!hasBrowseWorkspace;
+  const refreshBtn=$('btnRefreshPanel');
+  if(refreshBtn) refreshBtn.disabled=!hasBrowseWorkspace;
+  ['btnNewFile','btnNewFolder','btnUploadWorkspace'].forEach(id=>{
     const el=$(id);
     if(el)el.disabled=!hasSession;
   });
@@ -556,6 +567,9 @@ function toggleWorkspacePanel(force){
   }
   const nextMode=_hasWorkspacePreviewVisible()?'preview':'browse';
   openWorkspacePanel(nextMode);
+  if(nextMode==='browse'&&_workspacePanelMode==='browse'&&typeof loadDir==='function'){
+    try{ void loadDir(S.currentDir||'.',{preservePreview:true}); }catch(_){}
+  }
 }
 function mobileSwitchPanel(name){
   switchPanel(name);
@@ -3613,6 +3627,7 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
         S.session=null; S.messages=[]; S.activeStreamId=null; S.busy=false;
         S._bootReady=true;
         syncTopbar();syncWorkspacePanelState();
+        await _loadSessionlessWorkspaceTreeIfBrowse();
         $('emptyState').style.display='';
         if(typeof renderSessionListFromCache==='function')renderSessionListFromCache();await _finalizeComposerPrefillOnBoot(prefillIntent);if(typeof startGatewaySSE==='function')startGatewaySSE();
         return;
@@ -3625,6 +3640,7 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
         if(_ephPanelPref&&!_isCompactWorkspaceViewport()) _workspacePanelMode='browse';
         await _maybeBindFreshDefaultWorkspaceSession(prefillIntent);
         syncTopbar();syncWorkspacePanelState();
+        await _loadSessionlessWorkspaceTreeIfBrowse();
         $('emptyState').style.display='';
         if(typeof renderSessionListFromCache==='function')renderSessionListFromCache();await _finalizeComposerPrefillOnBoot(prefillIntent);if(typeof startGatewaySSE==='function')startGatewaySSE();
         return;
@@ -3638,11 +3654,9 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
       if(S.session) await _startBootModelDropdown();
       // If the restored session has no messages it is an ephemeral scratch pad —
       // treat the page as a fresh start rather than resuming a blank conversation.
-      // loadSession() already ran, so loadDir() has populated the workspace file tree.
-      // Do NOT remove the session ID from localStorage — keeping it means every
-      // subsequent refresh will also run loadSession() → loadDir() → files stay visible.
-      // Removing it here caused the file tree to go blank on the second refresh
-      // because the "no saved session" path never calls loadDir (#workspace-files).
+      // Reload the file tree through the sessionless workspace path below so
+      // the empty page never keeps session-mode file controls after S.session is
+      // cleared.
       const _restoredInFlight = S.session && (
         S.session.active_stream_id ||
         S.session.pending_user_message
@@ -3663,6 +3677,7 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
         if(_ephPanelPref&&!_isCompactWorkspaceViewport()) _workspacePanelMode='browse';
         await _maybeBindFreshDefaultWorkspaceSession(prefillIntent);
         syncTopbar();syncWorkspacePanelState();
+        await _loadSessionlessWorkspaceTreeIfBrowse();
         $('emptyState').style.display='';
         if(typeof renderSessionListFromCache==='function')renderSessionListFromCache();await _finalizeComposerPrefillOnBoot(prefillIntent);if(typeof startGatewaySSE==='function')startGatewaySSE();
         return;
@@ -3689,6 +3704,7 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
   if(_freshPanelPref&&!_isCompactWorkspaceViewport()) _workspacePanelMode='browse';
   await _maybeBindFreshDefaultWorkspaceSession(prefillIntent);
   syncWorkspacePanelState();
+  await _loadSessionlessWorkspaceTreeIfBrowse();
   $('emptyState').style.display='';
   if(typeof renderSessionListFromCache==='function')renderSessionListFromCache();await _finalizeComposerPrefillOnBoot(prefillIntent);
   // Start real-time gateway session sync if setting is enabled
