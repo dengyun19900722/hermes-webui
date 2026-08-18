@@ -1539,7 +1539,9 @@ def init_profile_state() -> None:
     _reload_dotenv(home)
 
 
-def switch_profile(name: str, *, process_wide: bool = True) -> dict:
+def switch_profile(
+    name: str, *, process_wide: bool = True, include_profiles: bool = True
+) -> dict:
     """Switch the active profile.
 
     Validates the profile exists, updates process state, patches module caches,
@@ -1553,8 +1555,12 @@ def switch_profile(name: str, *, process_wide: bool = True) -> dict:
         process_wide: If True (default), updates the process-global
             _active_profile.  Set to False for per-client switches from the
             WebUI where the profile is managed via cookie + thread-local (#798).
+        include_profiles: Include the full profile list for direct callers that
+            need it. The browser switch endpoint already has that list in its
+            dropdown cache, so it skips the potentially expensive metadata scan.
 
-    Returns: {'profiles': [...], 'active': name}
+    Returns: Profile-specific defaults and ``active``; includes ``profiles``
+        when ``include_profiles`` is True.
     Raises ValueError when profile doesn't exist, RuntimeError when agent is running,
     PermissionError in isolated mode for cross-profile switches.
     """
@@ -1596,7 +1602,6 @@ def switch_profile(name: str, *, process_wide: bool = True) -> dict:
             raise ValueError(f"Profile '{name}' does not exist.")
 
     with _profile_lock:
-        _SKILLS_STATS_CACHE.clear()
         if process_wide:
             global _active_profile
             _active_profile = name
@@ -1686,14 +1691,16 @@ def switch_profile(name: str, *, process_wide: bool = True) -> dict:
         except Exception:
             default_workspace = str(Path.home())
 
-    return {
-        'profiles': list_profiles_api(),
+    result = {
         'active': name,
         'is_default': _is_root_profile(name),
         'default_model': default_model,
         'default_model_provider': default_model_provider,
         'default_workspace': default_workspace,
     }
+    if include_profiles:
+        result['profiles'] = list_profiles_api()
+    return result
 
 
 _SKILLS_STATS_CACHE: dict[Path, tuple[int, int, int, float]] = {}
@@ -1890,7 +1897,7 @@ def _get_profile_skills_stats(profile_dir: Path) -> tuple[int, int]:
         return res
 
 
-_LIST_PROFILES_CACHE: tuple[list, float] | None = None
+_LIST_PROFILES_CACHE: tuple[list, float, bool] | None = None
 _LIST_PROFILES_CACHE_TTL = 4.0  # seconds — short enough that gateway dots / new
                                 # profiles stay near-live, long enough that rapid
                                 # re-opens of the dropdown are free.
@@ -1904,7 +1911,7 @@ def _invalidate_list_profiles_cache() -> None:
         _LIST_PROFILES_CACHE = None
 
 
-def _build_profile_rows_fast() -> list | None:
+def _build_profile_rows_fast(*, include_skill_stats: bool = True) -> list | None:
     """Build the profile list WITHOUT the upstream alias scan.
 
     ``hermes_cli.profiles.list_profiles()`` calls ``find_alias_for_profile()``
@@ -1926,8 +1933,6 @@ def _build_profile_rows_fast() -> list | None:
     """
     try:
         from hermes_cli.profiles import (
-            _get_default_hermes_home,
-            _get_profiles_root,
             _read_config_model,
             _check_gateway_running,
             _PROFILE_ID_RE as _UPSTREAM_PROFILE_ID_RE,
@@ -1944,7 +1949,14 @@ def _build_profile_rows_fast() -> list | None:
             gateway_running = _check_gateway_running(home)
         except Exception:
             gateway_running = False
-        enabled_count, total_count = _get_profile_skills_stats(home)
+        # Profile switching only needs the identity/defaults metadata. On a
+        # cold cache, parsing every SKILL.md can take longer than the browser
+        # request budget, so let the control-plane route opt out of counters.
+        # Direct callers retain the complete row shape by default.
+        if include_skill_stats:
+            enabled_count, total_count = _get_profile_skills_stats(home)
+        else:
+            enabled_count, total_count = (0, 0)
         return {
             'name': name,
             'path': str(home),
@@ -1961,13 +1973,17 @@ def _build_profile_rows_fast() -> list | None:
         }
 
     rows: list = []
-    default_home = _get_default_hermes_home()
+    # Use the WebUI-resolved roots rather than asking the agent to resolve them
+    # again. The WebUI supports HERMES_BASE_HOME for custom/isolated deployments;
+    # the agent resolver does not know that override and can otherwise enumerate
+    # the host's ~/.hermes profiles instead of the mounted deployment volume.
+    default_home = _DEFAULT_HERMES_HOME
     if default_home.is_dir():
         # Upstream hardcodes the base home's display name to "default" even when
         # the directory is literally ".hermes" — match that exactly.
         rows.append(_row(default_home, 'default', True))
 
-    profiles_root = _get_profiles_root()
+    profiles_root = _profiles_root()
     if profiles_root.is_dir():
         for entry in sorted(profiles_root.iterdir()):
             if not entry.is_dir():
@@ -1985,7 +2001,7 @@ def _finalize_profile_rows(rows: list) -> list:
     return rows
 
 
-def list_profiles_api() -> list:
+def list_profiles_api(*, include_skill_stats: bool = True) -> list:
     """List all profiles with metadata, serialized for JSON response.
 
     In isolated profile mode (HERMES_HOME points to ~/.hermes/profiles/<name>),
@@ -1997,6 +2013,11 @@ def list_profiles_api() -> list:
     re-opens of the compose-footer dropdown are free; the cache is busted on
     profile create/delete. Falls back to upstream ``list_profiles()`` if the
     cheap helpers are unavailable.
+
+    ``include_skill_stats=False`` keeps the same row keys but omits cold-cache
+    skill counting. The browser's profile selector does not need those counters
+    to switch profiles, and avoiding the YAML scan keeps it responsive while
+    the application is under concurrent startup load.
     """
     import time
     global _LIST_PROFILES_CACHE
@@ -2060,12 +2081,20 @@ def list_profiles_api() -> list:
     # acquired AFTER this lock (never the reverse), so there is no deadlock.
     with _LIST_PROFILES_CACHE_LOCK:
         cached = _LIST_PROFILES_CACHE
-        if cached is not None and now - cached[1] < _LIST_PROFILES_CACHE_TTL:
+        if (
+            cached is not None
+            and cached[2] == include_skill_stats
+            and now - cached[1] < _LIST_PROFILES_CACHE_TTL
+        ):
             rows = cached[0]
         else:
-            rows = _build_profile_rows_fast()
+            rows = (
+                _build_profile_rows_fast()
+                if include_skill_stats
+                else _build_profile_rows_fast(include_skill_stats=False)
+            )
             if rows is not None:
-                _LIST_PROFILES_CACHE = (rows, now)
+                _LIST_PROFILES_CACHE = (rows, now, include_skill_stats)
 
     if rows is None:
         # Fallback: cheap helpers unavailable — use the original (slow) path,
@@ -2083,7 +2112,10 @@ def list_profiles_api() -> list:
         active = get_active_profile_name()
         result = []
         for p in infos:
-            enabled_count, total_count = _get_profile_skills_stats(p.path)
+            if include_skill_stats:
+                enabled_count, total_count = _get_profile_skills_stats(p.path)
+            else:
+                enabled_count, total_count = (0, 0)
             result.append({
                 'name': p.name,
                 'path': str(p.path),

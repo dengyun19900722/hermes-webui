@@ -7219,29 +7219,6 @@ function renderProfileDropdown(data) {
     mgmt.onclick = () => { closeProfileDropdown(); mobileSwitchPanel('profiles'); };
     dd.appendChild(mgmt);
   }
-  // Divider + account actions: "Change password" (always available, even in
-  // single-profile mode) and "Sign out" (per RBAC plan §7). The change-password
-  // item lives BEFORE sign-out so the spec's "before logout" ordering is
-  // satisfied. data-action attributes are picked up by the global click
-  // delegation in static/change_password_dialog.js.
-  const acctDiv = document.createElement('div'); acctDiv.className = 'ws-divider'; dd.appendChild(acctDiv);
-  const cpItem = document.createElement('div');
-  cpItem.className = 'profile-opt';
-  cpItem.setAttribute('data-action', 'change-password');
-  cpItem.setAttribute('role', 'menuitem');
-  cpItem.innerHTML = `${li('lock', 12)} ${esc(t('menu_change_password'))}`;
-  cpItem.onclick = () => { closeProfileDropdown(); if (typeof openChangePasswordDialog === 'function') openChangePasswordDialog(); };
-  dd.appendChild(cpItem);
-  const soItem = document.createElement('div');
-  soItem.className = 'profile-opt';
-  soItem.setAttribute('data-action', 'sign-out-from-dropdown');
-  soItem.setAttribute('role', 'menuitem');
-  // No icon available in icons.js for "log-out" — use a simple inline SVG arrow
-  // (door + arrow) that matches Lucide's log-out glyph without adding a new
-  // entry to the shared icon registry for this single-use case.
-  soItem.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px;display:inline-block;margin-right:4px"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg> ' + esc(t('sign_out', 'Sign Out'));
-  soItem.onclick = () => { closeProfileDropdown(); if (typeof signOut === 'function') signOut(); };
-  dd.appendChild(soItem);
   // Sync titlebar label to the resolved active profile
   const tbl = $('titlebarProfileLabel');
   if (tbl) tbl.textContent = active;

@@ -152,7 +152,7 @@
       + '<div class="settings-field users-section">'
         + '<label data-i18n="users_create_heading">Add user</label>'
         + '<div class="users-create-row">'
-          + '<input type="text" id="users-new-username" placeholder="username" pattern="[A-Za-z0-9_.\-]{3,32}" minlength="3" maxlength="32" required>'
+          + '<input type="text" id="users-new-username" placeholder="username" pattern="[A-Za-z0-9_.\\x2D]{3,32}" minlength="3" maxlength="32" required>'
           + '<input type="password" id="users-new-password" placeholder="password (≥8 chars)" minlength="8" required>'
           + '<select id="users-new-role"><option value="user">user</option><option value="admin">admin</option></select>'
           + '<button class="settings-action-btn primary" id="users-create-btn" data-i18n="users_create_btn">Create</button>'

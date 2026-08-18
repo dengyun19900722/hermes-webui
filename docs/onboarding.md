@@ -8,10 +8,25 @@ setup, or first-run support, read
 [`docs/onboarding-agent-checklist.md`](onboarding-agent-checklist.md) before
 running commands or inspecting logs.
 
-The short version: run the bootstrap, open the WebUI, choose a provider, choose
-a workspace, optionally set a password, then start a chat. If you are using a
-local model server from Docker, pay special attention to the Base URL section
-below.
+The short version: run the bootstrap, activate a License when your deployment
+requires one, create the first administrator account, open the WebUI, choose a
+provider, choose a workspace, optionally set a password, then start a chat. If
+you are using a local model server from Docker, pay special attention to the
+Base URL section below.
+
+## Managed deployment order
+
+On a fresh deployment with License enforcement enabled, the WebUI follows this
+order:
+
+1. Import the License from the activation page.
+2. Create the first administrator account at `/setup`.
+3. Sign in at `/login` with that account.
+4. Complete the provider and workspace onboarding wizard.
+
+The License activation page sends an uninitialized deployment to `/setup`
+after a successful import. Existing deployments with an administrator continue
+to the normal app entry point and login flow.
 
 ## Before you start
 

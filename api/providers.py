@@ -57,6 +57,45 @@ from api.plugin_providers import (
 logger = logging.getLogger(__name__)
 
 
+# Provider settings are a control-plane view. A stalled OAuth/catalog lookup
+# must not make the entire page wait for the browser's 30-second request cap.
+# The static catalog and locally configured key state remain useful while a
+# slow lookup finishes in its daemon thread.
+_PROVIDER_LIVE_LOOKUP_TIMEOUT_SECONDS = 1.0
+
+
+def _run_bounded_provider_lookup(provider_id: str, operation: str, lookup):
+    """Return an optional live lookup result without blocking Settings indefinitely."""
+    completed = threading.Event()
+    box: dict[str, Any] = {}
+
+    def _run() -> None:
+        try:
+            box["result"] = lookup()
+        except Exception as exc:  # noqa: BLE001 - provider integrations are optional
+            box["error"] = exc
+        finally:
+            completed.set()
+
+    threading.Thread(
+        target=_run,
+        name=f"provider-{operation}-{provider_id}",
+        daemon=True,
+    ).start()
+    if not completed.wait(_PROVIDER_LIVE_LOOKUP_TIMEOUT_SECONDS):
+        logger.warning(
+            "Provider %s lookup for %s exceeded %.1fs; using cached/static data",
+            operation,
+            provider_id,
+            _PROVIDER_LIVE_LOOKUP_TIMEOUT_SECONDS,
+        )
+        return None
+    if "error" in box:
+        logger.debug("Provider %s lookup failed for %s", operation, provider_id)
+        return None
+    return box.get("result")
+
+
 def _provider_env_var_for(provider_id: str) -> str | None:
     """Resolve the API-key env var for a provider (static table + plugin profiles)."""
     return effective_provider_env_var(provider_id, _PROVIDER_ENV_VAR)
@@ -2378,7 +2417,11 @@ def get_providers() -> dict[str, Any]:
         if not has_key and is_plugin_model_provider(pid):
             try:
                 from hermes_cli.auth import get_auth_status as _gas_plugin
-                _plugin_status = _gas_plugin(pid)
+                _plugin_status = _run_bounded_provider_lookup(
+                    pid,
+                    "plugin-auth",
+                    lambda _pid=pid, _lookup=_gas_plugin: _lookup(_pid),
+                )
                 if isinstance(_plugin_status, dict) and (
                     _plugin_status.get("logged_in") or _plugin_status.get("configured")
                 ):
@@ -2399,7 +2442,11 @@ def get_providers() -> dict[str, Any]:
             # or refresh token consumed by native Codex CLI / VS Code extension).
             try:
                 from hermes_cli.auth import get_auth_status as _gas
-                status = _gas(pid)
+                status = _run_bounded_provider_lookup(
+                    pid,
+                    "auth",
+                    lambda _pid=pid, _lookup=_gas: _lookup(_pid),
+                )
                 if isinstance(status, dict) and status.get("logged_in"):
                     has_key = True
                     key_source = status.get("key_source", "oauth")
@@ -2470,7 +2517,11 @@ def get_providers() -> dict[str, Any]:
             if _re.match(r'^[a-z][a-z0-9_-]{0,63}$', pid):
                 try:
                     from hermes_cli.auth import get_auth_status as _gas
-                    status = _gas(pid)
+                    status = _run_bounded_provider_lookup(
+                        pid,
+                        "auth",
+                        lambda _pid=pid, _lookup=_gas: _lookup(_pid),
+                    )
                     if isinstance(status, dict) and status.get("logged_in"):
                         has_key = True
                         # Constrain key_source to a known-safe closed set
@@ -2495,7 +2546,11 @@ def get_providers() -> dict[str, Any]:
         # discovery and the local Codex cache are both unavailable. (#1807
         # follow-up to v0.51.19 #1812.)
         if pid == "openai-codex":
-            live_ids = _read_live_provider_model_ids("openai-codex")
+            live_ids = _run_bounded_provider_lookup(
+                pid,
+                "models",
+                lambda _lookup=_read_live_provider_model_ids: _lookup("openai-codex"),
+            ) or []
             live_id_set = set(live_ids)
             for mid in _read_visible_codex_cache_model_ids():
                 if mid not in live_id_set:
@@ -2508,7 +2563,11 @@ def get_providers() -> dict[str, Any]:
         if pid == "xai-oauth":
             live_models = _models_from_live_provider_ids(
                 pid,
-                _read_live_provider_model_ids("xai-oauth"),
+                _run_bounded_provider_lookup(
+                    pid,
+                    "models",
+                    lambda _lookup=_read_live_provider_model_ids: _lookup("xai-oauth"),
+                ) or [],
             )
             if live_models:
                 models = live_models
@@ -2529,7 +2588,11 @@ def get_providers() -> dict[str, Any]:
             try:
                 from hermes_cli.models import provider_model_ids as _provider_model_ids
 
-                live_ids = _provider_model_ids("nous") or []
+                live_ids = _run_bounded_provider_lookup(
+                    pid,
+                    "models",
+                    lambda _lookup=_provider_model_ids: _lookup("nous"),
+                ) or []
                 if live_ids:
                     # Lazy-import to avoid circular dep with api.config.
                     from api.config import _format_nous_label, _build_nous_featured_set
@@ -2548,7 +2611,11 @@ def get_providers() -> dict[str, Any]:
             try:
                 from hermes_cli.models import provider_model_ids as _pmi
 
-                lm_live = _pmi("lmstudio") or []
+                lm_live = _run_bounded_provider_lookup(
+                    pid,
+                    "models",
+                    lambda _lookup=_pmi: _lookup("lmstudio"),
+                ) or []
                 if lm_live:
                     models = [{"id": mid, "label": mid} for mid in lm_live]
                     models_total = len(models)
@@ -2558,7 +2625,11 @@ def get_providers() -> dict[str, Any]:
             try:
                 live_models = _models_from_live_provider_ids(
                     pid,
-                    _read_live_provider_model_ids(pid),
+                    _run_bounded_provider_lookup(
+                        pid,
+                        "models",
+                        lambda _pid=pid, _lookup=_read_live_provider_model_ids: _lookup(_pid),
+                    ) or [],
                 )
                 if live_models:
                     models = live_models

@@ -84,6 +84,14 @@ def test_profile_dropdown_closing_invalidates_inflight_refresh():
     assert "if(openGen !== _profileDropdownOpenGeneration) return;" in toggle_body
 
 
+def test_profile_dropdown_excludes_account_actions():
+    body = _function_body(PANELS_JS, "function renderProfileDropdown(data) {")
+
+    assert "change-password" not in body
+    assert "sign-out-from-dropdown" not in body
+    assert "manage_profiles" in body
+
+
 def test_profiles_panel_refresh_updates_dropdown_cache():
     body = _function_body(PANELS_JS, "async function loadProfilesPanel() {")
     api_idx = body.index("const data = await api('/api/profiles');")

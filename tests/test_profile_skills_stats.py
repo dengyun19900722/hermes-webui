@@ -44,10 +44,9 @@ def test_list_profiles_api_contains_formatted_skills(monkeypatch, tmp_path):
     """list_profiles_api() formats skill counts for each profile.
 
     Drives the fast path (``_build_profile_rows_fast``), which discovers
-    profiles via the cheap upstream helpers and skips the alias scan, so this
-    patches ``_get_default_hermes_home`` / ``_get_profiles_root`` to point at a
-    tmp profile layout rather than monkeypatching the (now-bypassed)
-    ``list_profiles`` aggregate.
+    profiles from the WebUI-resolved roots and skips the alias scan, so this
+    patches those roots to point at a tmp profile layout rather than
+    monkeypatching the (now-bypassed) ``list_profiles`` aggregate.
     """
     p_default = tmp_path / "default"
     profiles_root = tmp_path / "profiles"
@@ -64,11 +63,11 @@ def test_list_profiles_api_contains_formatted_skills(monkeypatch, tmp_path):
 
     monkeypatch.setattr(profiles, "get_active_profile_name", lambda: "default")
 
-    # Point the fast-path discovery helpers at our tmp layout. The base home is
+    # Point the WebUI-owned discovery roots at our tmp layout. The base home is
     # surfaced as "default" by _build_profile_rows_fast regardless of dir name.
     import hermes_cli.profiles as cli_p
-    monkeypatch.setattr(cli_p, "_get_default_hermes_home", lambda: p_default)
-    monkeypatch.setattr(cli_p, "_get_profiles_root", lambda: profiles_root)
+    monkeypatch.setattr(profiles, "_DEFAULT_HERMES_HOME", p_default)
+    monkeypatch.setattr(profiles, "_profiles_root", lambda: profiles_root)
     monkeypatch.setattr(cli_p, "_check_gateway_running", lambda home: False)
 
     profiles._SKILLS_STATS_CACHE.clear()
@@ -177,8 +176,8 @@ def test_list_profiles_api_skips_alias_scan(monkeypatch, tmp_path):
     _write_config(p_default, [])
 
     import hermes_cli.profiles as cli_p
-    monkeypatch.setattr(cli_p, "_get_default_hermes_home", lambda: p_default)
-    monkeypatch.setattr(cli_p, "_get_profiles_root", lambda: tmp_path / "profiles")
+    monkeypatch.setattr(profiles, "_DEFAULT_HERMES_HOME", p_default)
+    monkeypatch.setattr(profiles, "_profiles_root", lambda: tmp_path / "profiles")
     monkeypatch.setattr(cli_p, "_check_gateway_running", lambda home: False)
     monkeypatch.setattr(profiles, "get_active_profile_name", lambda: "default")
 
@@ -207,8 +206,8 @@ def test_list_profiles_api_caches_and_invalidates(monkeypatch, tmp_path):
     _write_config(p_default, [])
 
     import hermes_cli.profiles as cli_p
-    monkeypatch.setattr(cli_p, "_get_default_hermes_home", lambda: p_default)
-    monkeypatch.setattr(cli_p, "_get_profiles_root", lambda: tmp_path / "profiles")
+    monkeypatch.setattr(profiles, "_DEFAULT_HERMES_HOME", p_default)
+    monkeypatch.setattr(profiles, "_profiles_root", lambda: tmp_path / "profiles")
     monkeypatch.setattr(cli_p, "_check_gateway_running", lambda home: False)
     monkeypatch.setattr(profiles, "get_active_profile_name", lambda: "default")
 
@@ -233,6 +232,75 @@ def test_list_profiles_api_caches_and_invalidates(monkeypatch, tmp_path):
     profiles._invalidate_list_profiles_cache()
     profiles.list_profiles_api()
     assert len(build_calls) == 2, "invalidation must force a rebuild"
+
+    profiles._invalidate_list_profiles_cache()
+
+
+def test_list_profiles_api_uses_webui_root_for_custom_deployments(monkeypatch, tmp_path):
+    """A custom WebUI root must win over the agent's process-default root."""
+    webui_root = tmp_path / "mounted-hermes-home"
+    profiles_root = webui_root / "profiles"
+    _write_config(webui_root, [])
+    _write_config(profiles_root / "internal", [])
+
+    import hermes_cli.profiles as cli_p
+
+    monkeypatch.setattr(profiles, "_DEFAULT_HERMES_HOME", webui_root)
+    monkeypatch.setattr(profiles, "_profiles_root", lambda: profiles_root)
+    monkeypatch.setattr(profiles, "get_active_profile_name", lambda: "default")
+    monkeypatch.setattr(cli_p, "_check_gateway_running", lambda home: False)
+    # If the implementation asks the agent for roots, this intentionally points
+    # it somewhere else and the regression returns the wrong profile list.
+    monkeypatch.setattr(cli_p, "_get_default_hermes_home", lambda: tmp_path / "wrong-root")
+    monkeypatch.setattr(cli_p, "_get_profiles_root", lambda: tmp_path / "wrong-root" / "profiles")
+
+    profiles._SKILLS_STATS_CACHE.clear()
+    profiles._invalidate_list_profiles_cache()
+
+    names = {row["name"] for row in profiles.list_profiles_api()}
+    assert names == {"default", "internal"}
+
+    profiles._invalidate_list_profiles_cache()
+
+
+@requires_agent_modules
+def test_profile_selector_rows_skip_cold_skill_stats(monkeypatch, tmp_path):
+    """The browser selector must not parse every skill before it can open."""
+    p_default = tmp_path / "default"
+    _write_skill(p_default, "a1")
+    _write_config(p_default, [])
+
+    import hermes_cli.profiles as cli_p
+
+    monkeypatch.setattr(profiles, "_DEFAULT_HERMES_HOME", p_default)
+    monkeypatch.setattr(profiles, "_profiles_root", lambda: tmp_path / "profiles")
+    monkeypatch.setattr(cli_p, "_check_gateway_running", lambda home: False)
+    monkeypatch.setattr(profiles, "get_active_profile_name", lambda: "default")
+    monkeypatch.setattr(
+        profiles,
+        "_get_profile_skills_stats",
+        lambda _path: (_ for _ in ()).throw(AssertionError("selector must not scan skills")),
+    )
+    profiles._invalidate_list_profiles_cache()
+
+    rows = profiles.list_profiles_api(include_skill_stats=False)
+
+    assert rows == [
+        {
+            "name": "default",
+            "path": str(p_default),
+            "is_default": True,
+            "is_active": True,
+            "gateway_running": False,
+            "model": None,
+            "provider": None,
+            "has_env": False,
+            "visible": True,
+            "skill_count": 0,
+            "enabled_skills": 0,
+            "total_skills": 0,
+        }
+    ]
 
     profiles._invalidate_list_profiles_cache()
 

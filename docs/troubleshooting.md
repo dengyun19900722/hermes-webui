@@ -121,6 +121,34 @@ The on-disk locations below assume the default `~/.hermes/webui` state directory
 
 ---
 
+## First question fails with a context-length error
+
+**Symptom.** A brand-new session fails on its first question with a provider
+message like `Requested token count exceeds the model's maximum context length`.
+The log may show a large completion request, for example `16888` input tokens
+plus `131072` completion tokens for a `131072`-token model.
+
+**Why.** The model context window is shared by the input and the requested
+completion. A first-turn prompt can already contain Hermes' system prompt,
+workspace instructions, tools, and the user message; it does not need a long
+conversation history to exceed the total request budget. WebUI now bounds the
+completion to the remaining context, with a small tokenizer/provider margin,
+before the request is sent. An explicit `max_tokens` setting remains an upper
+bound but is also reduced when the current prompt leaves less room.
+
+**Diagnostic.** Confirm that the error reports both input tokens and requested
+completion tokens, and that their sum is larger than the model context window.
+This is an output-budget overflow, not evidence that the new session contains
+old conversation history. Also check that the configured model context length
+matches the provider's documented value.
+
+**Fix.** Update WebUI and retry in a new session. If the error persists, lower
+the configured `max_tokens` value or correct the model's `context_length`, then
+restart WebUI. Do not use context compression as the first response to this
+specific first-turn failure.
+
+---
+
 ## "Context compression exhausted" after a long-running turn
 
 **Symptom.** A long-running session, often with many tool calls or a small
@@ -151,6 +179,15 @@ The new linked session preserves the workspace, model, profile, project, and
 toolset lane, but intentionally starts with an empty model-facing transcript so
 the oversized exhausted tail is not replayed. After the new session opens,
 describe the next narrow task explicitly instead of sending a bare continuation.
+
+**Abnormally small windows.** An error such as `Context length exceeded (22
+tokens)` is not a normal long-session exhaustion: 22 tokens cannot hold the
+WebUI's own system and workspace instructions. Check the active profile's
+`config.yaml` for `context_length` entries and correct or remove the value.
+The value must be the model's documented context window in tokens, not a
+shorthand such as `22` for 22K. Restart the WebUI after correcting the
+configuration, then start a new or focused continuation; the exhausted session
+will remain terminal.
 
 **When to file a bug.** File a bug if the exhausted message has no recovery
 action, the action creates a session with the old oversized context/messages

@@ -54,3 +54,16 @@ def test_login_js_handles_401_error():
     has_401 = "401" in src
     has_error = "error" in src.lower() or "err" in src.lower()
     assert has_401 or has_error
+
+
+def test_login_layout_uses_border_box_for_full_width_controls():
+    """Full-width setup controls must include padding inside their width."""
+    css = Path("static") / "login.css"
+    src = css.read_text(encoding="utf-8")
+    assert "box-sizing: border-box" in src
+
+
+def test_admin_username_pattern_is_valid_under_html_unicode_sets_mode():
+    """The generated HTML must keep a literal-safe hyphen in its character set."""
+    src = (Path("static") / "users_panel.js").read_text(encoding="utf-8")
+    assert 'pattern="[A-Za-z0-9_.\\\\x2D]{3,32}"' in src

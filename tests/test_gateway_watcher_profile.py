@@ -315,7 +315,11 @@ def test_profile_switch_restarts_watcher_best_effort(monkeypatch):
     monkeypatch.setattr(routes, "_check_csrf", lambda handler: True)
     monkeypatch.setattr(routes, "read_body", lambda handler: {"name": "demo"})
     monkeypatch.setattr(profiles, "_validate_profile_name", lambda name: None)
-    monkeypatch.setattr(profiles, "switch_profile", lambda name, process_wide=False: {"ok": True, "name": name})
+    monkeypatch.setattr(
+        profiles,
+        "switch_profile",
+        lambda name, process_wide=False, include_profiles=True: {"ok": True, "name": name},
+    )
     monkeypatch.setattr(config, "invalidate_models_cache", lambda: calls.append("cache"))
     monkeypatch.setattr(gateway_watcher, "restart_watcher_for_profile", lambda name: calls.append(("watcher", name)))
 
@@ -334,7 +338,11 @@ def test_profile_switch_response_survives_watcher_restart_failure(monkeypatch):
     monkeypatch.setattr(routes, "_check_csrf", lambda handler: True)
     monkeypatch.setattr(routes, "read_body", lambda handler: {"name": "demo"})
     monkeypatch.setattr(profiles, "_validate_profile_name", lambda name: None)
-    monkeypatch.setattr(profiles, "switch_profile", lambda name, process_wide=False: {"ok": True, "name": name})
+    monkeypatch.setattr(
+        profiles,
+        "switch_profile",
+        lambda name, process_wide=False, include_profiles=True: {"ok": True, "name": name},
+    )
     monkeypatch.setattr(config, "invalidate_models_cache", lambda: None)
     monkeypatch.setattr(
         gateway_watcher,

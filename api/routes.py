@@ -12328,8 +12328,9 @@ def handle_get(handler, parsed) -> bool:
 
     if parsed.path == "/license/activate":
         # After successful activation the JS calls location.reload() against
-        # this URL. If license is now valid, bounce to the app root so the
-        # page doesn't 404 with `{"error":"not found"}`.
+        # this URL. Finish the bootstrap sequence before opening the app: a
+        # fresh deployment has no RBAC user yet, so sending it to `/` would
+        # invoke auth middleware and land on the login page first.
         try:
             from api.license import check_license_status, init_license_config
             _lws = Path(DEFAULT_WORKSPACE)
@@ -12347,8 +12348,14 @@ def handle_get(handler, parsed) -> bool:
             _lconf = {}
             _lstatus = {"status": "not_initialized"}
         if _lstatus.get("status") == "valid":
+            try:
+                from api.auth import needs_initialization
+                _activation_target = "/setup" if needs_initialization() else "/"
+            except Exception:
+                logger.exception("[license] failed to resolve post-activation setup state")
+                _activation_target = "/"
             handler.send_response(302)
-            handler.send_header("Location", "/")
+            handler.send_header("Location", _activation_target)
             handler.send_header("Cache-Control", "no-store")
             handler.send_header("Content-Length", "0")
             _security_headers(handler)
@@ -13909,7 +13916,10 @@ def handle_get(handler, parsed) -> bool:
         return j(
             handler,
             {
-                "profiles": profiles_api.list_profiles_api(),
+                # The composer selector only needs profile identity/defaults.
+                # Do not block it on a cold scan of every SKILL.md just to
+                # render optional count badges.
+                "profiles": profiles_api.list_profiles_api(include_skill_stats=False),
                 "active": profiles_api.get_active_profile_name(),
                 "single_profile_mode": _is_isolated_profile_mode(),
             },
@@ -15906,7 +15916,7 @@ def handle_post(handler, parsed) -> bool:
                 _validate_profile_name(name)
             # process_wide=False: don't mutate the process-global _active_profile.
             # Per-client profile is managed via cookie + thread-local (#798).
-            result = switch_profile(name, process_wide=False)
+            result = switch_profile(name, process_wide=False, include_profiles=False)
             # Invalidate the models cache so the very next /api/models request
             # rebuilds from the new profile's config.yaml rather than returning
             # the old profile's cached model list (#1200 — profile-switch model bug).

@@ -79,6 +79,44 @@ def test_per_client_switch_allowed_when_stream_is_active(tmp_path, monkeypatch):
     assert result["default_model"] == "gpt-5.5"
 
 
+def test_profile_switch_keeps_profile_skill_stats_warm(tmp_path, monkeypatch):
+    """Switching profiles must not make the response rescan every SKILL.md.
+
+    The profile selector has already loaded profile metadata before a user can
+    select a profile. Those statistics are tied to each profile directory, not
+    the active-profile pointer, so discarding them here made a normal switch
+    exceed the browser request timeout on deployments with many skills.
+    """
+    profiles = _prepare_profile_tree(tmp_path, monkeypatch)
+    default_home = tmp_path / ".hermes"
+    default_home.mkdir(exist_ok=True)
+    cached_stats = {
+        default_home.resolve(): (198, 198, 1, float("inf")),
+    }
+    monkeypatch.setattr(profiles, "_SKILLS_STATS_CACHE", cached_stats)
+
+    result = profiles.switch_profile("writer", process_wide=False)
+
+    assert result["active"] == "writer"
+    assert profiles._SKILLS_STATS_CACHE is cached_stats
+    assert cached_stats, "a profile switch must preserve the warm skill-stat cache"
+
+
+def test_webui_profile_switch_can_skip_full_profile_list(tmp_path, monkeypatch):
+    """The latency-sensitive WebUI route must not rebuild profile metadata."""
+    profiles = _prepare_profile_tree(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        profiles,
+        "list_profiles_api",
+        lambda: (_ for _ in ()).throw(AssertionError("profile list must not be rebuilt")),
+    )
+
+    result = profiles.switch_profile("writer", process_wide=False, include_profiles=False)
+
+    assert result["active"] == "writer"
+    assert "profiles" not in result
+
+
 def test_frontend_profile_switch_no_longer_blocks_on_busy_state():
     fn = _extract_switch_to_profile()
 

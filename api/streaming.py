@@ -23,6 +23,137 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+
+def _estimate_agent_request_tokens(api_kwargs: dict) -> int:
+    """Estimate tokens for an already assembled provider request."""
+    messages = api_kwargs.get("messages")
+    if not isinstance(messages, list):
+        messages = api_kwargs.get("input")
+    if not isinstance(messages, list):
+        return 0
+
+    try:
+        from agent.model_metadata import estimate_request_tokens_rough
+
+        return int(
+            estimate_request_tokens_rough(
+                messages,
+                system_prompt=api_kwargs.get("system") or "",
+                tools=api_kwargs.get("tools") or None,
+            )
+            or 0
+        )
+    except Exception:
+        # Older Agent builds may not expose the estimator. The request still
+        # gets a conservative character-based fallback rather than failing a
+        # chat turn because the guard itself is unavailable.
+        try:
+            json_payload = json.dumps(
+                {
+                    "messages": messages,
+                    "system": api_kwargs.get("system") or "",
+                    "tools": api_kwargs.get("tools") or [],
+                },
+                ensure_ascii=False,
+                default=str,
+            )
+            return max(1, len(json_payload) // 4)
+        except Exception:
+            return 0
+
+
+def _bound_agent_request_output_to_context(agent, api_kwargs: dict) -> dict:
+    """Keep the requested completion inside the model's total context window.
+
+    Some provider profiles default ``max_tokens`` to the model's full context
+    length. That is invalid for any non-empty prompt because most APIs enforce
+    ``input_tokens + max_tokens <= context_length``. The Agent's context
+    compressor knows the active model window, while ``api_kwargs`` contains the
+    fully assembled request, so this is the last reliable place to apply the
+    bound without mistaking the first-turn failure for a history overflow.
+    """
+    if not isinstance(api_kwargs, dict):
+        return api_kwargs
+
+    compressor = getattr(agent, "context_compressor", None)
+    try:
+        context_length = int(getattr(compressor, "context_length", 0) or 0)
+    except (TypeError, ValueError):
+        context_length = 0
+    if context_length <= 0:
+        return api_kwargs
+
+    output_keys = tuple(
+        key
+        for key in ("max_output_tokens", "max_completion_tokens", "max_tokens")
+        if key in api_kwargs
+    )
+    if not output_keys:
+        return api_kwargs
+    requested_outputs = []
+    for key in output_keys:
+        try:
+            value = int(api_kwargs.get(key))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            requested_outputs.append(value)
+    if not requested_outputs:
+        return api_kwargs
+    requested_output = max(requested_outputs)
+
+    input_tokens = _estimate_agent_request_tokens(api_kwargs)
+    if input_tokens <= 0:
+        return api_kwargs
+
+    # Leave a small allowance for tokenizer differences and provider-side
+    # framing fields. Two percent is capped so large context windows do not
+    # consume an unreasonable amount of otherwise usable output budget.
+    safety_margin = max(2048, min(8192, (context_length + 49) // 50))
+    available_output = context_length - input_tokens - safety_margin
+    if available_output <= 0 or requested_output <= available_output:
+        return api_kwargs
+
+    bounded_output = max(1, available_output)
+    bounded_kwargs = dict(api_kwargs)
+    for key in output_keys:
+        try:
+            if int(api_kwargs.get(key)) > bounded_output:
+                bounded_kwargs[key] = bounded_output
+        except (TypeError, ValueError):
+            continue
+    logger.info(
+        "[webui] Bounded model output budget for context window: "
+        "model=%s provider=%s context_length=%d estimated_input_tokens=%d "
+        "requested_output_tokens=%d bounded_output_tokens=%d",
+        getattr(agent, "model", "") or "",
+        getattr(agent, "provider", "") or "",
+        context_length,
+        input_tokens,
+        requested_output,
+        bounded_output,
+    )
+    return bounded_kwargs
+
+
+def _install_agent_context_output_guard(agent) -> None:
+    """Install the output-budget guard once on a cached WebUI Agent."""
+    if getattr(agent, "_webui_context_output_guard", False):
+        return
+
+    original_builder = getattr(agent, "_build_api_kwargs", None)
+    if not callable(original_builder):
+        return
+
+    def _build_bounded_api_kwargs(api_messages):
+        return _bound_agent_request_output_to_context(
+            agent,
+            original_builder(api_messages),
+        )
+
+    agent._build_api_kwargs = _build_bounded_api_kwargs
+    agent._webui_context_output_guard = True
+
 from api.config import (
     get_config,
     STREAMS, STREAMS_LOCK, CANCEL_FLAGS, AGENT_INSTANCES, STREAM_PARTIAL_TEXT,
@@ -8444,6 +8575,11 @@ def _run_agent_streaming(
             if _process_notifications:
                 _agent_msg_text = "\n\n".join([*_process_notifications, msg_text]).strip()
             user_message = _build_native_multimodal_message(workspace_ctx, _agent_msg_text, attachments, workspace, cfg=_cfg)
+            # The external Agent builds the final provider payload only inside
+            # run_conversation(). Install the guard after the current message
+            # is ready so every first-turn and tool-loop request is bounded
+            # using its actual assembled prompt and tool schemas.
+            _install_agent_context_output_guard(agent)
             timer.begin_phase("llm")
             _persistent_state_before = _persistent_state_snapshot(_profile_home)
             _run_conversation_kwargs = dict(

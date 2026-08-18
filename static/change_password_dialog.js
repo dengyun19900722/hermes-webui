@@ -1,6 +1,6 @@
 // ── Self-service "change password" dialog (RBAC plan §7) ────────────────────
-// Wired into the profile dropdown rendered by static/panels.js
-// (renderProfileDropdown emits an item with data-action="change-password").
+// Wired into account-menu actions, not the profile selector. Profile switching
+// must remain focused on profile-specific commands.
 // The dialog POSTs to /api/auth/change-password which is implemented in
 // api/rbac_routes.py::handle_auth_change_password. The backend returns
 // i18n-key error strings ("password_old_wrong", "password_too_short",
@@ -210,12 +210,8 @@
   }
 
   // ── Global click delegation ─────────────────────────────────────────────
-  // Wires the menu item rendered by renderProfileDropdown
-  // (data-action="change-password") so users can click the dropdown entry
-  // even though its onclick handler also calls openChangePasswordDialog.
-  // We use capture-phase + stopPropagation to win the race against the
-  // generic dropdown close listener (#profileChipWrap) and prevent the
-  // menu item click from being swallowed before the modal opens.
+  // Account-menu actions use data-action="change-password". Capture phase
+  // keeps the action independent from surrounding menu-close handlers.
   if (typeof document !== 'undefined' && !window._changePasswordListenerInstalled) {
     document.addEventListener('click', (e) => {
       try {
@@ -226,23 +222,13 @@
           openChangePasswordDialog();
           return;
         }
-        const so = e.target && e.target.closest && e.target.closest('[data-action="sign-out-from-dropdown"]');
-        if (so) {
-          e.preventDefault();
-          e.stopPropagation();
-          try { if (typeof closeProfileDropdown === 'function') closeProfileDropdown(); } catch (_) {}
-          if (typeof signOut === 'function') signOut();
-          return;
-        }
       } catch (_) { /* swallow — never let a menu click crash the UI */ }
     }, true);
     window._changePasswordListenerInstalled = true;
   }
 
   // ── Expose the public entry point ───────────────────────────────────────
-  // The panels.js menu item's onclick also calls openChangePasswordDialog
-  // directly, but the document-level delegation is the primary path so the
-  // modal opens even if the menu item was rendered without an onclick hook.
+  // The document-level delegation is the primary account-menu path.
   window.openChangePasswordDialog = openChangePasswordDialog;
   window.closeChangePasswordDialog = closeChangePasswordDialog;
 })();
