@@ -4946,6 +4946,7 @@ async function toggleSkill(name, currentlyEnabled) {
         if (skill) skill.disabled = !newEnabled;
       }
       if(typeof window!=='undefined'&&typeof window.invalidateSlashSkillCaches==='function') window.invalidateSlashSkillCaches();
+      if(typeof window!=='undefined'&&window.SessionGuide&&typeof window.SessionGuide.invalidateSkills==='function') window.SessionGuide.invalidateSkills();
       renderSkills(_skillsData || []);
     } else {
       setStatus((result && result.error) || t('skill_toggle_failed'));
@@ -5203,6 +5204,7 @@ async function saveSkillForm() {
     _skillsData = null;
     _cronSkillsCache = null;
     if(typeof window!=='undefined'&&typeof window.invalidateSlashSkillCaches==='function') window.invalidateSlashSkillCaches();
+    if(typeof window!=='undefined'&&window.SessionGuide&&typeof window.SessionGuide.invalidateSkills==='function') window.SessionGuide.invalidateSkills();
     _editingSkillName = null;
     _skillPreFormDetail = null;
     await loadSkills();
@@ -5243,6 +5245,7 @@ async function deleteCurrentSkill() {
     _skillsData = null;
     _cronSkillsCache = null;
     if(typeof window!=='undefined'&&typeof window.invalidateSlashSkillCaches==='function') window.invalidateSlashSkillCaches();
+    if(typeof window!=='undefined'&&window.SessionGuide&&typeof window.SessionGuide.invalidateSkills==='function') window.SessionGuide.invalidateSkills();
     _skillMode = 'empty';
     const body = $('skillDetailBody');
     const empty = $('skillDetailEmpty');
@@ -7442,6 +7445,7 @@ async function switchToProfile(name) {
     if(typeof _clearPersistedModelState==='function') _clearPersistedModelState();
     else localStorage.removeItem('hermes-webui-model');
     _skillsData = null;
+    if(typeof window!=='undefined'&&window.SessionGuide&&typeof window.SessionGuide.invalidateSkills==='function') window.SessionGuide.invalidateSkills();
     _workspaceList = null;
     if (data.default_model) window._defaultModel = data.default_model;
     if (data.default_model_provider) window._activeProvider = data.default_model_provider;

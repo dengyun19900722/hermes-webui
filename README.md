@@ -471,6 +471,7 @@ Production data and real cron jobs are never touched. Current snapshot:
 
 ### Chat and agent
 - Streaming responses via SSE (tokens appear as they are generated)
+- Empty conversations show recommended workflow prompts and the full profile-scoped skill inventory, so a new session can start from a concrete task or an available capability.
 - Multi-provider model support -- any Hermes API provider (OpenAI, Anthropic, Google, DeepSeek, Nous Portal, OpenRouter, MiniMax, Xiaomi MiMo, Z.AI); dynamic model dropdown populated from configured keys
 - Send a message while one is processing -- it queues automatically
 - Edit any past user message inline and regenerate from that point

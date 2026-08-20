@@ -928,9 +928,10 @@ document.addEventListener('click',(e)=>{
     if(btn)btn.setAttribute('aria-expanded','false');
   }
 },{capture:false});
-function _addNamedContextBlock(text){
+function _addNamedContextBlock(text, nameOverride){
   const id='ctx-'+(++_selectionIdCounter);
-  const name=(_selectedTextReplyT('context_block_name_default','Context'))+' '+_selectionIdCounter;
+  const defaultName=(_selectedTextReplyT('context_block_name_default','Context'))+' '+_selectionIdCounter;
+  const name=String(nameOverride||defaultName).trim()||defaultName;
   _pendingSelections.push({id, name, text});
   _renderSelectionChips();
   return id;
@@ -947,7 +948,10 @@ function _clearPendingSelections(){
   _renderSelectionChips();
   return true;
 }
-if(typeof window!=='undefined') window._clearPendingSelections=_clearPendingSelections;
+if(typeof window!=='undefined'){
+  window._addNamedContextBlock=_addNamedContextBlock;
+  window._clearPendingSelections=_clearPendingSelections;
+}
 
 function _selectedContextPreview(text){
   const normalized=String(text||'').replace(/\r\n?/g,'\n').replace(/\n{3,}/g,'\n\n').trim();

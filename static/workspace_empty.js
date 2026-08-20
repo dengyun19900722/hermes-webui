@@ -35,7 +35,10 @@ function renderNoWorkspaceEmptyState(){
       S._emptyStateOriginalHTML = root.innerHTML;
     }
   }catch(_){}
+  root.classList.remove('session-guide-active');
   root.classList.add('workspace-empty-state', 'no-suggestions');
+  const messages = $('messages');
+  if(messages) messages.classList.remove('session-guide-shell-active');
   root.innerHTML = `
     <div class="workspace-empty-state__icon" aria-hidden="true">📁</div>
     <h2>${escStr(title)}</h2>
